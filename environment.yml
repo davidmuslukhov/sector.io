@@ -1,0 +1,7 @@
+name: city3d
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - panda3d
