@@ -1,4 +1,4 @@
-"""Software-city scene. The first object is a lit sphere on the city node."""
+"""Software-city scene. Three identical lit spheres form an equilateral triangle."""
 
 import argparse
 import math
@@ -90,12 +90,21 @@ class CityApp(ShowBase):
         self.setBackgroundColor(0.08, 0.09, 0.12, 1)
 
         self.city = self.render.attachNewNode("city")
-        self._add_sphere()
+        # Same center spacing as the old row, laid out as an equilateral triangle
+        # in the XY plane and centered on the origin.
+        side = 2.5
+        height = side * math.sqrt(3) / 2
+        for x, y in (
+            (-side / 2, -height / 3),
+            (side / 2, -height / 3),
+            (0.0, 2 * height / 3),
+        ):
+            self._add_sphere(x, y)
         self._add_lights()
 
         self.heading = 30.0
         self.pitch = 20.0
-        self.distance = 6.0
+        self.distance = 16.0
         self.dragging = False
         self.last_x = 0.0
         self.last_y = 0.0
@@ -108,8 +117,9 @@ class CityApp(ShowBase):
         self.accept("mouse1-up", self._end_drag)
         self.taskMgr.add(self._drag_task, "orbit-drag")
 
-    def _add_sphere(self) -> None:
+    def _add_sphere(self, x: float, y: float) -> None:
         sphere = self.city.attachNewNode(make_sphere())
+        sphere.setPos(x, y, 0)
         material = Material()
         material.setAmbient((0.15, 0.28, 0.4, 1))
         material.setDiffuse((0.25, 0.55, 0.85, 1))
