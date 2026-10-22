@@ -1,4 +1,5 @@
-"""Software-city scene. Three identical lit spheres form an equilateral triangle."""
+"""Software-city scene. Three identical lit spheres form an equilateral triangle,
+joined center to center by thin cylinders of the same colour."""
 
 import argparse
 import math
@@ -82,6 +83,48 @@ def make_sphere(radius: float = 1.0, rings: int = 32, segments: int = 48) -> Geo
     return node
 
 
+def make_cylinder(radius: float, length: float, segments: int = 24) -> GeomNode:
+    """Open cylinder along +Y, from the origin out to ``length``."""
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("cylinder", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+
+    for y in (0.0, length):
+        for seg in range(segments + 1):
+            theta = 2.0 * math.pi * seg / segments
+            nx = math.cos(theta)
+            nz = math.sin(theta)
+            vertex.addData3(radius * nx, y, radius * nz)
+            normal.addData3(nx, 0.0, nz)
+
+    tris = GeomTriangles(Geom.UHStatic)
+    stride = segments + 1
+    for seg in range(segments):
+        i0 = seg
+        i1 = i0 + 1
+        i2 = i0 + stride
+        i3 = i2 + 1
+        tris.addVertices(i0, i2, i1)
+        tris.addVertices(i1, i2, i3)
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("cylinder")
+    node.addGeom(geom)
+    return node
+
+
+def sphere_material() -> Material:
+    material = Material()
+    material.setAmbient((0.15, 0.28, 0.4, 1))
+    material.setDiffuse((0.25, 0.55, 0.85, 1))
+    material.setSpecular((0.45, 0.45, 0.5, 1))
+    material.setShininess(32)
+    return material
+
+
 class CityApp(ShowBase):
     def __init__(self, screenshot: str | None = None) -> None:
         super().__init__()
@@ -94,12 +137,18 @@ class CityApp(ShowBase):
         # in the XY plane and centered on the origin.
         side = 2.5
         height = side * math.sqrt(3) / 2
-        for x, y in (
+        positions = (
             (-side / 2, -height / 3),
             (side / 2, -height / 3),
             (0.0, 2 * height / 3),
-        ):
-            self._add_sphere(x, y)
+        )
+        material = sphere_material()
+        for x, y in positions:
+            self._add_sphere(x, y, material)
+        # Each sphere joins its two neighbours, so the three links close the triangle.
+        for index, (x0, y0) in enumerate(positions):
+            x1, y1 = positions[(index + 1) % len(positions)]
+            self._add_link(x0, y0, x1, y1, material)
         self._add_lights()
 
         self.heading = 30.0
@@ -117,15 +166,26 @@ class CityApp(ShowBase):
         self.accept("mouse1-up", self._end_drag)
         self.taskMgr.add(self._drag_task, "orbit-drag")
 
-    def _add_sphere(self, x: float, y: float) -> None:
+    def _add_sphere(self, x: float, y: float, material: Material) -> None:
         sphere = self.city.attachNewNode(make_sphere())
         sphere.setPos(x, y, 0)
-        material = Material()
-        material.setAmbient((0.15, 0.28, 0.4, 1))
-        material.setDiffuse((0.25, 0.55, 0.85, 1))
-        material.setSpecular((0.45, 0.45, 0.5, 1))
-        material.setShininess(32)
         sphere.setMaterial(material, 1)
+
+    def _add_link(
+        self,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        material: Material,
+        radius: float = 0.08,
+    ) -> None:
+        """Cylinder from one sphere centre to the next, meeting each at its middle."""
+        length = math.hypot(x1 - x0, y1 - y0)
+        link = self.city.attachNewNode(make_cylinder(radius, length))
+        link.setPos(x0, y0, 0)
+        link.lookAt(x1, y1, 0)
+        link.setMaterial(material, 1)
 
     def _add_lights(self) -> None:
         ambient = AmbientLight("ambient")
