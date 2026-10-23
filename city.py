@@ -1,5 +1,6 @@
 """Software-city scene. Three identical lit spheres form an equilateral triangle,
-joined center to center by thin cylinders of the same colour."""
+joined center to center by thin cylinders, with a five-floor stack of
+blocks to their right and a row of yellow squares on each vertical face."""
 
 import argparse
 import math
@@ -116,12 +117,100 @@ def make_cylinder(radius: float, length: float, segments: int = 24) -> GeomNode:
     return node
 
 
+def make_box(
+    sx: float,
+    sy: float,
+    sz: float,
+    top: bool = True,
+    bottom: bool = True,
+) -> GeomNode:
+    """Closed box centred on the origin, with a flat outward normal on each face."""
+    hx, hy, hz = sx / 2.0, sy / 2.0, sz / 2.0
+    # Four corners per face, wound counter-clockwise when seen from outside.
+    faces = [
+        ((hx, -hy, -hz), (hx, hy, -hz), (hx, hy, hz), (hx, -hy, hz), (1.0, 0.0, 0.0)),
+        ((-hx, -hy, -hz), (-hx, -hy, hz), (-hx, hy, hz), (-hx, hy, -hz), (-1.0, 0.0, 0.0)),
+        ((hx, hy, -hz), (-hx, hy, -hz), (-hx, hy, hz), (hx, hy, hz), (0.0, 1.0, 0.0)),
+        ((-hx, -hy, -hz), (hx, -hy, -hz), (hx, -hy, hz), (-hx, -hy, hz), (0.0, -1.0, 0.0)),
+    ]
+    if top:
+        faces.append(
+            ((-hx, -hy, hz), (hx, -hy, hz), (hx, hy, hz), (-hx, hy, hz), (0.0, 0.0, 1.0))
+        )
+    if bottom:
+        faces.append(
+            ((-hx, hy, -hz), (hx, hy, -hz), (hx, -hy, -hz), (-hx, -hy, -hz), (0.0, 0.0, -1.0))
+        )
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("box", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    for corners in faces:
+        nx, ny, nz = corners[4]
+        base = vertex.getWriteRow()
+        for corner in corners[:4]:
+            vertex.addData3(*corner)
+            normal.addData3(nx, ny, nz)
+        tris.addVertices(base, base + 1, base + 2)
+        tris.addVertices(base, base + 2, base + 3)
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("box")
+    node.addGeom(geom)
+    return node
+
+
 def sphere_material() -> Material:
     material = Material()
     material.setAmbient((0.15, 0.28, 0.4, 1))
     material.setDiffuse((0.25, 0.55, 0.85, 1))
     material.setSpecular((0.45, 0.45, 0.5, 1))
     material.setShininess(32)
+    return material
+
+
+def block_material() -> Material:
+    material = Material()
+    material.setAmbient((0.45, 0.45, 0.47, 1))
+    material.setDiffuse((0.78, 0.78, 0.80, 1))
+    material.setSpecular((0.55, 0.55, 0.55, 1))
+    material.setShininess(32)
+    return material
+
+
+# One yellow hue. Brightness scales this colour, so every square stays the same shade.
+_YELLOW = (1.0, 0.82 / 0.95, 0.12 / 0.95)
+_YELLOW_LEVELS = (0.50, 0.62, 0.74, 0.86, 1.0)
+
+
+def square_material(lightness: float) -> Material:
+    """Yellow of a single hue. ``lightness`` 0.95 matches the original square."""
+    diffuse = tuple(channel * lightness for channel in _YELLOW)
+    ambient = tuple(channel * 0.47 for channel in diffuse)
+    specular = tuple(channel * 0.45 for channel in diffuse)
+    material = Material()
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((*specular, 1))
+    material.setShininess(24)
+    return material
+
+
+def _square_lightness(index: int) -> float:
+    return _YELLOW_LEVELS[(index * 3) % len(_YELLOW_LEVELS)]
+
+
+def brown_material() -> Material:
+    material = Material()
+    material.setAmbient((0.28, 0.16, 0.07, 1))
+    material.setDiffuse((0.50, 0.30, 0.13, 1))
+    material.setSpecular((0.25, 0.18, 0.1, 1))
+    material.setShininess(16)
     return material
 
 
@@ -143,17 +232,42 @@ class CityApp(ShowBase):
             (0.0, 2 * height / 3),
         )
         material = sphere_material()
+        sphere_radius = 1.0
         for x, y in positions:
             self._add_sphere(x, y, material)
         # Each sphere joins its two neighbours, so the three links close the triangle.
         for index, (x0, y0) in enumerate(positions):
             x1, y1 = positions[(index + 1) % len(positions)]
             self._add_link(x0, y0, x1, y1, material)
+
+        block_size = (5.0, 5.0, 2.0)
+        block_gap = 5.0
+        floor_count = 5
+        right_surface = side / 2 + sphere_radius
+        block_center_x = right_surface + block_gap + block_size[0] / 2
+        grey = block_material()
+        for floor in range(floor_count):
+            floor_z = floor * block_size[2]
+            self._add_block(
+                block_center_x,
+                0.0,
+                floor_z,
+                block_size,
+                grey,
+                top=floor == floor_count - 1,
+                bottom=floor == 0,
+            )
+            self._add_face_squares(block_center_x, 0.0, floor_z, block_size, floor * 12)
         self._add_lights()
 
+        left = -side / 2 - sphere_radius
+        right = block_center_x + block_size[0] / 2
+        stack_bottom = -block_size[2] / 2
+        stack_top = (floor_count - 1) * block_size[2] + block_size[2] / 2
+        self.look_at = ((left + right) / 2, 0.0, (stack_bottom + stack_top) / 2)
         self.heading = 30.0
         self.pitch = 20.0
-        self.distance = 16.0
+        self.distance = 38.0
         self.dragging = False
         self.last_x = 0.0
         self.last_y = 0.0
@@ -187,6 +301,66 @@ class CityApp(ShowBase):
         link.lookAt(x1, y1, 0)
         link.setMaterial(material, 1)
 
+    def _add_block(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        size: tuple[float, float, float],
+        material: Material,
+        top: bool = True,
+        bottom: bool = True,
+    ) -> None:
+        block = self.city.attachNewNode(make_box(*size, top=top, bottom=bottom))
+        block.setPos(x, y, z)
+        block.setMaterial(material, 1)
+
+    def _add_face_squares(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        size: tuple[float, float, float],
+        level_start: int = 0,
+    ) -> None:
+        """Three 1×1 squares on every vertical face, inset 0.5 from the edges."""
+        sx, sy, sz = size
+        square = 1.0
+        margin = 0.5
+        depth = 0.04
+        row_z = z - sz / 2 + margin + square / 2
+        level = level_start
+
+        def centers(span: float) -> tuple[float, float, float]:
+            left = -span / 2 + margin + square / 2
+            right = span / 2 - margin - square / 2
+            return (left, (left + right) / 2, right)
+
+        along_x = centers(sx)
+        along_y = centers(sy)
+        for sign in (1.0, -1.0):
+            face_y = y + sign * (sy / 2 + depth / 2)
+            for offset in along_x:
+                tone = _square_lightness(level)
+                level += 1
+                # Front face is the one toward the camera (-Y). A brown door fills that gap.
+                if z == 0 and sign < 0 and offset == 0:
+                    door_height = 1.25
+                    door_bottom = z - sz / 2
+                    door = self.city.attachNewNode(make_box(1.0, depth, door_height))
+                    door.setPos(x + offset, face_y, door_bottom + door_height / 2)
+                    door.setMaterial(brown_material(), 1)
+                    continue
+                panel = self.city.attachNewNode(make_box(square, depth, square))
+                panel.setPos(x + offset, face_y, row_z)
+                panel.setMaterial(square_material(tone), 1)
+            face_x = x + sign * (sx / 2 + depth / 2)
+            for offset in along_y:
+                panel = self.city.attachNewNode(make_box(depth, square, square))
+                panel.setPos(face_x, y + offset, row_z)
+                panel.setMaterial(square_material(_square_lightness(level)), 1)
+                level += 1
+
     def _add_lights(self) -> None:
         ambient = AmbientLight("ambient")
         ambient.setColor((0.35, 0.38, 0.42, 1))
@@ -204,15 +378,16 @@ class CityApp(ShowBase):
         pitch = math.radians(self.pitch)
         heading = math.radians(self.heading)
         cos_pitch = math.cos(pitch)
+        look_x, look_y, look_z = self.look_at
         self.camera.setPos(
-            self.distance * math.sin(heading) * cos_pitch,
-            -self.distance * math.cos(heading) * cos_pitch,
-            self.distance * math.sin(pitch),
+            look_x + self.distance * math.sin(heading) * cos_pitch,
+            look_y - self.distance * math.cos(heading) * cos_pitch,
+            look_z + self.distance * math.sin(pitch),
         )
-        self.camera.lookAt(0, 0, 0)
+        self.camera.lookAt(look_x, look_y, look_z)
 
     def _zoom(self, delta: float) -> None:
-        self.distance = min(40.0, max(2.0, self.distance + delta))
+        self.distance = min(80.0, max(2.0, self.distance + delta))
         self._update_camera()
 
     def _start_drag(self) -> None:
