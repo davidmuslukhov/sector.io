@@ -1,6 +1,7 @@
 """Software-city scene. Three identical lit spheres form an equilateral triangle,
 joined center to center by thin cylinders, with a five-floor stack of
-blocks to their right and a row of yellow squares on each vertical face."""
+blocks to their right and a row of yellow squares on each vertical face.
+A brown cube stands five units beyond the stack, capped by a brown pyramid."""
 
 import argparse
 import math
@@ -165,6 +166,67 @@ def make_box(
     return node
 
 
+def make_pyramid(sx: float, sy: float, height: float) -> GeomNode:
+    """Square pyramid. The base sits on z = 0, centred on the origin, with the apex above it."""
+    hx, hy = sx / 2.0, sy / 2.0
+    apex = (0.0, 0.0, height)
+    # Same corner order as make_box: front-left, front-right, back-right, back-left.
+    base = (
+        (-hx, -hy, 0.0),
+        (hx, -hy, 0.0),
+        (hx, hy, 0.0),
+        (-hx, hy, 0.0),
+    )
+    # Triangles wound counter-clockwise when seen from outside.
+    sides = (
+        (base[1], base[2], apex),
+        (base[0], apex, base[3]),
+        (base[2], base[3], apex),
+        (base[0], base[1], apex),
+    )
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("pyramid", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    def add_face(corners: tuple[tuple[float, float, float], ...], face_normal: tuple[float, float, float]) -> None:
+        start = vertex.getWriteRow()
+        for corner in corners:
+            vertex.addData3(*corner)
+            normal.addData3(*face_normal)
+        tris.addVertices(start, start + 1, start + 2)
+        if len(corners) == 4:
+            tris.addVertices(start, start + 2, start + 3)
+
+    for corners in sides:
+        add_face(corners, _face_normal(*corners))
+    add_face((base[3], base[2], base[1], base[0]), (0.0, 0.0, -1.0))
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("pyramid")
+    node.addGeom(geom)
+    return node
+
+
+def _face_normal(
+    a: tuple[float, float, float],
+    b: tuple[float, float, float],
+    c: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Unit normal of a counter-clockwise triangle."""
+    ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+    vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+    nx = uy * vz - uz * vy
+    ny = uz * vx - ux * vz
+    nz = ux * vy - uy * vx
+    length = math.hypot(nx, ny, nz)
+    return (nx / length, ny / length, nz / length)
+
+
 def sphere_material() -> Material:
     material = Material()
     material.setAmbient((0.15, 0.28, 0.4, 1))
@@ -205,11 +267,15 @@ def _square_lightness(index: int) -> float:
     return _YELLOW_LEVELS[(index * 3) % len(_YELLOW_LEVELS)]
 
 
-def brown_material() -> Material:
+def brown_material(lightness: float = 1.0) -> Material:
+    """Same brown hue. ``lightness`` 1 matches the door; lower values are darker."""
+    ambient = tuple(channel * lightness for channel in (0.28, 0.16, 0.07))
+    diffuse = tuple(channel * lightness for channel in (0.50, 0.30, 0.13))
+    specular = tuple(channel * lightness for channel in (0.25, 0.18, 0.1))
     material = Material()
-    material.setAmbient((0.28, 0.16, 0.07, 1))
-    material.setDiffuse((0.50, 0.30, 0.13, 1))
-    material.setSpecular((0.25, 0.18, 0.1, 1))
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((*specular, 1))
     material.setShininess(16)
     return material
 
@@ -258,16 +324,26 @@ class CityApp(ShowBase):
                 bottom=floor == 0,
             )
             self._add_face_squares(block_center_x, 0.0, floor_z, block_size, floor * 12)
+
+        cube_size = (2.0, 2.0, 2.0)
+        stack_right = block_center_x + block_size[0] / 2
+        cube_center_x = stack_right + 5.0 + cube_size[0] / 2
+        self._add_block(cube_center_x, 0.0, 0.0, cube_size, brown_material(0.6), top=False)
+        self._add_cube_squares(cube_center_x, 0.0, 0.0, cube_size)
+        pyramid_size = (3.0, 3.0, 1.5)
+        pyramid = self.city.attachNewNode(make_pyramid(*pyramid_size))
+        pyramid.setPos(cube_center_x, 0.0, cube_size[2] / 2)
+        pyramid.setMaterial(brown_material(0.6), 1)
         self._add_lights()
 
         left = -side / 2 - sphere_radius
-        right = block_center_x + block_size[0] / 2
+        right = cube_center_x + pyramid_size[0] / 2
         stack_bottom = -block_size[2] / 2
         stack_top = (floor_count - 1) * block_size[2] + block_size[2] / 2
         self.look_at = ((left + right) / 2, 0.0, (stack_bottom + stack_top) / 2)
         self.heading = 30.0
         self.pitch = 20.0
-        self.distance = 38.0
+        self.distance = 44.0
         self.dragging = False
         self.last_x = 0.0
         self.last_y = 0.0
@@ -360,6 +436,35 @@ class CityApp(ShowBase):
                 panel.setPos(face_x, y + offset, row_z)
                 panel.setMaterial(square_material(_square_lightness(level)), 1)
                 level += 1
+
+    def _add_cube_squares(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        size: tuple[float, float, float],
+    ) -> None:
+        """One centered 0.75×0.75 square on each vertical face except the front (−Y)."""
+        sx, sy, sz = size
+        square = 0.75
+        depth = 0.04
+        # Right, left, then back. The front face, toward the camera, has no square.
+        faces = (
+            (x + sx / 2 + depth / 2, y, z, depth, square, 0),
+            (x - sx / 2 - depth / 2, y, z, depth, square, 1),
+            (x, y + sy / 2 + depth / 2, z, square, depth, 2),
+        )
+        for px, py, pz, panel_x, panel_y, level in faces:
+            panel = self.city.attachNewNode(make_box(panel_x, panel_y, square))
+            panel.setPos(px, py, pz)
+            panel.setMaterial(square_material(_square_lightness(level)), 1)
+
+        # Lighter than the cube so the rectangle reads on the bare front face.
+        rectangle_height = 0.75
+        rectangle_bottom = z - sz / 2
+        rectangle = self.city.attachNewNode(make_box(0.5, depth, rectangle_height))
+        rectangle.setPos(x, y - sy / 2 - depth / 2, rectangle_bottom + rectangle_height / 2)
+        rectangle.setMaterial(brown_material(), 1)
 
     def _add_lights(self) -> None:
         ambient = AmbientLight("ambient")
