@@ -1,7 +1,13 @@
 """Software-city scene. Three identical lit spheres form an equilateral triangle,
-joined center to center by thin cylinders, with a five-floor stack of
-blocks to their right and a row of yellow squares on each vertical face.
-A brown cube stands five units beyond the stack, capped by a brown pyramid."""
+joined center to center by thin cylinders. Five identical five-floor stacks
+stand along a grey east-west road, one unit apart, with yellow squares on
+each floor and yellow dashes along the road. The same road is repeated on the
+other three sides of the ring, with an intersection at each corner. Four more stacks stand north of
+the leftmost tower, one unit apart, with their fronts turned 90 degrees
+clockwise, and four stand north of the rightmost tower with their fronts
+turned 90 degrees counterclockwise. Three stacks fill the gap between those
+two northern towers, turned 180 degrees so their fronts face north. The sphere
+group and a brown cube capped by a pyramid stand 30 units to the right of the road."""
 
 import argparse
 import math
@@ -245,6 +251,16 @@ def block_material() -> Material:
     return material
 
 
+def road_material() -> Material:
+    """Darker grey than the tower so the slab reads as a road."""
+    material = Material()
+    material.setAmbient((0.22, 0.22, 0.23, 1))
+    material.setDiffuse((0.42, 0.42, 0.43, 1))
+    material.setSpecular((0.12, 0.12, 0.12, 1))
+    material.setShininess(4)
+    return material
+
+
 # One yellow hue. Brightness scales this colour, so every square stays the same shade.
 _YELLOW = (1.0, 0.82 / 0.95, 0.12 / 0.95)
 _YELLOW_LEVELS = (0.50, 0.62, 0.74, 0.86, 1.0)
@@ -288,8 +304,8 @@ class CityApp(ShowBase):
         self.setBackgroundColor(0.08, 0.09, 0.12, 1)
 
         self.city = self.render.attachNewNode("city")
-        # Same center spacing as the old row, laid out as an equilateral triangle
-        # in the XY plane and centered on the origin.
+        # Equilateral triangle in the XY plane. The tower stays put; the spheres
+        # and the house are shifted together once the road's right edge is known.
         side = 2.5
         height = side * math.sqrt(3) / 2
         positions = (
@@ -299,35 +315,143 @@ class CityApp(ShowBase):
         )
         material = sphere_material()
         sphere_radius = 1.0
-        for x, y in positions:
-            self._add_sphere(x, y, material)
-        # Each sphere joins its two neighbours, so the three links close the triangle.
-        for index, (x0, y0) in enumerate(positions):
-            x1, y1 = positions[(index + 1) % len(positions)]
-            self._add_link(x0, y0, x1, y1, material)
-
         block_size = (5.0, 5.0, 2.0)
         block_gap = 5.0
         floor_count = 5
         right_surface = side / 2 + sphere_radius
         block_center_x = right_surface + block_gap + block_size[0] / 2
+        # Left edge stays with the first tower. The right edge meets the last tower.
+        tower_count = 5
+        tower_gap = 1.0
+        road_left = block_center_x - 25.0 / 2
+        road_right = road_left + tower_count * block_size[0] + (tower_count - 1) * tower_gap
+        road_length = road_right - road_left
+        road_center_x = (road_left + road_right) / 2
+        circle_left = -side / 2 - sphere_radius
+        group_shift = road_right + 30.0 - circle_left
+
+        for x, y in positions:
+            self._add_sphere(x + group_shift, y, material)
+        # Each sphere joins its two neighbours, so the three links close the triangle.
+        for index, (x0, y0) in enumerate(positions):
+            x1, y1 = positions[(index + 1) % len(positions)]
+            self._add_link(x0 + group_shift, y0, x1 + group_shift, y1, material)
+        # East-west slab. Each tower's front face meets the near edge, and the slab
+        # runs from the first tower's left edge to the last tower's right edge.
+        road_size = (road_length, 5.0, 0.1)
+        road_y = -(block_size[1] / 2 + 1.0 + road_size[1] / 2)
+        road_z = -block_size[2] / 2 + road_size[2] / 2
+        tower_y = road_y + road_size[1] / 2 + block_size[1] / 2
+
         grey = block_material()
-        for floor in range(floor_count):
-            floor_z = floor * block_size[2]
-            self._add_block(
-                block_center_x,
-                0.0,
-                floor_z,
-                block_size,
-                grey,
-                top=floor == floor_count - 1,
-                bottom=floor == 0,
-            )
-            self._add_face_squares(block_center_x, 0.0, floor_z, block_size, floor * 12)
+        for tower in range(tower_count):
+            tower_x = road_left + block_size[0] / 2 + tower * (block_size[0] + tower_gap)
+            for floor in range(floor_count):
+                floor_z = floor * block_size[2]
+                self._add_block(
+                    tower_x,
+                    tower_y,
+                    floor_z,
+                    block_size,
+                    grey,
+                    top=floor == floor_count - 1,
+                    bottom=floor == 0,
+                )
+                self._add_face_squares(tower_x, tower_y, floor_z, block_size, floor * 12)
+
+        # North of the leftmost tower. Positive heading turns the front (+X);
+        # -90 degrees sends the front face from -Y to -X, 90 degrees clockwise.
+        leftmost_x = road_left + block_size[0] / 2
+        for index in range(4):
+            north_y = tower_y + (index + 1) * (block_size[1] + tower_gap)
+            pivot = self.city.attachNewNode("north-tower")
+            pivot.setPos(leftmost_x, north_y, 0)
+            pivot.setH(-90)
+            for floor in range(floor_count):
+                floor_z = floor * block_size[2]
+                self._add_block(
+                    0.0,
+                    0.0,
+                    floor_z,
+                    block_size,
+                    grey,
+                    top=floor == floor_count - 1,
+                    bottom=floor == 0,
+                    parent=pivot,
+                )
+                self._add_face_squares(0.0, 0.0, floor_z, block_size, floor * 12, parent=pivot)
+
+        # North of the rightmost tower. +90 degrees sends the front from -Y to +X,
+        # 90 degrees counterclockwise.
+        rightmost_x = road_left + block_size[0] / 2 + (tower_count - 1) * (block_size[0] + tower_gap)
+        for index in range(4):
+            north_y = tower_y + (index + 1) * (block_size[1] + tower_gap)
+            pivot = self.city.attachNewNode("north-tower")
+            pivot.setPos(rightmost_x, north_y, 0)
+            pivot.setH(90)
+            for floor in range(floor_count):
+                floor_z = floor * block_size[2]
+                self._add_block(
+                    0.0,
+                    0.0,
+                    floor_z,
+                    block_size,
+                    grey,
+                    top=floor == floor_count - 1,
+                    bottom=floor == 0,
+                    parent=pivot,
+                )
+                self._add_face_squares(0.0, 0.0, floor_z, block_size, floor * 12, parent=pivot)
+
+        # Between the northern ends of the two side columns. A half turn sends
+        # the front face from -Y to +Y.
+        top_y = tower_y + 4 * (block_size[1] + tower_gap)
+        stride = block_size[0] + tower_gap
+        for index in range(1, tower_count - 1):
+            pivot = self.city.attachNewNode("north-tower")
+            pivot.setPos(leftmost_x + index * stride, top_y, 0)
+            pivot.setH(180)
+            for floor in range(floor_count):
+                floor_z = floor * block_size[2]
+                self._add_block(
+                    0.0,
+                    0.0,
+                    floor_z,
+                    block_size,
+                    grey,
+                    top=floor == floor_count - 1,
+                    bottom=floor == 0,
+                    parent=pivot,
+                )
+                self._add_face_squares(0.0, 0.0, floor_z, block_size, floor * 12, parent=pivot)
+
+        # One road in front of each side. The near edge meets that side's outer face.
+        road_width = road_size[1]
+        south = tower_y - block_size[1] / 2
+        north = top_y + block_size[1] / 2
+        west = leftmost_x - block_size[0] / 2
+        east = rightmost_x + block_size[0] / 2
+        mid_x = (west + east) / 2
+        mid_y = (south + north) / 2
+        self._add_road(mid_x, south - road_width / 2, road_z, east - west, along_x=True)
+        self._add_road(mid_x, north + road_width / 2, road_z, east - west, along_x=True)
+        self._add_road(west - road_width / 2, mid_y, road_z, north - south, along_x=False)
+        self._add_road(east + road_width / 2, mid_y, road_z, north - south, along_x=False)
+        # The straight sections stop at the building faces. Each corner square
+        # joins the two roads that meet there.
+        for x_edge, x_sign in ((west, -1.0), (east, 1.0)):
+            for y_edge, y_sign in ((south, -1.0), (north, 1.0)):
+                self._add_block(
+                    x_edge + x_sign * road_width / 2,
+                    y_edge + y_sign * road_width / 2,
+                    road_z,
+                    (road_width, road_width, road_size[2]),
+                    road_material(),
+                )
 
         cube_size = (2.0, 2.0, 2.0)
         stack_right = block_center_x + block_size[0] / 2
-        cube_center_x = stack_right + 5.0 + cube_size[0] / 2
+        cube_center_x = stack_right + 5.0 + cube_size[0] / 2 + group_shift
         self._add_block(cube_center_x, 0.0, 0.0, cube_size, brown_material(0.6), top=False)
         self._add_cube_squares(cube_center_x, 0.0, 0.0, cube_size)
         pyramid_size = (3.0, 3.0, 1.5)
@@ -336,14 +460,16 @@ class CityApp(ShowBase):
         pyramid.setMaterial(brown_material(0.6), 1)
         self._add_lights()
 
-        left = -side / 2 - sphere_radius
+        left = min(road_left - road_size[1], circle_left + group_shift)
         right = cube_center_x + pyramid_size[0] / 2
         stack_bottom = -block_size[2] / 2
         stack_top = (floor_count - 1) * block_size[2] + block_size[2] / 2
         self.look_at = ((left + right) / 2, 0.0, (stack_bottom + stack_top) / 2)
         self.heading = 30.0
         self.pitch = 20.0
-        self.distance = 44.0
+        # Square window, 40 degree FOV. Pull back so the widened scene still fits.
+        span = right - left
+        self.distance = (span / 2) / math.tan(math.radians(20.0)) / math.cos(math.radians(self.heading)) * 1.25
         self.dragging = False
         self.last_x = 0.0
         self.last_y = 0.0
@@ -386,8 +512,11 @@ class CityApp(ShowBase):
         material: Material,
         top: bool = True,
         bottom: bool = True,
+        parent=None,
     ) -> None:
-        block = self.city.attachNewNode(make_box(*size, top=top, bottom=bottom))
+        block = (self.city if parent is None else parent).attachNewNode(
+            make_box(*size, top=top, bottom=bottom)
+        )
         block.setPos(x, y, z)
         block.setMaterial(material, 1)
 
@@ -398,8 +527,10 @@ class CityApp(ShowBase):
         z: float,
         size: tuple[float, float, float],
         level_start: int = 0,
+        parent=None,
     ) -> None:
         """Three 1×1 squares on every vertical face, inset 0.5 from the edges."""
+        root = self.city if parent is None else parent
         sx, sy, sz = size
         square = 1.0
         margin = 0.5
@@ -423,19 +554,55 @@ class CityApp(ShowBase):
                 if z == 0 and sign < 0 and offset == 0:
                     door_height = 1.25
                     door_bottom = z - sz / 2
-                    door = self.city.attachNewNode(make_box(1.0, depth, door_height))
+                    door = root.attachNewNode(make_box(1.0, depth, door_height))
                     door.setPos(x + offset, face_y, door_bottom + door_height / 2)
                     door.setMaterial(brown_material(), 1)
                     continue
-                panel = self.city.attachNewNode(make_box(square, depth, square))
+                panel = root.attachNewNode(make_box(square, depth, square))
                 panel.setPos(x + offset, face_y, row_z)
                 panel.setMaterial(square_material(tone), 1)
             face_x = x + sign * (sx / 2 + depth / 2)
             for offset in along_y:
-                panel = self.city.attachNewNode(make_box(depth, square, square))
+                panel = root.attachNewNode(make_box(depth, square, square))
                 panel.setPos(face_x, y + offset, row_z)
                 panel.setMaterial(square_material(_square_lightness(level)), 1)
                 level += 1
+
+    def _add_road(self, x: float, y: float, z: float, length: float, along_x: bool) -> None:
+        """Grey slab with center dashes. ``along_x`` runs the length east-west."""
+        width = 5.0
+        thickness = 0.1
+        size = (length, width, thickness) if along_x else (width, length, thickness)
+        self._add_block(x, y, z, size, road_material())
+        self._add_road_marks(x, y, z + thickness / 2, length, along_x)
+
+    def _add_road_marks(
+        self,
+        x: float,
+        y: float,
+        road_top: float,
+        road_length: float,
+        along_x: bool = True,
+    ) -> None:
+        """Yellow dashes on the road centerline, one unit apart edge to edge."""
+        length = 2.0
+        width = 0.5
+        gap = 1.0
+        thickness = 0.04
+        # As many 2-unit dashes as fit with a 1-unit gap, centered on the road.
+        count = int((road_length + gap) / (length + gap))
+        span = count * length + (count - 1) * gap
+        z = road_top + thickness / 2
+        yellow = square_material(1.0)
+        for index in range(count):
+            offset = -span / 2 + length / 2 + index * (length + gap)
+            if along_x:
+                mark = self.city.attachNewNode(make_box(length, width, thickness))
+                mark.setPos(x + offset, y, z)
+            else:
+                mark = self.city.attachNewNode(make_box(width, length, thickness))
+                mark.setPos(x, y + offset, z)
+            mark.setMaterial(yellow, 1)
 
     def _add_cube_squares(
         self,
