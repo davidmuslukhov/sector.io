@@ -56,6 +56,7 @@ from panda3d.core import (  # noqa: E402
     GeomVertexFormat,
     GeomVertexWriter,
     Material,
+    NodePath,
 )
 from direct.showbase.ShowBase import ShowBase  # noqa: E402
 
@@ -179,6 +180,27 @@ def make_box(
     return node
 
 
+# Shared box Geoms. Keyed by size and which caps are present.
+_BOX_TEMPLATES: dict[tuple[float, float, float, bool, bool], NodePath] = {}
+
+
+def _box_instance(
+    parent: NodePath,
+    sx: float,
+    sy: float,
+    sz: float,
+    top: bool = True,
+    bottom: bool = True,
+) -> NodePath:
+    """Copy a cached box Geom into ``parent`` instead of rebuilding vertices."""
+    key = (sx, sy, sz, top, bottom)
+    template = _BOX_TEMPLATES.get(key)
+    if template is None:
+        template = NodePath(make_box(sx, sy, sz, top=top, bottom=bottom))
+        _BOX_TEMPLATES[key] = template
+    return template.copyTo(parent)
+
+
 def make_pyramid(sx: float, sy: float, height: float) -> GeomNode:
     """Square pyramid. The base sits on z = 0, centred on the origin, with the apex above it."""
     hx, hy = sx / 2.0, sy / 2.0
@@ -240,13 +262,23 @@ def _face_normal(
     return (nx / length, ny / length, nz / length)
 
 
+_SPHERE_MATERIAL: Material | None = None
+_BLOCK_MATERIALS: dict[float, Material] = {}
+_ROAD_MATERIAL: Material | None = None
+_SQUARE_MATERIALS: dict[float, Material] = {}
+_BROWN_MATERIALS: dict[float, Material] = {}
+
+
 def sphere_material() -> Material:
-    material = Material()
-    material.setAmbient((0.15, 0.28, 0.4, 1))
-    material.setDiffuse((0.25, 0.55, 0.85, 1))
-    material.setSpecular((0.45, 0.45, 0.5, 1))
-    material.setShininess(32)
-    return material
+    global _SPHERE_MATERIAL
+    if _SPHERE_MATERIAL is None:
+        material = Material()
+        material.setAmbient((0.15, 0.28, 0.4, 1))
+        material.setDiffuse((0.25, 0.55, 0.85, 1))
+        material.setSpecular((0.45, 0.45, 0.5, 1))
+        material.setShininess(32)
+        _SPHERE_MATERIAL = material
+    return _SPHERE_MATERIAL
 
 
 # One cool grey. ``1`` is the original tower; the band is wide enough to tell
@@ -259,6 +291,9 @@ _BLOCK_SHADES = (
 
 def block_material(lightness: float = 1.0) -> Material:
     """Cool grey. Nearby ``lightness`` values stay the same colour at a different shade."""
+    cached = _BLOCK_MATERIALS.get(lightness)
+    if cached is not None:
+        return cached
     ambient = tuple(channel * lightness for channel in (0.45, 0.45, 0.47))
     diffuse = tuple(channel * lightness for channel in (0.78, 0.78, 0.80))
     specular = tuple(channel * lightness for channel in (0.55, 0.55, 0.55))
@@ -267,17 +302,21 @@ def block_material(lightness: float = 1.0) -> Material:
     material.setDiffuse((*diffuse, 1))
     material.setSpecular((*specular, 1))
     material.setShininess(32)
+    _BLOCK_MATERIALS[lightness] = material
     return material
 
 
 def road_material() -> Material:
     """Darker grey than the tower so the slab reads as a road."""
-    material = Material()
-    material.setAmbient((0.22, 0.22, 0.23, 1))
-    material.setDiffuse((0.42, 0.42, 0.43, 1))
-    material.setSpecular((0.12, 0.12, 0.12, 1))
-    material.setShininess(4)
-    return material
+    global _ROAD_MATERIAL
+    if _ROAD_MATERIAL is None:
+        material = Material()
+        material.setAmbient((0.22, 0.22, 0.23, 1))
+        material.setDiffuse((0.42, 0.42, 0.43, 1))
+        material.setSpecular((0.12, 0.12, 0.12, 1))
+        material.setShininess(4)
+        _ROAD_MATERIAL = material
+    return _ROAD_MATERIAL
 
 
 # One yellow hue. Brightness scales this colour, so every square stays the same shade.
@@ -287,6 +326,9 @@ _YELLOW_LEVELS = (0.50, 0.62, 0.74, 0.86, 1.0)
 
 def square_material(lightness: float) -> Material:
     """Yellow of a single hue. ``lightness`` 0.95 matches the original square."""
+    cached = _SQUARE_MATERIALS.get(lightness)
+    if cached is not None:
+        return cached
     diffuse = tuple(channel * lightness for channel in _YELLOW)
     ambient = tuple(channel * 0.47 for channel in diffuse)
     specular = tuple(channel * 0.45 for channel in diffuse)
@@ -295,6 +337,7 @@ def square_material(lightness: float) -> Material:
     material.setDiffuse((*diffuse, 1))
     material.setSpecular((*specular, 1))
     material.setShininess(24)
+    _SQUARE_MATERIALS[lightness] = material
     return material
 
 
@@ -304,6 +347,9 @@ def _square_lightness(index: int) -> float:
 
 def brown_material(lightness: float = 1.0) -> Material:
     """Same brown hue. ``lightness`` 1 matches the door; lower values are darker."""
+    cached = _BROWN_MATERIALS.get(lightness)
+    if cached is not None:
+        return cached
     ambient = tuple(channel * lightness for channel in (0.28, 0.16, 0.07))
     diffuse = tuple(channel * lightness for channel in (0.50, 0.30, 0.13))
     specular = tuple(channel * lightness for channel in (0.25, 0.18, 0.1))
@@ -312,6 +358,7 @@ def brown_material(lightness: float = 1.0) -> Material:
     material.setDiffuse((*diffuse, 1))
     material.setSpecular((*specular, 1))
     material.setShininess(16)
+    _BROWN_MATERIALS[lightness] = material
     return material
 
 
@@ -387,6 +434,8 @@ class CityApp(ShowBase):
         pyramid.setPos(cube_center_x, 0.0, cube_size[2] / 2)
         pyramid.setMaterial(brown_material(0.6), 1)
         self._add_lights()
+        # Merge thousands of tiny boxes into few Geoms so orbit stays smooth.
+        self.city.flattenStrong()
 
         # The ring is square, so the north-south footprint matches road_length.
         south_face = -(block_size[1] / 2 + 1.0)
@@ -596,9 +645,8 @@ class CityApp(ShowBase):
         bottom: bool = True,
         parent=None,
     ) -> None:
-        block = (self.city if parent is None else parent).attachNewNode(
-            make_box(*size, top=top, bottom=bottom)
-        )
+        root = self.city if parent is None else parent
+        block = _box_instance(root, *size, top=top, bottom=bottom)
         block.setPos(x, y, z)
         block.setMaterial(material, 1)
 
@@ -636,9 +684,9 @@ class CityApp(ShowBase):
             door_height = 1.25
             door_bottom = z - sz / 2
             if width_along_x:
-                panel = root.attachNewNode(make_box(door_width, depth, door_height))
+                panel = _box_instance(root, door_width, depth, door_height)
             else:
-                panel = root.attachNewNode(make_box(depth, door_width, door_height))
+                panel = _box_instance(root, depth, door_width, door_height)
             panel.setPos(px, py, door_bottom + door_height / 2)
             panel.setMaterial(brown_material(), 1)
 
@@ -653,7 +701,7 @@ class CityApp(ShowBase):
                 if z == 0 and offset == 0 and face in door_faces:
                     add_door(x + offset, face_y, width_along_x=True)
                     continue
-                panel = root.attachNewNode(make_box(square, depth, square))
+                panel = _box_instance(root, square, depth, square)
                 panel.setPos(x + offset, face_y, row_z)
                 panel.setMaterial(square_material(tone), 1)
             face = "+x" if sign > 0 else "-x"
@@ -664,7 +712,7 @@ class CityApp(ShowBase):
                 if z == 0 and offset == 0 and face in door_faces:
                     add_door(face_x, y + offset, width_along_x=False)
                     continue
-                panel = root.attachNewNode(make_box(depth, square, square))
+                panel = _box_instance(root, depth, square, square)
                 panel.setPos(face_x, y + offset, row_z)
                 panel.setMaterial(square_material(tone), 1)
 
@@ -697,10 +745,10 @@ class CityApp(ShowBase):
         for index in range(count):
             offset = -span / 2 + length / 2 + index * (length + gap)
             if along_x:
-                mark = self.city.attachNewNode(make_box(length, width, thickness))
+                mark = _box_instance(self.city, length, width, thickness)
                 mark.setPos(x + offset, y, z)
             else:
-                mark = self.city.attachNewNode(make_box(width, length, thickness))
+                mark = _box_instance(self.city, width, length, thickness)
                 mark.setPos(x, y + offset, z)
             mark.setMaterial(yellow, 1)
 
@@ -722,14 +770,14 @@ class CityApp(ShowBase):
             (x, y + sy / 2 + depth / 2, z, square, depth, 2),
         )
         for px, py, pz, panel_x, panel_y, level in faces:
-            panel = self.city.attachNewNode(make_box(panel_x, panel_y, square))
+            panel = _box_instance(self.city, panel_x, panel_y, square)
             panel.setPos(px, py, pz)
             panel.setMaterial(square_material(_square_lightness(level)), 1)
 
         # Lighter than the cube so the rectangle reads on the bare front face.
         rectangle_height = 0.75
         rectangle_bottom = z - sz / 2
-        rectangle = self.city.attachNewNode(make_box(0.5, depth, rectangle_height))
+        rectangle = _box_instance(self.city, 0.5, depth, rectangle_height)
         rectangle.setPos(x, y - sy / 2 - depth / 2, rectangle_bottom + rectangle_height / 2)
         rectangle.setMaterial(brown_material(), 1)
 
