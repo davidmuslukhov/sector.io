@@ -13,8 +13,9 @@ two northern towers, turned 180 degrees so their fronts face north. Four blocks 
 with two on each side. A block leaves out the road on any side that faces
 another block, so neighbours share one road: eastern towers meet the western
 edge of the road to their east, and southern towers meet the northern edge of
-the road to their south. The sphere group and a brown cube capped by a pyramid
-stand 30 units to the right of the road."""
+the road to their south. Ten units south of that square, a fifth ring stands
+two towers deep and five wide, with its own full road ring. The sphere group
+and a brown cube capped by a pyramid stand 30 units to the right of the road."""
 
 import argparse
 import math
@@ -57,7 +58,9 @@ from panda3d.core import (  # noqa: E402
     GeomVertexWriter,
     Material,
     NodePath,
+    TextNode,
 )
+from direct.gui.OnscreenText import OnscreenText  # noqa: E402
 from direct.showbase.ShowBase import ShowBase  # noqa: E402
 
 
@@ -388,7 +391,16 @@ class CityApp(ShowBase):
         west_floors = (8, 16, 11, 19)
         east_floors = (7, 15, 10, 17)
         north_floors = (13, 18, 11)
-        tallest = max(*south_floors, *west_floors, *east_floors, *north_floors)
+        south_ring_south = (12, 18, 9, 20, 14)
+        south_ring_north = (16, 8, 19, 11, 15)
+        tallest = max(
+            *south_floors,
+            *west_floors,
+            *east_floors,
+            *north_floors,
+            *south_ring_south,
+            *south_ring_north,
+        )
         right_surface = side / 2 + sphere_radius
         block_center_x = right_surface + block_gap + block_size[0] / 2
         # Left edge stays with the first tower. The right edge meets the last tower.
@@ -424,6 +436,29 @@ class CityApp(ShowBase):
                     southern_road=row == 0,
                 )
 
+        # Two by five, ten units south of the 2x2. Aligned with the eastern
+        # column; full road ring, no shared edges with the blocks above.
+        south_face = -(block_size[1] / 2 + 1.0)
+        city_south_2x2 = south_face - road_width
+        # North road outer edge of a depth-2 ring sits north_step spacings
+        # above the south tower centre, plus half a tower and the road width.
+        tower_y0 = south_face + block_size[1] / 2
+        north_step = 1
+        spacing_y = block_size[1] + tower_gap
+        south_ring_y = (
+            city_south_2x2
+            - 10.0
+            - (tower_y0 + north_step * spacing_y + block_size[1] / 2 + road_width)
+        )
+        self._add_city_block(
+            road_left,
+            block_size,
+            (south_ring_south, (), (), south_ring_north),
+            y_offset=south_ring_y,
+            eastern_road=True,
+            southern_road=True,
+        )
+
         cube_size = (2.0, 2.0, 2.0)
         stack_right = block_center_x + block_size[0] / 2
         cube_center_x = stack_right + 5.0 + cube_size[0] / 2 + group_shift
@@ -437,10 +472,15 @@ class CityApp(ShowBase):
         # Merge thousands of tiny boxes into few Geoms so orbit stays smooth.
         self.city.flattenStrong()
 
-        # The ring is square, so the north-south footprint matches road_length.
-        south_face = -(block_size[1] / 2 + 1.0)
-        city_south = south_face - road_width
+        # 2x2 north edge, plus the southern 2x5 ring below the ten-unit gap.
         city_north = south_face + 2 * road_length + 2 * road_width
+        # South row of the 2x5, its southern road, and the road thickness.
+        city_south = (
+            tower_y0
+            + south_ring_y
+            - block_size[1] / 2
+            - road_width
+        )
         left = min(road_left - stride - road_width, circle_left + group_shift)
         right = cube_center_x + pyramid_size[0] / 2
         stack_bottom = -block_size[2] / 2
@@ -468,6 +508,21 @@ class CityApp(ShowBase):
         self.accept("mouse1", self._start_drag)
         self.accept("mouse1-up", self._end_drag)
         self.taskMgr.add(self._drag_task, "orbit-drag")
+        if not self.screenshot_path:
+            self.fps_text = OnscreenText(
+                text="",
+                parent=self.a2dTopRight,
+                pos=(-0.04, -0.08),
+                scale=0.09,
+                fg=(1, 1, 1, 1),
+                align=TextNode.ARight,
+                mayChange=True,
+            )
+            self.taskMgr.add(self._fps_task, "fps-counter")
+
+    def _fps_task(self, task):
+        self.fps_text.setText(f"FPS: {self.clock.getAverageFrameRate():.0f}")
+        return task.cont
 
     def _add_city_block(
         self,
@@ -540,11 +595,32 @@ class CityApp(ShowBase):
                 doors=doors,
             )
 
-        # Between the northern ends of the two side columns. A half turn sends
-        # the front face from -Y to +Y.
-        top_y = tower_y + 4 * (block_size[1] + tower_gap)
+        # North row. Side columns put the corners; an empty west/east column
+        # means this row is the full width, including the NW and NE corners.
+        # Depth matches the side columns, or one step north of south when none.
+        spacing_y = block_size[1] + tower_gap
+        if west_floors:
+            north_step = len(west_floors)
+        elif north_floors:
+            north_step = 1
+        else:
+            north_step = 0
+        top_y = tower_y + north_step * spacing_y
         stride = block_size[0] + tower_gap
-        for index, count in enumerate(north_floors, start=1):
+        if west_floors or east_floors:
+            north_indices = range(1, len(north_floors) + 1)
+            north_items = zip(north_indices, north_floors)
+        else:
+            north_items = enumerate(north_floors)
+        for index, count in north_items:
+            doors = ("-y",)
+            if not (west_floors or east_floors):
+                if index == 0:
+                    # Heading 180: local +X faces west.
+                    doors = ("-y", "+x")
+                elif index == len(north_floors) - 1:
+                    # Heading 180: local -X faces east.
+                    doors = ("-y", "-x")
             self._add_stack(
                 leftmost_x + index * stride,
                 top_y,
@@ -552,6 +628,7 @@ class CityApp(ShowBase):
                 block_size,
                 block_material(next(shades)),
                 heading=180,
+                doors=doors,
             )
 
         # One road in front of each side. The near edge meets that side's outer face.
