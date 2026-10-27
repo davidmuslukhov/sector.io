@@ -464,14 +464,19 @@ class CityApp(ShowBase):
         fit_x = ((right - left) / 2) / half_fov / math.cos(math.radians(self.heading))
         fit_y = ((city_north - city_south) / 2) / half_fov / math.cos(math.radians(self.pitch))
         self.distance = max(fit_x, fit_y) * 1.25
+        self.min_distance = 2.0
+        # Allow zooming out past the initial framing so the full scene stays reachable.
+        self.max_distance = max(80.0, self.distance * 2.0)
         self.dragging = False
         self.last_x = 0.0
         self.last_y = 0.0
         self._update_camera()
 
         self.accept("escape", sys.exit)
-        self.accept("wheel_up", self._zoom, [-0.4])
-        self.accept("wheel_down", self._zoom, [0.4])
+        # Multiplicative zoom: each notch scales distance so zoom-in and zoom-out
+        # feel the same at every range (additive steps crawl when zoomed in).
+        self.accept("wheel_up", self._zoom, [0.94])
+        self.accept("wheel_down", self._zoom, [1.0 / 0.94])
         self.accept("mouse1", self._start_drag)
         self.accept("mouse1-up", self._end_drag)
         self.taskMgr.add(self._drag_task, "orbit-drag")
@@ -850,8 +855,11 @@ class CityApp(ShowBase):
         )
         self.camera.lookAt(look_x, look_y, look_z)
 
-    def _zoom(self, delta: float) -> None:
-        self.distance = min(80.0, max(2.0, self.distance + delta))
+    def _zoom(self, factor: float) -> None:
+        self.distance = min(
+            self.max_distance,
+            max(self.min_distance, self.distance * factor),
+        )
         self._update_camera()
 
     def _start_drag(self) -> None:
