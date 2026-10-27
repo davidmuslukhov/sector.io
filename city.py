@@ -1,19 +1,18 @@
 """Software-city scene. Three identical lit spheres form an equilateral triangle,
-joined center to center by thin cylinders. Four rings, each two towers deep and
-five wide, form a square with two on each side. Each ring has stacks of different
-heights, from eight to twenty floors, each a slightly different shade of the same
-grey, one unit apart, with one row of yellow squares on each floor and yellow
-dashes along the road. Each stack has a brown door on every face that meets a
-road, so a corner stack has two. A block leaves out the road on any side that
-faces another block, so neighbours share one road: eastern towers meet the
-western edge of the road to their east, and southern towers meet the northern
-edge of the road to their south. Ten units south of that square, a fifth ring
-stands two towers deep and five wide, with its own full road ring. The sphere
-group and a brown cube capped by a pyramid stand 30 units to the right of the
-road."""
+joined center to center by thin cylinders. Sixteen rings, each two towers deep
+and five wide, form a square with four on each side. Each ring has stacks of
+unique random heights, from ten to twenty-five floors, each a slightly different
+shade of the same grey, one unit apart, with one row of yellow squares on each
+floor and yellow dashes along the road. Each stack has a brown door on every face
+that meets a road, so a corner stack has two. A block leaves out the road on any
+side that faces another block, so neighbours share one road: eastern towers meet
+the western edge of the road to their east, and southern towers meet the northern
+edge of the road to their south. The sphere group and a brown cube capped by a
+pyramid stand 30 units to the right of the road."""
 
 import argparse
 import math
+import random
 import sys
 
 from panda3d.core import loadPrcFileData
@@ -381,18 +380,11 @@ class CityApp(ShowBase):
         sphere_radius = 1.0
         block_size = (5.0, 5.0, 2.0)
         block_gap = 5.0
-        # Each tower is a different height. Every floor is one block and one window row.
         # Depth-2 rings: five south, empty west/east, five north (including corners).
-        south_floors = (12, 18, 9, 20, 14)
-        north_floors = (8, 16, 11, 19, 13)
-        south_ring_south = (12, 18, 9, 20, 14)
-        south_ring_north = (16, 8, 19, 11, 15)
-        tallest = max(
-            *south_floors,
-            *north_floors,
-            *south_ring_south,
-            *south_ring_north,
-        )
+        # Every floor is one block and one window row. Heights are unique within
+        # each ring; only sixteen values exist between 10 and 25 inclusive.
+        floor_min, floor_max = 10, 25
+        tallest = floor_max
         right_surface = side / 2 + sphere_radius
         block_center_x = right_surface + block_gap + block_size[0] / 2
         # Left edge stays with the first tower. The right edge meets the last tower.
@@ -411,47 +403,30 @@ class CityApp(ShowBase):
         for index, (x0, y0) in enumerate(positions):
             x1, y1 = positions[(index + 1) % len(positions)]
             self._add_link(x0 + group_shift, y0, x1 + group_shift, y1, material)
-        # Two by two of 2x5 rings. The west column leaves out its eastern road
-        # and the north row leaves out its southern road, so each pair shares
-        # the road already drawn by the block to the east or the south.
+        # Four by four of 2x5 rings. Columns west of the east edge leave out
+        # their eastern road and rows north of the south edge leave out their
+        # southern road, so neighbours share the road already drawn by the
+        # block to the east or the south. The eastern column stays on road_left.
         road_width = 5.0
         road_depth = 2 * block_size[1] + tower_gap
         stride_x = road_width + road_length
         stride_y = road_width + road_depth
-        block_floors = (south_floors, (), (), north_floors)
-        for row in (0, 1):
-            for col in (0, 1):
+        grid = 4
+        towers_per_ring = 10
+        for row in range(grid):
+            for col in range(grid):
+                heights = random.sample(range(floor_min, floor_max + 1), towers_per_ring)
+                block_floors = (tuple(heights[:5]), (), (), tuple(heights[5:]))
                 self._add_city_block(
-                    road_left - (1 - col) * stride_x,
+                    road_left - (grid - 1 - col) * stride_x,
                     block_size,
                     block_floors,
                     y_offset=row * stride_y,
-                    eastern_road=col == 1,
+                    eastern_road=col == grid - 1,
                     southern_road=row == 0,
                 )
 
-        # Two by five, ten units south of the 2x2. Aligned with the eastern
-        # column; full road ring, no shared edges with the blocks above.
         south_face = -(block_size[1] / 2 + 1.0)
-        city_south_2x2 = south_face - road_width
-        # North road outer edge of a depth-2 ring sits north_step spacings
-        # above the south tower centre, plus half a tower and the road width.
-        tower_y0 = south_face + block_size[1] / 2
-        north_step = 1
-        spacing_y = block_size[1] + tower_gap
-        south_ring_y = (
-            city_south_2x2
-            - 10.0
-            - (tower_y0 + north_step * spacing_y + block_size[1] / 2 + road_width)
-        )
-        self._add_city_block(
-            road_left,
-            block_size,
-            (south_ring_south, (), (), south_ring_north),
-            y_offset=south_ring_y,
-            eastern_road=True,
-            southern_road=True,
-        )
 
         cube_size = (2.0, 2.0, 2.0)
         stack_right = block_center_x + block_size[0] / 2
@@ -466,16 +441,14 @@ class CityApp(ShowBase):
         # Merge thousands of tiny boxes into few Geoms so orbit stays smooth.
         self.city.flattenStrong()
 
-        # 2x2 north edge, plus the southern 2x5 ring below the ten-unit gap.
-        city_north = south_face + 2 * road_depth + 2 * road_width
-        # South row of the 2x5, its southern road, and the road thickness.
-        city_south = (
-            tower_y0
-            + south_ring_y
-            - block_size[1] / 2
-            - road_width
+        # Outer edges of the 4x4: southern road of the south row, northern road
+        # of the north row, and the western road of the west column.
+        city_north = south_face + grid * road_depth + grid * road_width
+        city_south = south_face - road_width
+        left = min(
+            road_left - (grid - 1) * stride_x - road_width,
+            circle_left + group_shift,
         )
-        left = min(road_left - stride_x - road_width, circle_left + group_shift)
         right = cube_center_x + pyramid_size[0] / 2
         stack_bottom = -block_size[2] / 2
         stack_top = (tallest - 1) * block_size[2] + block_size[2] / 2
