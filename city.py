@@ -1,21 +1,16 @@
 """Software-city scene. Three identical lit spheres form an equilateral triangle,
-joined center to center by thin cylinders. Five stacks of different heights,
-from seven to twenty floors, each a slightly different shade of the same grey,
-stand along a grey east-west road, one unit apart,
-with one row of yellow squares on each floor and yellow dashes along the road.
-Each stack has a brown door on every face that meets a road, so a corner stack has two.
-The same road is repeated on the other three sides of the ring, with an
-intersection at each corner. Four more stacks, also of different heights, stand
-north of the leftmost tower, one unit apart, with their fronts turned 90 degrees
-clockwise, and four stand north of the rightmost tower with their fronts
-turned 90 degrees counterclockwise. Three stacks fill the gap between those
-two northern towers, turned 180 degrees so their fronts face north. Four blocks form a square
-with two on each side. A block leaves out the road on any side that faces
-another block, so neighbours share one road: eastern towers meet the western
-edge of the road to their east, and southern towers meet the northern edge of
-the road to their south. Ten units south of that square, a fifth ring stands
-two towers deep and five wide, with its own full road ring. The sphere group
-and a brown cube capped by a pyramid stand 30 units to the right of the road."""
+joined center to center by thin cylinders. Four rings, each two towers deep and
+five wide, form a square with two on each side. Each ring has stacks of different
+heights, from eight to twenty floors, each a slightly different shade of the same
+grey, one unit apart, with one row of yellow squares on each floor and yellow
+dashes along the road. Each stack has a brown door on every face that meets a
+road, so a corner stack has two. A block leaves out the road on any side that
+faces another block, so neighbours share one road: eastern towers meet the
+western edge of the road to their east, and southern towers meet the northern
+edge of the road to their south. Ten units south of that square, a fifth ring
+stands two towers deep and five wide, with its own full road ring. The sphere
+group and a brown cube capped by a pyramid stand 30 units to the right of the
+road."""
 
 import argparse
 import math
@@ -387,16 +382,13 @@ class CityApp(ShowBase):
         block_size = (5.0, 5.0, 2.0)
         block_gap = 5.0
         # Each tower is a different height. Every floor is one block and one window row.
+        # Depth-2 rings: five south, empty west/east, five north (including corners).
         south_floors = (12, 18, 9, 20, 14)
-        west_floors = (8, 16, 11, 19)
-        east_floors = (7, 15, 10, 17)
-        north_floors = (13, 18, 11)
+        north_floors = (8, 16, 11, 19, 13)
         south_ring_south = (12, 18, 9, 20, 14)
         south_ring_north = (16, 8, 19, 11, 15)
         tallest = max(
             *south_floors,
-            *west_floors,
-            *east_floors,
             *north_floors,
             *south_ring_south,
             *south_ring_north,
@@ -419,19 +411,21 @@ class CityApp(ShowBase):
         for index, (x0, y0) in enumerate(positions):
             x1, y1 = positions[(index + 1) % len(positions)]
             self._add_link(x0 + group_shift, y0, x1 + group_shift, y1, material)
-        # Two by two. The west column leaves out its eastern road and the north
-        # row leaves out its southern road, so each pair shares the road already
-        # drawn by the block to the east or the south.
+        # Two by two of 2x5 rings. The west column leaves out its eastern road
+        # and the north row leaves out its southern road, so each pair shares
+        # the road already drawn by the block to the east or the south.
         road_width = 5.0
-        stride = road_width + road_length
-        block_floors = (south_floors, west_floors, east_floors, north_floors)
+        road_depth = 2 * block_size[1] + tower_gap
+        stride_x = road_width + road_length
+        stride_y = road_width + road_depth
+        block_floors = (south_floors, (), (), north_floors)
         for row in (0, 1):
             for col in (0, 1):
                 self._add_city_block(
-                    road_left - (1 - col) * stride,
+                    road_left - (1 - col) * stride_x,
                     block_size,
                     block_floors,
-                    y_offset=row * stride,
+                    y_offset=row * stride_y,
                     eastern_road=col == 1,
                     southern_road=row == 0,
                 )
@@ -473,7 +467,7 @@ class CityApp(ShowBase):
         self.city.flattenStrong()
 
         # 2x2 north edge, plus the southern 2x5 ring below the ten-unit gap.
-        city_north = south_face + 2 * road_length + 2 * road_width
+        city_north = south_face + 2 * road_depth + 2 * road_width
         # South row of the 2x5, its southern road, and the road thickness.
         city_south = (
             tower_y0
@@ -481,7 +475,7 @@ class CityApp(ShowBase):
             - block_size[1] / 2
             - road_width
         )
-        left = min(road_left - stride - road_width, circle_left + group_shift)
+        left = min(road_left - stride_x - road_width, circle_left + group_shift)
         right = cube_center_x + pyramid_size[0] / 2
         stack_bottom = -block_size[2] / 2
         stack_top = (tallest - 1) * block_size[2] + block_size[2] / 2
