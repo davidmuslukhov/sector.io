@@ -2,13 +2,15 @@
 joined center to center by thin cylinders. Sixteen rings, each two towers deep
 and five wide, form a square with four on each side. Each ring has stacks of
 unique random heights, from ten to twenty-five floors, each a slightly different
-shade of the same grey, one unit apart, with one row of yellow squares on each
-floor and yellow dashes along the road. Each stack has a brown door on every face
+shade of the same grey, one unit apart with the gaps paved in a thin road-coloured
+layer, with one row of yellow squares on each floor and yellow dashes along the road. Each stack has a brown door on every face
 that meets a road, so a corner stack has two. A block leaves out the road on any
 side that faces another block, so neighbours share one road: eastern towers meet
 the western edge of the road to their east, and southern towers meet the northern
-edge of the road to their south. The sphere group and a brown cube capped by a
-pyramid stand 30 units to the right of the road."""
+edge of the road to their south. Blocky traffic lights hang under thin black rods
+that span each approach at four-way intersections, eight units above the road.
+The sphere group and a brown cube capped by a pyramid stand 30 units to the
+right of the road."""
 
 import argparse
 import math
@@ -264,6 +266,7 @@ _BLOCK_MATERIALS: dict[float, Material] = {}
 _ROAD_MATERIAL: Material | None = None
 _SQUARE_MATERIALS: dict[float, Material] = {}
 _BROWN_MATERIALS: dict[float, Material] = {}
+_SIGNAL_MATERIALS: dict[str, Material] = {}
 
 
 def sphere_material() -> Material:
@@ -359,6 +362,29 @@ def brown_material(lightness: float = 1.0) -> Material:
     return material
 
 
+def signal_material(name: str) -> Material:
+    """Dark housing or a lit lamp colour for the blocky traffic lights."""
+    cached = _SIGNAL_MATERIALS.get(name)
+    if cached is not None:
+        return cached
+    colours = {
+        "housing": ((0.08, 0.08, 0.09), (0.18, 0.18, 0.20), (0.08, 0.08, 0.08), 8),
+        "red": ((0.55, 0.05, 0.05), (0.95, 0.12, 0.10), (0.6, 0.15, 0.1), 32),
+        "amber": ((0.55, 0.35, 0.04), (0.95, 0.7, 0.1), (0.55, 0.4, 0.1), 32),
+        "green": ((0.04, 0.45, 0.12), (0.1, 0.85, 0.25), (0.15, 0.5, 0.2), 32),
+    }
+    ambient, diffuse, specular, shininess = colours[name]
+    material = Material()
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((*specular, 1))
+    material.setShininess(shininess)
+    if name != "housing":
+        material.setEmission((*tuple(channel * 0.35 for channel in diffuse), 1))
+    _SIGNAL_MATERIALS[name] = material
+    return material
+
+
 class CityApp(ShowBase):
     def __init__(self, screenshot: str | None = None) -> None:
         super().__init__()
@@ -425,6 +451,37 @@ class CityApp(ShowBase):
                     eastern_road=col == grid - 1,
                     southern_road=row == 0,
                 )
+
+        # Interior east-west roads cross interior north-south roads at true
+        # four-ways. Outer edges are T or L junctions and get no lights.
+        # One signal per approach, hung under a rod that spans building to building.
+        road_y0 = -(block_size[1] / 2 + 1.0 + road_width / 2)
+        tower_y0 = road_y0 + road_width / 2 + block_size[1] / 2
+        south_road0 = tower_y0 - block_size[1] / 2 - road_width / 2
+        west_road0 = road_left - (grid - 1) * stride_x - road_width / 2
+        road_top = -block_size[2] / 2 + 0.1
+        half = road_width / 2
+        for h in range(1, grid):
+            iy = south_road0 + h * stride_y
+            for v in range(1, grid):
+                ix = west_road0 + v * stride_x
+                for x0, y0, x1, y1 in (
+                    # South, north (span east-west); east, west (span north-south).
+                    (ix - half, iy - half, ix + half, iy - half),
+                    (ix - half, iy + half, ix + half, iy + half),
+                    (ix + half, iy - half, ix + half, iy + half),
+                    (ix - half, iy - half, ix - half, iy + half),
+                ):
+                    self._add_traffic_light(
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        road_top,
+                        block_size,
+                        face_x=ix,
+                        face_y=iy,
+                    )
 
         south_face = -(block_size[1] / 2 + 1.0)
 
@@ -611,6 +668,28 @@ class CityApp(ShowBase):
         east = rightmost_x + block_size[0] / 2
         mid_x = (west + east) / 2
         mid_y = (south + north) / 2
+        # Thin road-coloured pads in the one-unit gaps between neighbouring towers.
+        gap_thickness = road_size[2]
+        if south_floors and north_floors and not west_floors and not east_floors:
+            depth = north - south
+            for index in range(tower_count - 1):
+                gap_x = west + block_size[0] + index * stride + tower_gap / 2
+                self._add_block(
+                    gap_x,
+                    mid_y,
+                    road_z,
+                    (tower_gap, depth, gap_thickness),
+                    road_material(),
+                )
+            for index in range(tower_count):
+                tower_x = leftmost_x + index * stride
+                self._add_block(
+                    tower_x,
+                    mid_y,
+                    road_z,
+                    (block_size[0], tower_gap, gap_thickness),
+                    road_material(),
+                )
         if southern_road:
             self._add_road(mid_x, south - road_width / 2, road_z, east - west, along_x=True)
         self._add_road(mid_x, north + road_width / 2, road_z, east - west, along_x=True)
@@ -764,6 +843,60 @@ class CityApp(ShowBase):
                 panel = _box_instance(root, depth, square, square)
                 panel.setPos(face_x, y + offset, row_z)
                 panel.setMaterial(square_material(tone), 1)
+
+    def _add_traffic_light(
+        self,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        road_top: float,
+        block_size: tuple[float, float, float],
+        *,
+        face_x: float,
+        face_y: float,
+    ) -> None:
+        """Signal hung under a thin rod that spans building to building."""
+        floor = block_size[2]
+        rod_z = road_top + 8.0
+        box_w = floor * 0.4
+        box_d = floor * 0.18
+        box_h = floor * 1.2
+        lamp = floor * 0.28
+        lamp_depth = floor * 0.06
+        gap = floor * 0.06
+        rod_thin = floor * 0.05
+        housing = signal_material("housing")
+
+        along_x = abs(x1 - x0) >= abs(y1 - y0)
+        rod_len = abs(x1 - x0) if along_x else abs(y1 - y0)
+        mid_x = (x0 + x1) / 2
+        mid_y = (y0 + y1) / 2
+        if along_x:
+            rod = _box_instance(self.city, rod_len, rod_thin, rod_thin)
+        else:
+            rod = _box_instance(self.city, rod_thin, rod_len, rod_thin)
+        rod.setPos(mid_x, mid_y, rod_z)
+        rod.setMaterial(housing, 1)
+
+        # Hang from the underside of the rod, centred on the span.
+        root = self.city.attachNewNode("traffic-light")
+        root.setPos(mid_x, mid_y, rod_z - rod_thin / 2 - box_h / 2)
+        root.lookAt(face_x, face_y, root.getZ())
+
+        head = _box_instance(root, box_w, box_d, box_h)
+        head.setPos(0.0, 0.0, 0.0)
+        head.setMaterial(housing, 1)
+
+        lamp_y = box_d / 2 + lamp_depth / 2
+        # Top to bottom: red, amber, green, same stacking as a real signal.
+        colours = ("red", "amber", "green")
+        span = 3 * lamp + 2 * gap
+        for index, name in enumerate(colours):
+            lamp_z = span / 2 - lamp / 2 - index * (lamp + gap)
+            lens = _box_instance(root, lamp, lamp_depth, lamp)
+            lens.setPos(0.0, lamp_y, lamp_z)
+            lens.setMaterial(signal_material(name), 1)
 
     def _add_road(self, x: float, y: float, z: float, length: float, along_x: bool) -> None:
         """Grey slab with center dashes. ``along_x`` runs the length east-west."""
