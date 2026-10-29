@@ -1,16 +1,27 @@
 """Software-city scene. Three identical lit spheres form an equilateral triangle,
 joined center to center by thin cylinders. Sixteen rings, each two towers deep
-and five wide, form a square with four on each side. Each ring has stacks of
-unique random heights, from ten to twenty-five floors, each a slightly different
-shade of the same grey, one unit apart with the gaps paved in a thin road-coloured
-layer, with one row of yellow squares on each floor and yellow dashes along the road. Each stack has a brown door on every face
-that meets a road, so a corner stack has two. A block leaves out the road on any
-side that faces another block, so neighbours share one road: eastern towers meet
-the western edge of the road to their east, and southern towers meet the northern
-edge of the road to their south. Blocky traffic lights hang under thin black rods
-that span each approach at four-way intersections, eight units above the road.
-The sphere group and a brown cube capped by a pyramid stand 30 units to the
-right of the road."""
+and five wide, form a square with four on each side. Twelve housing blocks in a
+six-by-two grid sit north of the tower city, west-aligned with it, and sixteen
+more in a two-by-eight grid sit west of the towers, spanning the southern
+factories through the northern housing; each lot shares roads with neighbours
+and holds a six-by-two grid of brown houses (2x2 cube under a 3x3 pyramid), two
+units between roofs, with a green slab as thick as the road filling the gaps.
+Eight empty road loops with the same 29-by-11 inner footprint form a two-by-four
+grid south of the tower city, and twelve more form a two-by-six grid east of the
+tower city and its southern factories; each shares roads with its neighbours and
+holds a grey factory building 29 by 11 by 9 with three 2-by-2-by-6 stacks on the
+roof.
+Each ring has stacks of unique random heights, from ten to twenty-five floors,
+each a slightly different shade of the same grey, one unit apart with the gaps
+paved in a thin road-coloured layer, with one row of yellow squares on each
+floor and yellow dashes along the road. Each stack has a brown door on every
+face that meets a road, so a corner stack has two. A block leaves out the road
+on any side that faces another block, so neighbours share one road: eastern
+towers meet the western edge of the road to their east, and southern towers
+meet the northern edge of the road to their south. Blocky traffic lights hang
+under thin black rods that span each approach at four-way intersections, eight
+units above the road. The sphere group and a brown cube capped by a pyramid
+stand 30 units to the right of the road."""
 
 import argparse
 import math
@@ -181,6 +192,8 @@ def make_box(
 
 # Shared box Geoms. Keyed by size and which caps are present.
 _BOX_TEMPLATES: dict[tuple[float, float, float, bool, bool], NodePath] = {}
+# Flattened factory buildings. Keyed by plan, height, and bottom z.
+_FACTORY_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
 
 
 def _box_instance(
@@ -198,6 +211,69 @@ def _box_instance(
         template = NodePath(make_box(sx, sy, sz, top=top, bottom=bottom))
         _BOX_TEMPLATES[key] = template
     return template.copyTo(parent)
+
+
+def _factory_template(
+    sx: float,
+    sy: float,
+    height: float,
+    bottom_z: float,
+) -> NodePath:
+    """One flattened factory. Origin at plan centre; place with ``setPos(x, y, 0)``."""
+    key = (sx, sy, height, bottom_z)
+    cached = _FACTORY_TEMPLATES.get(key)
+    if cached is not None:
+        return cached
+
+    root = NodePath("factory")
+    body = _box_instance(root, sx, sy, height)
+    body.setPos(0.0, 0.0, bottom_z + height / 2)
+    body.setMaterial(block_material(), 1)
+
+    stack_size = (2.0, 2.0, 6.0)
+    stack_z = bottom_z + height + stack_size[2] / 2
+    for stack_x in (-sx / 4, 0.0, sx / 4):
+        stack = _box_instance(root, *stack_size)
+        stack.setPos(stack_x, 0.0, stack_z)
+        stack.setMaterial(block_material(), 1)
+
+    window = 1.0
+    window_depth = 0.04
+    side_count = 5
+    window_gap = (sy - side_count * window) / (side_count + 1)
+    long_count = int((sx - window_gap) / (window + window_gap))
+    lower_z = bottom_z + height / 2
+    window_zs = (lower_z, lower_z + 2.0)
+    level = 0
+
+    def window_offsets(span: float, count: int) -> list[float]:
+        return [
+            -span / 2
+            + window_gap
+            + window / 2
+            + index * (window + window_gap)
+            for index in range(count)
+        ]
+
+    for sign in (1.0, -1.0):
+        face_x = sign * (sx / 2 + window_depth / 2)
+        for window_z in window_zs:
+            for offset_y in window_offsets(sy, side_count):
+                panel = _box_instance(root, window_depth, window, window)
+                panel.setPos(face_x, offset_y, window_z)
+                panel.setMaterial(square_material(_square_lightness(level)), 1)
+                level += 1
+        face_y = sign * (sy / 2 + window_depth / 2)
+        for window_z in window_zs:
+            for offset_x in window_offsets(sx, long_count):
+                panel = _box_instance(root, window, window_depth, window)
+                panel.setPos(offset_x, face_y, window_z)
+                panel.setMaterial(square_material(_square_lightness(level)), 1)
+                level += 1
+
+    root.flattenStrong()
+    _FACTORY_TEMPLATES[key] = root
+    return root
 
 
 def make_pyramid(sx: float, sy: float, height: float) -> GeomNode:
@@ -264,6 +340,7 @@ def _face_normal(
 _SPHERE_MATERIAL: Material | None = None
 _BLOCK_MATERIALS: dict[float, Material] = {}
 _ROAD_MATERIAL: Material | None = None
+_LAWN_MATERIAL: Material | None = None
 _SQUARE_MATERIALS: dict[float, Material] = {}
 _BROWN_MATERIALS: dict[float, Material] = {}
 _SIGNAL_MATERIALS: dict[str, Material] = {}
@@ -317,6 +394,19 @@ def road_material() -> Material:
         material.setShininess(4)
         _ROAD_MATERIAL = material
     return _ROAD_MATERIAL
+
+
+def lawn_material() -> Material:
+    """Flat green for the housing-block pad, same finish weight as the road."""
+    global _LAWN_MATERIAL
+    if _LAWN_MATERIAL is None:
+        material = Material()
+        material.setAmbient((0.12, 0.28, 0.12, 1))
+        material.setDiffuse((0.28, 0.55, 0.28, 1))
+        material.setSpecular((0.08, 0.12, 0.08, 1))
+        material.setShininess(4)
+        _LAWN_MATERIAL = material
+    return _LAWN_MATERIAL
 
 
 # One yellow hue. Brightness scales this colour, so every square stays the same shade.
@@ -420,15 +510,6 @@ class CityApp(ShowBase):
         road_right = road_left + tower_count * block_size[0] + (tower_count - 1) * tower_gap
         road_length = road_right - road_left
         road_center_x = (road_left + road_right) / 2
-        circle_left = -side / 2 - sphere_radius
-        group_shift = road_right + 30.0 - circle_left
-
-        for x, y in positions:
-            self._add_sphere(x + group_shift, y, material)
-        # Each sphere joins its two neighbours, so the three links close the triangle.
-        for index, (x0, y0) in enumerate(positions):
-            x1, y1 = positions[(index + 1) % len(positions)]
-            self._add_link(x0 + group_shift, y0, x1 + group_shift, y1, material)
         # Four by four of 2x5 rings. Columns west of the east edge leave out
         # their eastern road and rows north of the south edge leave out their
         # southern road, so neighbours share the road already drawn by the
@@ -438,6 +519,17 @@ class CityApp(ShowBase):
         stride_x = road_width + road_length
         stride_y = road_width + road_depth
         grid = 4
+        east_factory_cols = 2
+        # Spheres stay 30 units east of the easternmost factory face.
+        circle_left = -side / 2 - sphere_radius
+        group_shift = road_right + east_factory_cols * stride_x + 30.0 - circle_left
+
+        for x, y in positions:
+            self._add_sphere(x + group_shift, y, material)
+        # Each sphere joins its two neighbours, so the three links close the triangle.
+        for index, (x0, y0) in enumerate(positions):
+            x1, y1 = positions[(index + 1) % len(positions)]
+            self._add_link(x0 + group_shift, y0, x1 + group_shift, y1, material)
         towers_per_ring = 10
         for row in range(grid):
             for col in range(grid):
@@ -448,8 +540,71 @@ class CityApp(ShowBase):
                     block_size,
                     block_floors,
                     y_offset=row * stride_y,
-                    eastern_road=col == grid - 1,
-                    southern_road=row == 0,
+                    # East edge omits its eastern road; the factory grid east of
+                    # it draws each shared north-south road as a western edge.
+                    eastern_road=False,
+                    # South edge omits its southern road; the factory grid south
+                    # of it draws each shared east-west road as a northern edge.
+                    southern_road=False,
+                )
+        # Twelve housing blocks in a 6x2 north of the towers, west-aligned with
+        # the tower city. Each lot shares roads with neighbours; only the east
+        # column draws an eastern outer edge. South edges share the tower (or
+        # southern housing) northern roads.
+        housing_cols, housing_rows = 6, 2
+        factory_rows, factory_cols = 2, 4
+        lot_width = tower_count * block_size[0] + (tower_count - 1) * tower_gap
+        for hrow in range(housing_rows):
+            for hcol in range(housing_cols):
+                self._add_housing_lot(
+                    road_left - (grid - 1) * stride_x + hcol * stride_x,
+                    block_size,
+                    lot_width,
+                    road_depth,
+                    y_offset=(grid + hrow) * stride_y,
+                    eastern_road=hcol == housing_cols - 1,
+                    southern_road=False,
+                )
+        # Sixteen housing blocks in a 2x8 west of the towers: two columns, eight
+        # rows spanning the southern factories, tower city, and northern housing.
+        # Eastern roads are omitted so lots share the western roads of the block
+        # to their east (neighbour housing, towers, or factories).
+        west_housing_cols, west_housing_rows = 2, 8
+        tower_west = road_left - (grid - 1) * stride_x
+        for wrow in range(west_housing_rows):
+            for wcol in range(west_housing_cols):
+                self._add_housing_lot(
+                    tower_west - (west_housing_cols - wcol) * stride_x,
+                    block_size,
+                    lot_width,
+                    road_depth,
+                    y_offset=(wrow - factory_rows) * stride_y,
+                    eastern_road=False,
+                    southern_road=wrow == 0,
+                )
+        # Two-by-four empty lots south of the tower city: road loops plus factories.
+        for frow in range(factory_rows):
+            for fcol in range(factory_cols):
+                self._add_city_block(
+                    road_left - (factory_cols - 1 - fcol) * stride_x,
+                    block_size,
+                    ((), (), (), ()),
+                    y_offset=-(frow + 1) * stride_y,
+                    eastern_road=False,
+                    southern_road=frow == factory_rows - 1,
+                )
+        # Two-by-six empty lots east of the tower city and its southern factories.
+        # Six rows span the four tower rows plus the two factory rows to the south.
+        east_factory_rows = 6
+        for erow in range(east_factory_rows):
+            for ecol in range(east_factory_cols):
+                self._add_city_block(
+                    road_left + (ecol + 1) * stride_x,
+                    block_size,
+                    ((), (), (), ()),
+                    y_offset=(erow - factory_rows) * stride_y,
+                    eastern_road=ecol == east_factory_cols - 1,
+                    southern_road=erow == 0,
                 )
 
         # Interior east-west roads cross interior north-south roads at true
@@ -486,24 +641,24 @@ class CityApp(ShowBase):
         south_face = -(block_size[1] / 2 + 1.0)
 
         cube_size = (2.0, 2.0, 2.0)
+        pyramid_size = (3.0, 3.0, 1.5)
         stack_right = block_center_x + block_size[0] / 2
         cube_center_x = stack_right + 5.0 + cube_size[0] / 2 + group_shift
-        self._add_block(cube_center_x, 0.0, 0.0, cube_size, brown_material(0.6), top=False)
-        self._add_cube_squares(cube_center_x, 0.0, 0.0, cube_size)
-        pyramid_size = (3.0, 3.0, 1.5)
-        pyramid = self.city.attachNewNode(make_pyramid(*pyramid_size))
-        pyramid.setPos(cube_center_x, 0.0, cube_size[2] / 2)
-        pyramid.setMaterial(brown_material(0.6), 1)
+        self._add_house(cube_center_x, 0.0)
         self._add_lights()
         # Merge thousands of tiny boxes into few Geoms so orbit stays smooth.
         self.city.flattenStrong()
 
-        # Outer edges of the 4x4: southern road of the south row, northern road
-        # of the north row, and the western road of the west column.
-        city_north = south_face + grid * road_depth + grid * road_width
-        city_south = south_face - road_width
+        # Outer edges: southern factory/housing road, northern housing road, and
+        # the western road of the west housing columns.
+        city_north = (
+            south_face
+            + (grid + housing_rows) * road_depth
+            + (grid + housing_rows) * road_width
+        )
+        city_south = south_face - factory_rows * stride_y - road_width
         left = min(
-            road_left - (grid - 1) * stride_x - road_width,
+            tower_west - west_housing_cols * stride_x - road_width,
             circle_left + group_shift,
         )
         right = cube_center_x + pyramid_size[0] / 2
@@ -562,16 +717,22 @@ class CityApp(ShowBase):
         y_offset: float = 0.0,
         eastern_road: bool,
         southern_road: bool,
+        factory: bool = True,
     ) -> None:
         """One ring of towers with a road along each outer face.
 
         ``west_face`` is the western face of the western towers. ``y_offset``
         shifts the whole ring north. A road that faces another block is left
         out, along with its corner squares, so the rings share one road.
+        All-empty floors still draw a 2x5-sized road loop (29 by 11); with
+        ``factory`` True they also get a grey factory from the shared
+        flattened template, nine units tall.
         """
         south_floors, west_floors, east_floors, north_floors = floors
+        empty = not (south_floors or west_floors or east_floors or north_floors)
         tower_gap = 1.0
-        tower_count = len(south_floors)
+        # Empty rings keep the same footprint as a depth-2, five-wide ring.
+        tower_count = 5 if empty else len(south_floors)
         road_length = tower_count * block_size[0] + (tower_count - 1) * tower_gap
         # East-west slab. Each tower's front face meets the near edge, and the slab
         # runs from the first tower's left edge to the last tower's right edge.
@@ -627,10 +788,11 @@ class CityApp(ShowBase):
         # North row. Side columns put the corners; an empty west/east column
         # means this row is the full width, including the NW and NE corners.
         # Depth matches the side columns, or one step north of south when none.
+        # A fully empty ring still uses depth 2 so the road loop stays 11 deep.
         spacing_y = block_size[1] + tower_gap
         if west_floors:
             north_step = len(west_floors)
-        elif north_floors:
+        elif north_floors or empty:
             north_step = 1
         else:
             north_step = 0
@@ -668,6 +830,17 @@ class CityApp(ShowBase):
         east = rightmost_x + block_size[0] / 2
         mid_x = (west + east) / 2
         mid_y = (south + north) / 2
+        if empty and factory:
+            # Same plan as the ring, nine units tall, bottom flush with the towers.
+            # Identical lots reuse one flattened template via copyTo.
+            factory_height = 9.0
+            building = _factory_template(
+                east - west,
+                north - south,
+                factory_height,
+                -block_size[2] / 2,
+            ).copyTo(self.city)
+            building.setPos(mid_x, mid_y, 0.0)
         # Thin road-coloured pads in the one-unit gaps between neighbouring towers.
         gap_thickness = road_size[2]
         if south_floors and north_floors and not west_floors and not east_floors:
@@ -933,6 +1106,57 @@ class CityApp(ShowBase):
                 mark = _box_instance(self.city, width, length, thickness)
                 mark.setPos(x, y + offset, z)
             mark.setMaterial(yellow, 1)
+
+    def _add_housing_lot(
+        self,
+        west_face: float,
+        block_size: tuple[float, float, float],
+        lot_width: float,
+        lot_depth: float,
+        *,
+        y_offset: float,
+        eastern_road: bool,
+        southern_road: bool,
+    ) -> None:
+        """Empty road loop with lawn and a centred 6x2 of brown houses."""
+        self._add_city_block(
+            west_face,
+            block_size,
+            ((), (), (), ()),
+            y_offset=y_offset,
+            eastern_road=eastern_road,
+            southern_road=southern_road,
+            factory=False,
+        )
+        lot_mid_x = west_face + lot_width / 2
+        # Empty-ring south face at y_offset: tower_y(-1 + offset) - half depth.
+        lot_mid_y = -1.0 + y_offset - block_size[1] / 2 + lot_depth / 2
+        road_thickness = 0.1
+        self._add_block(
+            lot_mid_x,
+            lot_mid_y,
+            -block_size[2] / 2 + road_thickness / 2,
+            (lot_width, lot_depth, road_thickness),
+            lawn_material(),
+        )
+        house_pitch = 5.0
+        houses_across, houses_deep = 6, 2
+        for crow in range(houses_deep):
+            for ccol in range(houses_across):
+                self._add_house(
+                    lot_mid_x + (ccol - (houses_across - 1) / 2) * house_pitch,
+                    lot_mid_y + (crow - (houses_deep - 1) / 2) * house_pitch,
+                )
+
+    def _add_house(self, x: float, y: float) -> None:
+        """Brown 2x2 cube capped by a 3x3 pyramid, centred on ``(x, y)``."""
+        cube_size = (2.0, 2.0, 2.0)
+        pyramid_size = (3.0, 3.0, 1.5)
+        self._add_block(x, y, 0.0, cube_size, brown_material(0.6), top=False)
+        self._add_cube_squares(x, y, 0.0, cube_size)
+        pyramid = self.city.attachNewNode(make_pyramid(*pyramid_size))
+        pyramid.setPos(x, y, cube_size[2] / 2)
+        pyramid.setMaterial(brown_material(0.6), 1)
 
     def _add_cube_squares(
         self,
