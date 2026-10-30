@@ -20,8 +20,11 @@ on any side that faces another block, so neighbours share one road: eastern
 towers meet the western edge of the road to their east, and southern towers
 meet the northern edge of the road to their south. Blocky traffic lights hang
 under thin black rods that span each approach at four-way intersections, eight
-units above the road. The sphere group and a brown cube capped by a pyramid
-stand 30 units to the right of the road."""
+units above the road; approaches with no tower or factory wall get matching
+vertical rods down to the road. A blue 2x1x1 car drives the road grid: it
+cruises, decelerates into each intersection, waits three seconds, then goes
+forward, left, or right relative to its front. The sphere group and a brown
+cube capped by a pyramid stand 30 units to the right of the road."""
 
 import argparse
 import math
@@ -608,18 +611,43 @@ class CityApp(ShowBase):
                 )
 
         # Interior east-west roads cross interior north-south roads at true
-        # four-ways. Outer edges are T or L junctions and get no lights.
-        # One signal per approach, hung under a rod that spans building to building.
+        # four-ways across the full city (west housing, towers, east factories;
+        # south factories through northern housing). Outer edges are T or L
+        # junctions and get no lights. One signal per approach, hung under a
+        # rod that spans building to building; housing approaches also get
+        # vertical rods down to the road.
         road_y0 = -(block_size[1] / 2 + 1.0 + road_width / 2)
         tower_y0 = road_y0 + road_width / 2 + block_size[1] / 2
         south_road0 = tower_y0 - block_size[1] / 2 - road_width / 2
         west_road0 = road_left - (grid - 1) * stride_x - road_width / 2
+        # Westernmost / southernmost roads sit outside the west housing and
+        # south factory blocks; tower roads are offset from those edges.
+        cols = west_housing_cols + grid + east_factory_cols
+        rows = factory_rows + grid + housing_rows
+        south_road_full0 = south_road0 - factory_rows * stride_y
+        west_road_full0 = west_road0 - west_housing_cols * stride_x
         road_top = -block_size[2] / 2 + 0.1
         half = road_width / 2
-        for h in range(1, grid):
-            iy = south_road0 + h * stride_y
-            for v in range(1, grid):
-                ix = west_road0 + v * stride_x
+        housing_south = factory_rows + grid
+
+        def solid_lot(brow: int, bcol: int) -> bool:
+            """True when the lot has a tower or factory wall at the road."""
+            if bcol < 0 or bcol >= cols or brow < 0 or brow >= rows:
+                return False
+            if bcol < west_housing_cols:
+                return False
+            if brow >= housing_south:
+                return False
+            return True
+
+        for h in range(1, rows):
+            iy = south_road_full0 + h * stride_y
+            for v in range(1, cols):
+                ix = west_road_full0 + v * stride_x
+                sw = solid_lot(h - 1, v - 1)
+                se = solid_lot(h - 1, v)
+                nw = solid_lot(h, v - 1)
+                ne = solid_lot(h, v)
                 for x0, y0, x1, y1 in (
                     # South, north (span east-west); east, west (span north-south).
                     (ix - half, iy - half, ix + half, iy - half),
@@ -637,6 +665,16 @@ class CityApp(ShowBase):
                         face_x=ix,
                         face_y=iy,
                     )
+                # Housing corners have no wall for the span to meet, so drop a
+                # vertical rod of the same thickness from each open corner.
+                for px, py, solid in (
+                    (ix - half, iy - half, sw),
+                    (ix + half, iy - half, se),
+                    (ix - half, iy + half, nw),
+                    (ix + half, iy + half, ne),
+                ):
+                    if not solid:
+                        self._add_signal_post(px, py, road_top, block_size)
 
         south_face = -(block_size[1] / 2 + 1.0)
 
@@ -648,6 +686,22 @@ class CityApp(ShowBase):
         self._add_lights()
         # Merge thousands of tiny boxes into few Geoms so orbit stays smooth.
         self.city.flattenStrong()
+
+        # Car stays outside flattenStrong so it can move each frame.
+        self._init_car(
+            road_center_x,
+            road_y0,
+            road_top,
+            west_road_full0,
+            south_road_full0,
+            stride_x,
+            stride_y,
+            cols,
+            rows,
+            start_h=factory_rows,
+            start_v=west_housing_cols + grid - 1,
+        )
+        self.taskMgr.add(self._car_task, "car-drive")
 
         # Outer edges: southern factory/housing road, northern housing road, and
         # the western road of the west housing columns.
@@ -1017,6 +1071,22 @@ class CityApp(ShowBase):
                 panel.setPos(face_x, y + offset, row_z)
                 panel.setMaterial(square_material(tone), 1)
 
+    def _add_signal_post(
+        self,
+        x: float,
+        y: float,
+        road_top: float,
+        block_size: tuple[float, float, float],
+    ) -> None:
+        """Vertical rod from the road up to traffic-light height."""
+        floor = block_size[2]
+        rod_thin = floor * 0.05
+        rod_z = road_top + 8.0
+        post_h = rod_z - road_top
+        post = _box_instance(self.city, rod_thin, rod_thin, post_h)
+        post.setPos(x, y, road_top + post_h / 2)
+        post.setMaterial(signal_material("housing"), 1)
+
     def _add_traffic_light(
         self,
         x0: float,
@@ -1199,6 +1269,259 @@ class CityApp(ShowBase):
         sun_np.setHpr(35, -45, 0)
         self.render.setLight(sun_np)
         self.render.setShaderAuto()
+
+    def _init_car(
+        self,
+        x: float,
+        y: float,
+        road_top: float,
+        origin_x: float,
+        origin_y: float,
+        stride_x: float,
+        stride_y: float,
+        cols: int,
+        rows: int,
+        *,
+        start_h: int,
+        start_v: int,
+    ) -> None:
+        """Blue 2×1×1 car on the road grid, long axis along travel."""
+        size = (2.0, 1.0, 1.0)
+        self.car = _box_instance(self.render, *size)
+        self.car.setMaterial(sphere_material(), 1)
+        self._car_z = road_top + size[2] / 2
+        self._car_origin_x = origin_x
+        self._car_origin_y = origin_y
+        self._car_stride_x = stride_x
+        self._car_stride_y = stride_y
+        self._car_cols = cols
+        self._car_rows = rows
+        # Stop with the front bumper on the 5-wide intersection edge.
+        self._car_stop_offset = 5.0 / 2 + size[0] / 2
+        # Two lanes on a 5-wide road; sit in the middle of the right lane.
+        self._car_lane_offset = 5.0 / 4
+        # Cruise ~one short block per couple of seconds; decel into the stop line.
+        self._car_cruise = 10.0
+        self._car_accel = 12.0
+        self._car_decel_dist = 6.0
+        self._car_wait_time = 3.0
+        self._car_speed = self._car_cruise
+        self._car_state = "drive"
+        self._car_wait = 0.0
+        self._car_dir = (1, 0)
+        self._car_heading = 0.0
+        self._car_to = (start_v + 1, start_h)
+        rx, ry = self._car_right(self._car_dir)
+        self._car_pos = [
+            x + rx * self._car_lane_offset,
+            y + ry * self._car_lane_offset,
+        ]
+        self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
+        self._place_car()
+
+    def _car_intersection_xy(self, v: int, h: int) -> tuple[float, float]:
+        return (
+            self._car_origin_x + v * self._car_stride_x,
+            self._car_origin_y + h * self._car_stride_y,
+        )
+
+    @staticmethod
+    def _car_right(direction: tuple[int, int]) -> tuple[int, int]:
+        """Unit right vector relative to travel (right-hand traffic)."""
+        dx, dy = direction
+        return (dy, -dx)
+
+    def _car_lane_shift(self, direction: tuple[int, int]) -> tuple[float, float]:
+        rx, ry = self._car_right(direction)
+        lane = self._car_lane_offset
+        return rx * lane, ry * lane
+
+    def _car_stop_xy(
+        self,
+        v: int,
+        h: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Approach stop: front on the near edge, centered in the right lane."""
+        cx, cy = self._car_intersection_xy(v, h)
+        dx, dy = direction
+        offset = self._car_stop_offset
+        lx, ly = self._car_lane_shift(direction)
+        return cx - dx * offset + lx, cy - dy * offset + ly
+
+    def _car_exit_xy(
+        self,
+        v: int,
+        h: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Far-edge point leaving an intersection in the right lane."""
+        cx, cy = self._car_intersection_xy(v, h)
+        dx, dy = direction
+        offset = self._car_stop_offset
+        lx, ly = self._car_lane_shift(direction)
+        return cx + dx * offset + lx, cy + dy * offset + ly
+
+    def _car_in_bounds(self, v: int, h: int) -> bool:
+        return 0 <= v <= self._car_cols and 0 <= h <= self._car_rows
+
+    def _car_choose_turn(self) -> tuple[int, int]:
+        """Pick forward, left, or right from the car's front among open roads."""
+        v, h = self._car_to
+        dx, dy = self._car_dir
+        options: list[tuple[int, int]] = []
+        for ndx, ndy in (
+            (dx, dy),
+            (-dy, dx),
+            (dy, -dx),
+        ):
+            if self._car_in_bounds(v + ndx, h + ndy):
+                options.append((ndx, ndy))
+        if not options:
+            return (-dx, -dy)
+        return random.choice(options)
+
+    def _car_begin_maneuver(self, new_dir: tuple[int, int]) -> None:
+        """Leave the stop line: arc on turns, straight when going forward."""
+        old_dir = self._car_dir
+        v, h = self._car_to
+        cx, cy = self._car_intersection_xy(v, h)
+        o = self._car_stop_offset
+        cross = old_dir[0] * new_dir[1] - old_dir[1] * new_dir[0]
+        dot = old_dir[0] * new_dir[0] + old_dir[1] * new_dir[1]
+        self._car_dir = new_dir
+        self._car_to = (v + new_dir[0], h + new_dir[1])
+        self._car_speed = 0.0
+        self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
+
+        if dot > 0:
+            # Straight through to the far edge, then on to the next stop.
+            self._car_state = "crossing"
+            self._car_target = self._car_exit_xy(v, h, new_dir)
+            return
+
+        if cross == 0:
+            # Rare dead-end U-turn: spin in place, then drive back.
+            self._car_state = "u-turn"
+            self._car_heading_from = self._car_heading
+            self._car_heading_to = math.degrees(math.atan2(new_dir[1], new_dir[0]))
+            delta = (self._car_heading_to - self._car_heading_from + 180.0) % 360.0 - 180.0
+            self._car_heading_to = self._car_heading_from + delta
+            self._car_u_turn_span = abs(delta) if abs(delta) > 1e-3 else 180.0
+            self._car_u_turn_progress = 0.0
+            return
+
+        # Quarter-circle in the right lane: left turns are wider, right tighter.
+        sign = 1.0 if cross > 0 else -1.0
+        lane = self._car_lane_offset
+        self._car_state = "turning"
+        self._car_arc_center = (
+            cx - old_dir[0] * o + new_dir[0] * o,
+            cy - old_dir[1] * o + new_dir[1] * o,
+        )
+        self._car_arc_radius = o + lane if cross > 0 else o - lane
+        self._car_arc_sign = sign
+        rx = self._car_pos[0] - self._car_arc_center[0]
+        ry = self._car_pos[1] - self._car_arc_center[1]
+        self._car_arc_angle = math.atan2(ry, rx)
+        self._car_arc_end = self._car_arc_angle + sign * (math.pi / 2)
+
+    def _place_car(self) -> None:
+        self.car.setPos(self._car_pos[0], self._car_pos[1], self._car_z)
+        self.car.setH(self._car_heading)
+
+    def _car_advance_speed(self, dt: float, dist: float | None = None) -> None:
+        if dist is not None and dist < self._car_decel_dist:
+            target = self._car_cruise * math.sqrt(max(dist, 0.0) / self._car_decel_dist)
+            self._car_speed = min(self._car_speed, target)
+        else:
+            self._car_speed = min(self._car_cruise, self._car_speed + self._car_accel * dt)
+
+    def _car_task(self, task):
+        dt = min(self.clock.getDt(), 0.05)
+        if self._car_state == "wait":
+            self._car_wait -= dt
+            if self._car_wait <= 0.0:
+                self._car_begin_maneuver(self._car_choose_turn())
+                self._place_car()
+            return task.cont
+
+        if self._car_state == "u-turn":
+            self._car_advance_speed(dt)
+            # Match turn rate to cruise so the spin feels like a tight pivot.
+            rate = math.degrees(self._car_cruise / max(self._car_stop_offset, 1.0))
+            step = rate * dt
+            remain = self._car_u_turn_span - self._car_u_turn_progress
+            if step >= remain:
+                self._car_heading = self._car_heading_to
+                self._car_target = self._car_after_cross
+                self._car_state = "drive"
+            else:
+                self._car_u_turn_progress += step
+                t = self._car_u_turn_progress / self._car_u_turn_span
+                self._car_heading = (
+                    self._car_heading_from
+                    + (self._car_heading_to - self._car_heading_from) * t
+                )
+            self._place_car()
+            return task.cont
+
+        if self._car_state == "turning":
+            self._car_advance_speed(dt)
+            radius = self._car_arc_radius
+            angle_step = (self._car_speed / radius) * dt * self._car_arc_sign
+            remain = self._car_arc_end - self._car_arc_angle
+            if abs(angle_step) >= abs(remain):
+                self._car_arc_angle = self._car_arc_end
+                acx, acy = self._car_arc_center
+                self._car_pos[0] = acx + radius * math.cos(self._car_arc_angle)
+                self._car_pos[1] = acy + radius * math.sin(self._car_arc_angle)
+                self._car_heading = math.degrees(
+                    math.atan2(self._car_dir[1], self._car_dir[0])
+                )
+                self._car_target = self._car_after_cross
+                self._car_state = "drive"
+            else:
+                self._car_arc_angle += angle_step
+                acx, acy = self._car_arc_center
+                self._car_pos[0] = acx + radius * math.cos(self._car_arc_angle)
+                self._car_pos[1] = acy + radius * math.sin(self._car_arc_angle)
+                # Tangent to the arc: CCW is angle+90°, CW is angle-90°.
+                self._car_heading = math.degrees(
+                    self._car_arc_angle + self._car_arc_sign * (math.pi / 2)
+                )
+            self._place_car()
+            return task.cont
+
+        tx, ty = self._car_target
+        dx = tx - self._car_pos[0]
+        dy = ty - self._car_pos[1]
+        dist = math.hypot(dx, dy)
+        if dist <= max(self._car_speed * dt, 0.02):
+            self._car_pos[0] = tx
+            self._car_pos[1] = ty
+            if self._car_state == "crossing":
+                self._car_target = self._car_after_cross
+                self._car_state = "drive"
+                self._place_car()
+                return task.cont
+            self._car_speed = 0.0
+            self._car_state = "wait"
+            self._car_wait = self._car_wait_time
+            self._place_car()
+            return task.cont
+
+        if self._car_state == "drive":
+            self._car_advance_speed(dt, dist)
+        else:
+            self._car_advance_speed(dt)
+
+        step = min(self._car_speed * dt, dist)
+        self._car_pos[0] += dx / dist * step
+        self._car_pos[1] += dy / dist * step
+        self._car_heading = math.degrees(math.atan2(dy, dx))
+        self._place_car()
+        return task.cont
 
     def _update_camera(self) -> None:
         pitch = math.radians(self.pitch)
