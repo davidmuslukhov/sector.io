@@ -21,12 +21,20 @@ towers meet the western edge of the road to their east, and southern towers
 meet the northern edge of the road to their south. Blocky traffic lights hang
 under thin black rods that span each approach at four-way intersections, eight
 units above the road; approaches with no tower or factory wall get matching
-vertical rods down to the road. A blue blocky 2x1x1 car drives the road grid:
+vertical rods down to the road. A blue blocky 2x1x1 car drives the road grid and highway:
 body, cabin, bumpers, lights, grille, mirrors, and wheels stay cubic; it
-cruises, decelerates into each intersection, waits three seconds with the
-matching side lamps blinking for a pending left or right turn, then goes
-forward, left, or right relative to its front. The sphere group and a brown
-cube capped by a pyramid stand 30 units to the right of the road."""
+cruises, decelerates into each intersection (including highway exits), waits
+three seconds with the matching side lamps blinking for a pending left or
+right turn, then goes forward, left, or right relative to its front. An exact copy of the whole
+city sits twenty block-strides due north, sharing the flattened mesh via
+instancing. A six-lane north-south highway runs along the west edge of both
+cities, with a one-unit fence between the highway and the western road of the
+rotated gap housing (lots 21 wide, two city-row strides tall so east-west
+roads meet the city grid), a blocky median barrier between the opposing
+three-lane sides (fence and median open at each exit so both directions can
+turn off), and straight exits onto each city's fifth east-west road; it
+stays within the combined city north-south limits. The sphere group and a
+brown cube capped by a pyramid stand 30 units to the right of the road."""
 
 import argparse
 import math
@@ -751,6 +759,34 @@ class CityApp(ShowBase):
         half = road_width / 2
         housing_south = factory_rows + grid
 
+        # Rotated housing in the 21-unit highway gap: 11 east-west (short face)
+        # by two city-row strides north-south so every east-west road lands on
+        # the city grid (depth 27 = 2*16 - 5). East shares the city western
+        # road. Four lots span roads 0-2, 2-4, 4-6, 6-8; the exit is on road 4.
+        city_west_edge = west_road_full0 - road_width / 2
+        gap_lot_width = road_depth
+        gap_row_span = 2
+        gap_lot_depth = gap_row_span * stride_y - road_width
+        gap_stride_y = gap_row_span * stride_y
+        gap_west_face = city_west_edge - gap_lot_width
+        gap_housing_rows = rows // gap_row_span
+        for grow in range(gap_housing_rows):
+            h_south = grow * gap_row_span
+            # Building south face sits on the north edge of city road h_south.
+            lot_south = south_road_full0 + h_south * stride_y + road_width / 2
+            y_offset = lot_south - (-1.0 - block_size[1] / 2)
+            self._add_housing_lot(
+                gap_west_face,
+                block_size,
+                gap_lot_width,
+                gap_lot_depth,
+                y_offset=y_offset,
+                eastern_road=False,
+                southern_road=grow == 0,
+                houses_across=2,
+                houses_deep=6,
+            )
+
         def solid_lot(brow: int, bcol: int) -> bool:
             """True when the lot has a tower or factory wall at the road."""
             if bcol < 0 or bcol >= cols or brow < 0 or brow >= rows:
@@ -807,11 +843,120 @@ class CityApp(ShowBase):
         self._add_lights()
         # Merge thousands of tiny boxes into few Geoms so orbit stays smooth.
         self.city.flattenStrong()
+        # Exact copy twenty lot-strides north. instanceTo reuses the flattened
+        # Geoms instead of rebuilding or duplicating mesh data.
+        north_shift = 20 * stride_y
+        north_city = self.render.attachNewNode("city-north")
+        north_city.setY(north_shift)
+        self.city.instanceTo(north_city)
+
+        # Six-lane highway west of both cities (not under city/instanceTo).
+        # A thin fence sits between the highway and the gap housing's western
+        # road (road kept). Dashes between lanes; median and fence open at exits.
+        lane_width = road_width / 2
+        highway_lanes = 6
+        highway_width = highway_lanes * lane_width
+        fence_w = 0.25
+        fence_h = 1.0
+        # West edge of the gap housing's western road (still drawn by those lots).
+        west_road_west = gap_west_face - road_width
+        highway_east = west_road_west - fence_w
+        highway_mid_x = highway_east - highway_width / 2
+        fence_x = west_road_west - fence_w / 2
+        city_south = south_face - factory_rows * stride_y - road_width
+        city_north = (
+            south_face
+            + (grid + housing_rows) * road_depth
+            + (grid + housing_rows) * road_width
+            + north_shift
+        )
+        highway_length = city_north - city_south
+        highway_mid_y = (city_north + city_south) / 2
+        road_thickness = 0.1
+        road_z = -block_size[2] / 2 + road_thickness / 2
+        self.highway = self.render.attachNewNode("highway")
+        self._add_block(
+            highway_mid_x,
+            highway_mid_y,
+            road_z,
+            (highway_width, highway_length, road_thickness),
+            road_material(),
+            parent=self.highway,
+        )
+        road_top = road_z + road_thickness / 2
+        # Lane dashes on each side; the centre gets a blocky median barrier.
+        centre_divider = highway_lanes // 2
+        for divider in range(1, highway_lanes):
+            if divider == centre_divider:
+                continue
+            mark_x = highway_east - divider * lane_width
+            self._add_road_marks(
+                mark_x,
+                highway_mid_y,
+                road_top,
+                highway_length,
+                along_x=False,
+                parent=self.highway,
+            )
+        # Exits cross the highway so both directions can turn onto the western
+        # road through fence openings; that road feeds the fifth city road.
+        exit_h = 4
+        exit_ys = [
+            south_road_full0 + exit_h * stride_y + origin
+            for origin in (0.0, north_shift)
+        ]
+        for exit_y in exit_ys:
+            self._add_road(
+                highway_mid_x,
+                exit_y,
+                road_z,
+                highway_width,
+                along_x=True,
+                parent=self.highway,
+            )
+        # Median barrier and roadside fence in segments, open across each exit.
+        barrier_w = 0.5
+        barrier_h = 1.0
+        barrier_z = road_top + barrier_h / 2
+        fence_z = road_top + fence_h / 2
+        barrier_mat = block_material(0.75)
+        fence_mat = block_material(0.55)
+        opening_half = road_width / 2
+
+        def wall_segments(x: float, width: float, height: float, z: float, mat) -> None:
+            cursor = city_south
+            for exit_y in exit_ys:
+                gap_start = exit_y - opening_half
+                if gap_start > cursor:
+                    seg_len = gap_start - cursor
+                    self._add_block(
+                        x,
+                        cursor + seg_len / 2,
+                        z,
+                        (width, seg_len, height),
+                        mat,
+                        parent=self.highway,
+                    )
+                cursor = exit_y + opening_half
+            if city_north > cursor:
+                seg_len = city_north - cursor
+                self._add_block(
+                    x,
+                    cursor + seg_len / 2,
+                    z,
+                    (width, seg_len, height),
+                    mat,
+                    parent=self.highway,
+                )
+
+        wall_segments(highway_mid_x, barrier_w, barrier_h, barrier_z, barrier_mat)
+        wall_segments(fence_x, fence_w, fence_h, fence_z, fence_mat)
+        self.highway.flattenStrong()
 
         # Car stays outside flattenStrong so it can move each frame.
+        # Highway exits are intersections: stop, wait, then continue or turn into
+        # the city (and the western city road can turn onto the highway).
         self._init_car(
-            road_center_x,
-            road_y0,
             road_top,
             west_road_full0,
             south_road_full0,
@@ -819,22 +964,35 @@ class CityApp(ShowBase):
             stride_y,
             cols,
             rows,
-            start_h=factory_rows,
-            start_v=west_housing_cols + grid - 1,
+            start_h=exit_h,
+            start_v=0,
+            start_dir=(0, 1),
         )
+        # Lane centers: east side for northbound, west side for southbound.
+        self._car_highway_east_lane_x = highway_east - lane_width / 2
+        self._car_highway_west_lane_x = highway_east - highway_width + lane_width / 2
+        self._car_highway_x = self._car_highway_east_lane_x
+        self._car_highway_exits = list(exit_ys)
+        self._car_south_road0 = south_road_full0
+        self._car_north_shift = north_shift
+        self._car_exit_row = exit_h
+        self._car_on_highway = True
+        self._car_exit_i = 0
+        self._car_dir = (0, 1)
+        self._car_heading = 90.0
+        self._car_pos = list(self._car_highway_stop(0, self._car_dir))
+        self._car_target = self._car_highway_stop(0, self._car_dir)
+        self._car_state = "drive"
+        self._place_car()
         self.taskMgr.add(self._car_task, "car-drive")
 
-        # Outer edges: southern factory/housing road, northern housing road, and
-        # the western road of the west housing columns.
-        city_north = (
-            south_face
-            + (grid + housing_rows) * road_depth
-            + (grid + housing_rows) * road_width
-        )
-        city_south = south_face - factory_rows * stride_y - road_width
+        # Outer edges: southern factory/housing road, northern housing road,
+        # western city road, and the six-lane highway. Framing includes the
+        # instanced northern copy.
         left = min(
-            tower_west - west_housing_cols * stride_x - road_width,
+            city_west_edge,
             circle_left + group_shift,
+            highway_east - highway_width,
         )
         right = cube_center_x + pyramid_size[0] / 2
         stack_bottom = -block_size[2] / 2
@@ -1262,13 +1420,23 @@ class CityApp(ShowBase):
             lens.setPos(0.0, lamp_y, lamp_z)
             lens.setMaterial(signal_material(name), 1)
 
-    def _add_road(self, x: float, y: float, z: float, length: float, along_x: bool) -> None:
+    def _add_road(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        length: float,
+        along_x: bool,
+        parent=None,
+    ) -> None:
         """Grey slab with center dashes. ``along_x`` runs the length east-west."""
         width = 5.0
         thickness = 0.1
         size = (length, width, thickness) if along_x else (width, length, thickness)
-        self._add_block(x, y, z, size, road_material())
-        self._add_road_marks(x, y, z + thickness / 2, length, along_x)
+        self._add_block(x, y, z, size, road_material(), parent=parent)
+        self._add_road_marks(
+            x, y, z + thickness / 2, length, along_x, parent=parent
+        )
 
     def _add_road_marks(
         self,
@@ -1277,6 +1445,7 @@ class CityApp(ShowBase):
         road_top: float,
         road_length: float,
         along_x: bool = True,
+        parent=None,
     ) -> None:
         """Yellow dashes on the road centerline, one unit apart edge to edge."""
         length = 2.0
@@ -1288,13 +1457,14 @@ class CityApp(ShowBase):
         span = count * length + (count - 1) * gap
         z = road_top + thickness / 2
         yellow = square_material(1.0)
+        root = self.city if parent is None else parent
         for index in range(count):
             offset = -span / 2 + length / 2 + index * (length + gap)
             if along_x:
-                mark = _box_instance(self.city, length, width, thickness)
+                mark = _box_instance(root, length, width, thickness)
                 mark.setPos(x + offset, y, z)
             else:
-                mark = _box_instance(self.city, width, length, thickness)
+                mark = _box_instance(root, width, length, thickness)
                 mark.setPos(x, y + offset, z)
             mark.setMaterial(yellow, 1)
 
@@ -1308,35 +1478,50 @@ class CityApp(ShowBase):
         y_offset: float,
         eastern_road: bool,
         southern_road: bool,
+        houses_across: int = 6,
+        houses_deep: int = 2,
     ) -> None:
-        """Empty road loop with lawn and a centred 6x2 of brown houses."""
-        self._add_city_block(
-            west_face,
-            block_size,
-            ((), (), (), ()),
-            y_offset=y_offset,
-            eastern_road=eastern_road,
-            southern_road=southern_road,
-            factory=False,
-        )
-        lot_mid_x = west_face + lot_width / 2
-        # Empty-ring south face at y_offset: tower_y(-1 + offset) - half depth.
-        lot_mid_y = -1.0 + y_offset - block_size[1] / 2 + lot_depth / 2
+        """Road loop sized to the lot, lawn, and a centred grid of brown houses."""
+        road_width = 5.0
         road_thickness = 0.1
+        road_z = -block_size[2] / 2 + road_thickness / 2
+        # Same south face as an empty city-block ring at this y_offset.
+        south = -1.0 + y_offset - block_size[1] / 2
+        north = south + lot_depth
+        west = west_face
+        east = west_face + lot_width
+        mid_x = (west + east) / 2
+        mid_y = (south + north) / 2
+        if southern_road:
+            self._add_road(mid_x, south - road_width / 2, road_z, east - west, along_x=True)
+        self._add_road(mid_x, north + road_width / 2, road_z, east - west, along_x=True)
+        self._add_road(west - road_width / 2, mid_y, road_z, north - south, along_x=False)
+        if eastern_road:
+            self._add_road(east + road_width / 2, mid_y, road_z, north - south, along_x=False)
+        x_edges = ((west, -1.0), (east, 1.0)) if eastern_road else ((west, -1.0),)
+        y_edges = ((south, -1.0), (north, 1.0)) if southern_road else ((north, 1.0),)
+        for x_edge, x_sign in x_edges:
+            for y_edge, y_sign in y_edges:
+                self._add_block(
+                    x_edge + x_sign * road_width / 2,
+                    y_edge + y_sign * road_width / 2,
+                    road_z,
+                    (road_width, road_width, road_thickness),
+                    road_material(),
+                )
         self._add_block(
-            lot_mid_x,
-            lot_mid_y,
-            -block_size[2] / 2 + road_thickness / 2,
+            mid_x,
+            mid_y,
+            road_z,
             (lot_width, lot_depth, road_thickness),
             lawn_material(),
         )
         house_pitch = 5.0
-        houses_across, houses_deep = 6, 2
         for crow in range(houses_deep):
             for ccol in range(houses_across):
                 self._add_house(
-                    lot_mid_x + (ccol - (houses_across - 1) / 2) * house_pitch,
-                    lot_mid_y + (crow - (houses_deep - 1) / 2) * house_pitch,
+                    mid_x + (ccol - (houses_across - 1) / 2) * house_pitch,
+                    mid_y + (crow - (houses_deep - 1) / 2) * house_pitch,
                 )
 
     def _add_house(self, x: float, y: float) -> None:
@@ -1393,8 +1578,6 @@ class CityApp(ShowBase):
 
     def _init_car(
         self,
-        x: float,
-        y: float,
         road_top: float,
         origin_x: float,
         origin_y: float,
@@ -1405,6 +1588,7 @@ class CityApp(ShowBase):
         *,
         start_h: int,
         start_v: int,
+        start_dir: tuple[int, int] = (1, 0),
     ) -> None:
         """Blue blocky 2×1×1 car on the road grid, long axis along travel."""
         size = (2.0, 1.0, 1.0)
@@ -1439,17 +1623,14 @@ class CityApp(ShowBase):
         self._car_speed = self._car_cruise
         self._car_state = "drive"
         self._car_wait = 0.0
-        self._car_dir = (1, 0)
-        self._car_heading = 0.0
-        self._car_to = (start_v + 1, start_h)
+        self._car_dir = start_dir
+        self._car_heading = math.degrees(math.atan2(start_dir[1], start_dir[0]))
+        # Next intersection ahead; start on the approach stop for that node.
+        self._car_to = (start_v, start_h)
         self._car_pending_dir: tuple[int, int] | None = None
         self._car_signal: str | None = None
         self._car_blink_t = 0.0
-        rx, ry = self._car_right(self._car_dir)
-        self._car_pos = [
-            x + rx * self._car_lane_offset,
-            y + ry * self._car_lane_offset,
-        ]
+        self._car_pos = list(self._car_stop_xy(*self._car_to, self._car_dir))
         self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
         self._place_car()
         self._car_apply_signals(None, True)
@@ -1459,6 +1640,84 @@ class CityApp(ShowBase):
             self._car_origin_x + v * self._car_stride_x,
             self._car_origin_y + h * self._car_stride_y,
         )
+
+    def _car_set_highway_lane(self, direction: tuple[int, int]) -> None:
+        """Pick the right-hand highway lane for northbound or southbound travel."""
+        dx, dy = direction
+        if dy < 0:
+            self._car_highway_x = self._car_highway_west_lane_x
+        elif dy > 0:
+            self._car_highway_x = self._car_highway_east_lane_x
+
+    def _car_highway_intersection_xy(self, exit_i: int) -> tuple[float, float]:
+        return (self._car_highway_x, self._car_highway_exits[exit_i])
+
+    def _car_highway_stop(
+        self,
+        exit_i: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Approach stop at a highway exit, centered in the active highway lane."""
+        dx, dy = direction
+        if dy != 0:
+            self._car_set_highway_lane(direction)
+        cx, cy = self._car_highway_intersection_xy(exit_i)
+        offset = self._car_stop_offset
+        # Highway lane X is already the lane centre — do not apply city lane shift
+        # sideways along the highway (that was pushing the car into the barriers).
+        if dx == 0:
+            return cx, cy - dy * offset
+        _, ly = self._car_lane_shift(direction)
+        return cx - dx * offset, cy + ly
+
+    def _car_highway_leave(
+        self,
+        exit_i: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Far edge leaving a highway exit, centered in the active highway lane."""
+        dx, dy = direction
+        if dy != 0:
+            self._car_set_highway_lane(direction)
+        cx, cy = self._car_highway_intersection_xy(exit_i)
+        offset = self._car_stop_offset
+        if dx == 0:
+            return cx, cy + dy * offset
+        _, ly = self._car_lane_shift(direction)
+        return cx + dx * offset, cy + ly
+
+    def _car_next_highway_exit(self, exit_i: int, dy: int) -> int | None:
+        """Next exit index along the highway, or None at the end."""
+        nxt = exit_i + (1 if dy > 0 else -1)
+        if 0 <= nxt < len(self._car_highway_exits):
+            return nxt
+        return None
+
+    def _car_gateway_exit_i(self) -> int | None:
+        """Highway exit index reachable from the current city node, if any."""
+        v, h = self._car_to
+        if v != 0 or h != self._car_exit_row:
+            return None
+        if abs(self._car_origin_y - self._car_south_road0) < 1e-6:
+            return 0
+        if abs(self._car_origin_y - (self._car_south_road0 + self._car_north_shift)) < 1e-6:
+            return 1
+        return None
+
+    def _car_enter_city_from_highway(self, exit_i: int) -> None:
+        """Switch from a highway exit onto the connected city's western road."""
+        self._car_on_highway = False
+        if exit_i == 0:
+            self._car_origin_y = self._car_south_road0
+        else:
+            self._car_origin_y = self._car_south_road0 + self._car_north_shift
+        self._car_to = (0, self._car_exit_row)
+
+    def _car_enter_highway_from_city(self, exit_i: int) -> None:
+        """Switch from the city's western road onto the highway exit."""
+        self._car_on_highway = True
+        self._car_origin_y = self._car_south_road0
+        self._car_exit_i = exit_i
 
     @staticmethod
     def _car_right(direction: tuple[int, int]) -> tuple[int, int]:
@@ -1502,6 +1761,8 @@ class CityApp(ShowBase):
 
     def _car_choose_turn(self) -> tuple[int, int]:
         """Pick forward, left, or right from the car's front among open roads."""
+        if self._car_on_highway:
+            return self._car_choose_highway_turn()
         v, h = self._car_to
         dx, dy = self._car_dir
         options: list[tuple[int, int]] = []
@@ -1510,8 +1771,33 @@ class CityApp(ShowBase):
             (-dy, dx),
             (dy, -dx),
         ):
+            if ndx == -1 and ndy == 0 and self._car_gateway_exit_i() is not None:
+                options.append((ndx, ndy))
+                continue
             if self._car_in_bounds(v + ndx, h + ndy):
                 options.append((ndx, ndy))
+        if not options:
+            return (-dx, -dy)
+        return random.choice(options)
+
+    def _car_choose_highway_turn(self) -> tuple[int, int]:
+        """At a highway exit: continue, turn into the city, or reverse."""
+        dx, dy = self._car_dir
+        options: list[tuple[int, int]] = []
+        if dy != 0:
+            # Traveling along the highway.
+            if self._car_next_highway_exit(self._car_exit_i, dy) is not None:
+                options.append((0, dy))
+            options.append((1, 0))
+            if self._car_next_highway_exit(self._car_exit_i, -dy) is not None:
+                options.append((0, -dy))
+        else:
+            # Arrived from the city along the exit: join highway or go back.
+            if self._car_next_highway_exit(self._car_exit_i, 1) is not None:
+                options.append((0, 1))
+            if self._car_next_highway_exit(self._car_exit_i, -1) is not None:
+                options.append((0, -1))
+            options.append((1, 0))
         if not options:
             return (-dx, -dy)
         return random.choice(options)
@@ -1565,41 +1851,16 @@ class CityApp(ShowBase):
         self._car_blink_t = 0.0
         self._car_update_signals(0.0)
 
-    def _car_begin_maneuver(self, new_dir: tuple[int, int]) -> None:
-        """Leave the stop line: arc on turns, straight when going forward."""
-        old_dir = self._car_dir
-        v, h = self._car_to
-        cx, cy = self._car_intersection_xy(v, h)
+    def _car_start_arc(
+        self,
+        old_dir: tuple[int, int],
+        new_dir: tuple[int, int],
+        cx: float,
+        cy: float,
+    ) -> None:
+        """Begin a right-lane quarter-circle from old_dir to new_dir at (cx, cy)."""
         o = self._car_stop_offset
         cross = old_dir[0] * new_dir[1] - old_dir[1] * new_dir[0]
-        dot = old_dir[0] * new_dir[0] + old_dir[1] * new_dir[1]
-        self._car_dir = new_dir
-        self._car_to = (v + new_dir[0], h + new_dir[1])
-        self._car_speed = 0.0
-        self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
-        self._car_pending_dir = None
-
-        if dot > 0:
-            # Straight through to the far edge, then on to the next stop.
-            self._car_clear_signals()
-            self._car_state = "crossing"
-            self._car_target = self._car_exit_xy(v, h, new_dir)
-            return
-
-        if cross == 0:
-            # Rare dead-end U-turn: spin in place, then drive back.
-            self._car_clear_signals()
-            self._car_state = "u-turn"
-            self._car_heading_from = self._car_heading
-            self._car_heading_to = math.degrees(math.atan2(new_dir[1], new_dir[0]))
-            delta = (self._car_heading_to - self._car_heading_from + 180.0) % 360.0 - 180.0
-            self._car_heading_to = self._car_heading_from + delta
-            self._car_u_turn_span = abs(delta) if abs(delta) > 1e-3 else 180.0
-            self._car_u_turn_progress = 0.0
-            return
-
-        # Quarter-circle in the right lane: left turns are wider, right tighter.
-        # Keep the blinker going through the turn.
         sign = 1.0 if cross > 0 else -1.0
         lane = self._car_lane_offset
         self._car_state = "turning"
@@ -1613,6 +1874,117 @@ class CityApp(ShowBase):
         ry = self._car_pos[1] - self._car_arc_center[1]
         self._car_arc_angle = math.atan2(ry, rx)
         self._car_arc_end = self._car_arc_angle + sign * (math.pi / 2)
+
+    def _car_start_u_turn(self, new_dir: tuple[int, int]) -> None:
+        """Spin in place to face ``new_dir``, then drive to ``_car_after_cross``."""
+        self._car_clear_signals()
+        self._car_state = "u-turn"
+        self._car_heading_from = self._car_heading
+        self._car_heading_to = math.degrees(math.atan2(new_dir[1], new_dir[0]))
+        delta = (self._car_heading_to - self._car_heading_from + 180.0) % 360.0 - 180.0
+        self._car_heading_to = self._car_heading_from + delta
+        self._car_u_turn_span = abs(delta) if abs(delta) > 1e-3 else 180.0
+        self._car_u_turn_progress = 0.0
+
+    def _car_begin_maneuver(self, new_dir: tuple[int, int]) -> None:
+        """Leave the stop line: arc on turns, straight when going forward."""
+        old_dir = self._car_dir
+        cross = old_dir[0] * new_dir[1] - old_dir[1] * new_dir[0]
+        dot = old_dir[0] * new_dir[0] + old_dir[1] * new_dir[1]
+        self._car_speed = 0.0
+        self._car_pending_dir = None
+
+        if self._car_on_highway:
+            self._car_begin_highway_maneuver(old_dir, new_dir, cross, dot)
+            return
+
+        v, h = self._car_to
+        gateway = self._car_gateway_exit_i()
+        # West from the gateway: leave the city intersection toward the highway exit.
+        if new_dir == (-1, 0) and gateway is not None:
+            self._car_dir = new_dir
+            self._car_enter_highway_from_city(gateway)
+            self._car_after_cross = self._car_highway_stop(gateway, new_dir)
+            self._car_clear_signals()
+            self._car_state = "crossing"
+            self._car_target = self._car_exit_xy(v, h, new_dir)
+            return
+
+        cx, cy = self._car_intersection_xy(v, h)
+        self._car_dir = new_dir
+        self._car_to = (v + new_dir[0], h + new_dir[1])
+        self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
+
+        if dot > 0:
+            self._car_clear_signals()
+            self._car_state = "crossing"
+            self._car_target = self._car_exit_xy(v, h, new_dir)
+            return
+
+        if cross == 0:
+            self._car_start_u_turn(new_dir)
+            return
+
+        self._car_start_arc(old_dir, new_dir, cx, cy)
+
+    def _car_begin_highway_maneuver(
+        self,
+        old_dir: tuple[int, int],
+        new_dir: tuple[int, int],
+        cross: float,
+        dot: float,
+    ) -> None:
+        """Maneuver at a highway exit intersection."""
+        exit_i = self._car_exit_i
+        cx, cy = self._car_highway_intersection_xy(exit_i)
+
+        # Onto the exit toward the city (east).
+        if new_dir == (1, 0) and old_dir != (1, 0):
+            self._car_dir = new_dir
+            self._car_enter_city_from_highway(exit_i)
+            self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
+            if cross == 0:
+                self._car_start_u_turn(new_dir)
+            else:
+                self._car_start_arc(old_dir, new_dir, cx, cy)
+            return
+
+        self._car_dir = new_dir
+
+        # Continue or join travel along the highway (north/south).
+        if new_dir[0] == 0 and new_dir[1] != 0:
+            self._car_set_highway_lane(new_dir)
+            cx, cy = self._car_highway_intersection_xy(exit_i)
+            nxt = self._car_next_highway_exit(exit_i, new_dir[1])
+            if nxt is None:
+                self._car_after_cross = self._car_highway_stop(exit_i, new_dir)
+                self._car_start_u_turn(new_dir)
+                return
+            self._car_exit_i = nxt
+            self._car_after_cross = self._car_highway_stop(nxt, new_dir)
+            if dot > 0:
+                self._car_clear_signals()
+                self._car_state = "crossing"
+                self._car_target = self._car_highway_leave(exit_i, new_dir)
+                return
+            if cross == 0:
+                self._car_start_u_turn(new_dir)
+                return
+            # Turn from the exit onto the highway in the correct lane.
+            self._car_start_arc(old_dir, new_dir, cx, cy)
+            return
+
+        # East while already facing east: head to the city stop.
+        if new_dir == (1, 0):
+            self._car_enter_city_from_highway(exit_i)
+            self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
+            self._car_clear_signals()
+            self._car_state = "crossing"
+            self._car_target = self._car_highway_leave(exit_i, new_dir)
+            return
+
+        self._car_after_cross = self._car_highway_stop(exit_i, new_dir)
+        self._car_start_u_turn(new_dir)
 
     def _place_car(self) -> None:
         self.car.setPos(self._car_pos[0], self._car_pos[1], self._car_z)
