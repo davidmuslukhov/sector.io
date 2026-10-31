@@ -21,8 +21,10 @@ towers meet the western edge of the road to their east, and southern towers
 meet the northern edge of the road to their south. Blocky traffic lights hang
 under thin black rods that span each approach at four-way intersections, eight
 units above the road; approaches with no tower or factory wall get matching
-vertical rods down to the road. A blue 2x1x1 car drives the road grid: it
-cruises, decelerates into each intersection, waits three seconds, then goes
+vertical rods down to the road. A blue blocky 2x1x1 car drives the road grid:
+body, cabin, bumpers, lights, grille, mirrors, and wheels stay cubic; it
+cruises, decelerates into each intersection, waits three seconds with the
+matching side lamps blinking for a pending left or right turn, then goes
 forward, left, or right relative to its front. The sphere group and a brown
 cube capped by a pyramid stand 30 units to the right of the road."""
 
@@ -197,6 +199,8 @@ def make_box(
 _BOX_TEMPLATES: dict[tuple[float, float, float, bool, bool], NodePath] = {}
 # Flattened factory buildings. Keyed by plan, height, and bottom z.
 _FACTORY_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
+# Flattened blocky car mesh. Copied once per scene.
+_CAR_TEMPLATE: NodePath | None = None
 
 
 def _box_instance(
@@ -279,6 +283,84 @@ def _factory_template(
     return root
 
 
+def _car_template() -> NodePath:
+    """Blocky blue car. Origin at the bounding-box centre; +X is forward.
+
+    Body parts are flattened; corner lamps stay named children so turn signals
+    can blink left or right without rebuilding the mesh.
+    """
+    global _CAR_TEMPLATE
+    if _CAR_TEMPLATE is not None:
+        return _CAR_TEMPLATE
+
+    root = NodePath("car")
+    hull = root.attachNewNode("hull")
+    body = car_material("body")
+    glass = car_material("glass")
+    trim = car_material("trim")
+    headlight = car_material("headlight")
+    taillight = car_material("taillight")
+    wheel = car_material("wheel")
+
+    def part(
+        parent: NodePath,
+        sx: float,
+        sy: float,
+        sz: float,
+        x: float,
+        y: float,
+        z: float,
+        material: Material,
+        name: str | None = None,
+    ) -> NodePath:
+        box = _box_instance(parent, sx, sy, sz)
+        box.setPos(x, y, z)
+        box.setMaterial(material, 1)
+        if name is not None:
+            box.setName(name)
+        return box
+
+    # Lower hull and raised cabin keep the familiar 2×1×1 silhouette.
+    part(hull, 1.7, 0.92, 0.42, 0.0, 0.0, -0.12, body)
+    part(hull, 1.05, 0.84, 0.36, -0.05, 0.0, 0.27, body)
+
+    # Dark window panes inset on the cabin faces.
+    part(hull, 0.06, 0.72, 0.26, 0.505, 0.0, 0.28, glass)
+    part(hull, 0.06, 0.72, 0.26, -0.58, 0.0, 0.28, glass)
+    for side in (-1.0, 1.0):
+        part(hull, 0.7, 0.05, 0.24, -0.05, side * 0.445, 0.28, glass)
+
+    # Front and rear bumpers, plus a grille between the headlights.
+    part(hull, 0.18, 1.0, 0.22, 0.94, 0.0, -0.2, trim)
+    part(hull, 0.18, 1.0, 0.22, -0.94, 0.0, -0.2, trim)
+    part(hull, 0.08, 0.5, 0.16, 0.9, 0.0, -0.08, trim)
+
+    # Side mirrors and a thin roof light bar.
+    for side in (-1.0, 1.0):
+        part(hull, 0.14, 0.12, 0.1, 0.28, side * 0.52, 0.12, trim)
+    part(hull, 0.5, 0.2, 0.06, -0.05, 0.0, 0.48, trim)
+
+    # Four blocky wheels under the corners.
+    for wx, wy in ((0.55, 0.42), (0.55, -0.42), (-0.55, 0.42), (-0.55, -0.42)):
+        part(hull, 0.38, 0.2, 0.38, wx, wy, -0.31, wheel)
+
+    hull.flattenStrong()
+
+    # +Y is the car's left; -Y is right. Lamps stay unflattened for signalling.
+    for side, label in ((1.0, "left"), (-1.0, "right")):
+        part(
+            root, 0.1, 0.18, 0.14, 0.96, side * 0.34, -0.05, headlight,
+            f"headlight-{label}",
+        )
+        part(
+            root, 0.1, 0.18, 0.14, -0.96, side * 0.34, -0.05, taillight,
+            f"taillight-{label}",
+        )
+
+    _CAR_TEMPLATE = root
+    return root
+
+
 def make_pyramid(sx: float, sy: float, height: float) -> GeomNode:
     """Square pyramid. The base sits on z = 0, centred on the origin, with the apex above it."""
     hx, hy = sx / 2.0, sy / 2.0
@@ -347,6 +429,7 @@ _LAWN_MATERIAL: Material | None = None
 _SQUARE_MATERIALS: dict[float, Material] = {}
 _BROWN_MATERIALS: dict[float, Material] = {}
 _SIGNAL_MATERIALS: dict[str, Material] = {}
+_CAR_MATERIALS: dict[str, Material] = {}
 
 
 def sphere_material() -> Material:
@@ -475,6 +558,44 @@ def signal_material(name: str) -> Material:
     if name != "housing":
         material.setEmission((*tuple(channel * 0.35 for channel in diffuse), 1))
     _SIGNAL_MATERIALS[name] = material
+    return material
+
+
+def car_material(name: str) -> Material:
+    """Paint, glass, trim, lamps, and rubber for the blocky car parts."""
+    cached = _CAR_MATERIALS.get(name)
+    if cached is not None:
+        return cached
+    # body matches the old solid-blue car; lamps emit so they read under sun.
+    colours = {
+        "body": ((0.15, 0.28, 0.4), (0.25, 0.55, 0.85), (0.45, 0.45, 0.5), 32, None),
+        "glass": ((0.05, 0.08, 0.12), (0.12, 0.2, 0.28), (0.35, 0.4, 0.45), 48, None),
+        "trim": ((0.06, 0.06, 0.07), (0.14, 0.14, 0.16), (0.2, 0.2, 0.22), 12, None),
+        "wheel": ((0.04, 0.04, 0.04), (0.08, 0.08, 0.09), (0.05, 0.05, 0.05), 4, None),
+        "headlight": (
+            (0.55, 0.5, 0.35),
+            (0.95, 0.9, 0.65),
+            (0.7, 0.65, 0.4),
+            40,
+            (0.55, 0.5, 0.3),
+        ),
+        "taillight": (
+            (0.45, 0.05, 0.05),
+            (0.9, 0.12, 0.1),
+            (0.55, 0.15, 0.1),
+            32,
+            (0.4, 0.05, 0.04),
+        ),
+    }
+    ambient, diffuse, specular, shininess, emission = colours[name]
+    material = Material()
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((*specular, 1))
+    material.setShininess(shininess)
+    if emission is not None:
+        material.setEmission((*emission, 1))
+    _CAR_MATERIALS[name] = material
     return material
 
 
@@ -1285,10 +1406,19 @@ class CityApp(ShowBase):
         start_h: int,
         start_v: int,
     ) -> None:
-        """Blue 2×1×1 car on the road grid, long axis along travel."""
+        """Blue blocky 2×1×1 car on the road grid, long axis along travel."""
         size = (2.0, 1.0, 1.0)
-        self.car = _box_instance(self.render, *size)
-        self.car.setMaterial(sphere_material(), 1)
+        self.car = _car_template().copyTo(self.render)
+        self._car_lights = {
+            "left": [
+                self.car.find("**/headlight-left"),
+                self.car.find("**/taillight-left"),
+            ],
+            "right": [
+                self.car.find("**/headlight-right"),
+                self.car.find("**/taillight-right"),
+            ],
+        }
         self._car_z = road_top + size[2] / 2
         self._car_origin_x = origin_x
         self._car_origin_y = origin_y
@@ -1305,12 +1435,16 @@ class CityApp(ShowBase):
         self._car_accel = 12.0
         self._car_decel_dist = 6.0
         self._car_wait_time = 3.0
+        self._car_blink_period = 0.35
         self._car_speed = self._car_cruise
         self._car_state = "drive"
         self._car_wait = 0.0
         self._car_dir = (1, 0)
         self._car_heading = 0.0
         self._car_to = (start_v + 1, start_h)
+        self._car_pending_dir: tuple[int, int] | None = None
+        self._car_signal: str | None = None
+        self._car_blink_t = 0.0
         rx, ry = self._car_right(self._car_dir)
         self._car_pos = [
             x + rx * self._car_lane_offset,
@@ -1318,6 +1452,7 @@ class CityApp(ShowBase):
         ]
         self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
         self._place_car()
+        self._car_apply_signals(None, True)
 
     def _car_intersection_xy(self, v: int, h: int) -> tuple[float, float]:
         return (
@@ -1381,6 +1516,55 @@ class CityApp(ShowBase):
             return (-dx, -dy)
         return random.choice(options)
 
+    @staticmethod
+    def _car_signal_side(
+        old_dir: tuple[int, int],
+        new_dir: tuple[int, int],
+    ) -> str | None:
+        """Which corner lamps blink for this turn: left, right, or none."""
+        cross = old_dir[0] * new_dir[1] - old_dir[1] * new_dir[0]
+        if cross > 0:
+            return "left"
+        if cross < 0:
+            return "right"
+        return None
+
+    def _car_apply_signals(self, side: str | None, lit: bool) -> None:
+        """Dim the signalling side when ``lit`` is false; other lamps stay on."""
+        for name, lamps in self._car_lights.items():
+            if side is not None and name == side and not lit:
+                scale = 0.12
+            else:
+                scale = 1.0
+            for lamp in lamps:
+                if not lamp.isEmpty():
+                    lamp.setColorScale(scale, scale, scale, 1)
+
+    def _car_update_signals(self, dt: float) -> None:
+        """Blink the pending turn side, or restore steady lamps when idle."""
+        if self._car_signal is None:
+            self._car_apply_signals(None, True)
+            return
+        self._car_blink_t += dt
+        lit = (int(self._car_blink_t / self._car_blink_period) % 2) == 0
+        self._car_apply_signals(self._car_signal, lit)
+
+    def _car_clear_signals(self) -> None:
+        self._car_signal = None
+        self._car_pending_dir = None
+        self._car_blink_t = 0.0
+        self._car_apply_signals(None, True)
+
+    def _car_begin_wait(self) -> None:
+        """Stop at the line, pick the next move, and start signalling it."""
+        self._car_speed = 0.0
+        self._car_state = "wait"
+        self._car_wait = self._car_wait_time
+        self._car_pending_dir = self._car_choose_turn()
+        self._car_signal = self._car_signal_side(self._car_dir, self._car_pending_dir)
+        self._car_blink_t = 0.0
+        self._car_update_signals(0.0)
+
     def _car_begin_maneuver(self, new_dir: tuple[int, int]) -> None:
         """Leave the stop line: arc on turns, straight when going forward."""
         old_dir = self._car_dir
@@ -1393,15 +1577,18 @@ class CityApp(ShowBase):
         self._car_to = (v + new_dir[0], h + new_dir[1])
         self._car_speed = 0.0
         self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
+        self._car_pending_dir = None
 
         if dot > 0:
             # Straight through to the far edge, then on to the next stop.
+            self._car_clear_signals()
             self._car_state = "crossing"
             self._car_target = self._car_exit_xy(v, h, new_dir)
             return
 
         if cross == 0:
             # Rare dead-end U-turn: spin in place, then drive back.
+            self._car_clear_signals()
             self._car_state = "u-turn"
             self._car_heading_from = self._car_heading
             self._car_heading_to = math.degrees(math.atan2(new_dir[1], new_dir[0]))
@@ -1412,6 +1599,7 @@ class CityApp(ShowBase):
             return
 
         # Quarter-circle in the right lane: left turns are wider, right tighter.
+        # Keep the blinker going through the turn.
         sign = 1.0 if cross > 0 else -1.0
         lane = self._car_lane_offset
         self._car_state = "turning"
@@ -1441,8 +1629,10 @@ class CityApp(ShowBase):
         dt = min(self.clock.getDt(), 0.05)
         if self._car_state == "wait":
             self._car_wait -= dt
+            self._car_update_signals(dt)
             if self._car_wait <= 0.0:
-                self._car_begin_maneuver(self._car_choose_turn())
+                pending = self._car_pending_dir or self._car_choose_turn()
+                self._car_begin_maneuver(pending)
                 self._place_car()
             return task.cont
 
@@ -1468,6 +1658,7 @@ class CityApp(ShowBase):
 
         if self._car_state == "turning":
             self._car_advance_speed(dt)
+            self._car_update_signals(dt)
             radius = self._car_arc_radius
             angle_step = (self._car_speed / radius) * dt * self._car_arc_sign
             remain = self._car_arc_end - self._car_arc_angle
@@ -1481,6 +1672,7 @@ class CityApp(ShowBase):
                 )
                 self._car_target = self._car_after_cross
                 self._car_state = "drive"
+                self._car_clear_signals()
             else:
                 self._car_arc_angle += angle_step
                 acx, acy = self._car_arc_center
@@ -1505,9 +1697,7 @@ class CityApp(ShowBase):
                 self._car_state = "drive"
                 self._place_car()
                 return task.cont
-            self._car_speed = 0.0
-            self._car_state = "wait"
-            self._car_wait = self._car_wait_time
+            self._car_begin_wait()
             self._place_car()
             return task.cont
 
