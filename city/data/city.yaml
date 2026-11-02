@@ -1,0 +1,48 @@
+# Software-city layout. Derived geometry (strides, road origins, twin offset)
+# is computed in Python from these authored knobs.
+
+lot:
+  block_size: [5.0, 5.0, 2.0]
+  tower_count: 5
+  tower_gap: 1.0
+  road_width: 5.0
+  floor_min: 10
+  floor_max: 25
+  towers_per_ring: 10
+
+districts:
+  grid: 4
+  housing:
+    cols: 6
+    rows: 2
+  west_housing:
+    cols: 2
+    rows: 8
+  south_factories:
+    rows: 2
+    cols: 4
+  east_factories:
+    cols: 2
+    rows: 6
+  gap:
+    row_span: 2
+    houses_across: 2
+    houses_deep: 6
+
+twin:
+  north_shift_lots: 20
+
+highway:
+  lanes: 6
+  fence_w: 0.25
+  fence_h: 1.0
+  barrier_w: 0.5
+  barrier_h: 1.0
+  exit_row: 4
+
+landmarks:
+  sphere_side: 2.5
+  sphere_radius: 1.0
+  block_gap: 5.0
+  landmark_east_gap: 30.0
+  house_gap: 5.0
