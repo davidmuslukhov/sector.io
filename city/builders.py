@@ -15,11 +15,15 @@ from city.materials import (
     BLOCK_SHADES,
     block_material,
     brown_material,
+    centerline_material,
     lawn_material,
+    plinth_material,
     road_material,
+    roof_material,
     signal_material,
     square_lightness,
     square_material,
+    stack_material,
 )
 from city.mesh import (
     box_instance,
@@ -245,26 +249,78 @@ class SceneBuilders:
         heading: float = 0.0,
         doors: tuple[str, ...] = ("-y",),
     ) -> None:
-        """Stack ``floors`` blocks. Each floor gets one row of windows on every face."""
+        """Stack ``floors`` blocks. Each floor gets one row of windows on every face.
+
+        Adds a stone plinth, dark roof cap, and a couple of rooftop units so the
+        silhouette reads more like a real tower without per-window extras.
+        """
         parent = None
         if heading:
             parent = self.city.attachNewNode("tower")
             parent.setPos(x, y, 0)
             parent.setH(heading)
             x, y = 0.0, 0.0
+        sx, sy, sz = size
+        # Slightly proud base so the ground floor meets the sidewalk.
+        plinth_h = 0.28
+        self._add_block(
+            x,
+            y,
+            -sz / 2 + plinth_h / 2,
+            (sx + 0.35, sy + 0.35, plinth_h),
+            plinth_material(),
+            parent=parent,
+        )
         for floor in range(floors):
-            floor_z = floor * size[2]
+            floor_z = floor * sz
             self._add_block(
                 x,
                 y,
                 floor_z,
                 size,
                 material,
-                top=floor == floors - 1,
+                top=False,
                 bottom=floor == 0,
                 parent=parent,
             )
             self._add_face_squares(x, y, floor_z, size, floor * 12, parent=parent, doors=doors)
+
+        top_z = (floors - 1) * sz + sz / 2
+        # Slight cornice overhang, then a dark roof deck inset inside it.
+        self._add_block(
+            x,
+            y,
+            top_z + 0.05,
+            (sx + 0.18, sy + 0.18, 0.12),
+            block_material(0.82),
+            parent=parent,
+        )
+        self._add_block(
+            x,
+            y,
+            top_z + 0.14,
+            (sx - 0.08, sy - 0.08, 0.1),
+            roof_material(),
+            parent=parent,
+        )
+        if floors >= 12:
+            unit = stack_material()
+            self._add_block(
+                x - sx * 0.22,
+                y + sy * 0.18,
+                top_z + 0.5,
+                (0.7, 0.55, 0.7),
+                unit,
+                parent=parent,
+            )
+            self._add_block(
+                x + sx * 0.2,
+                y - sy * 0.15,
+                top_z + 0.42,
+                (0.55, 0.55, 0.5),
+                unit,
+                parent=parent,
+            )
 
     def _add_block(
         self,
@@ -292,28 +348,30 @@ class SceneBuilders:
         parent=None,
         doors: tuple[str, ...] = ("-y",),
     ) -> None:
-        """Three 1×1 squares on every vertical face, inset 0.5 from the edges.
+        """Three portrait windows on every vertical face, inset from the edges.
 
         ``doors`` names ground-floor faces that meet a road ("-y", "+y", "-x", "+x").
         The centre window on each of those faces is a door instead.
         """
         root = self.city if parent is None else parent
         sx, sy, sz = size
-        square = 1.0
-        margin = 0.5
-        depth = 0.04
-        row_z = z - sz / 2 + margin + square / 2
+        # Portrait office panes leave a concrete frame around each opening.
+        win_w = 0.78
+        win_h = 1.15
+        margin_x = 0.55
+        depth = 0.05
+        row_z = z - sz / 2 + (sz - win_h) / 2 + win_h / 2
         level = level_start
         door_faces = set(doors)
 
         def centers(span: float) -> tuple[float, float, float]:
-            left = -span / 2 + margin + square / 2
-            right = span / 2 - margin - square / 2
+            left = -span / 2 + margin_x + win_w / 2
+            right = span / 2 - margin_x - win_w / 2
             return (left, (left + right) / 2, right)
 
         def add_door(px: float, py: float, width_along_x: bool) -> None:
-            door_width = 1.0
-            door_height = 1.25
+            door_width = 0.9
+            door_height = 1.35
             door_bottom = z - sz / 2
             if width_along_x:
                 panel = box_instance(root, door_width, depth, door_height)
@@ -326,6 +384,7 @@ class SceneBuilders:
         along_y = centers(sy)
         for sign in (1.0, -1.0):
             face = "+y" if sign > 0 else "-y"
+            # Sit slightly proud so glass catches the sun against the wall.
             face_y = y + sign * (sy / 2 + depth / 2)
             for offset in along_x:
                 tone = square_lightness(level)
@@ -333,7 +392,7 @@ class SceneBuilders:
                 if z == 0 and offset == 0 and face in door_faces:
                     add_door(x + offset, face_y, width_along_x=True)
                     continue
-                panel = box_instance(root, square, depth, square)
+                panel = box_instance(root, win_w, depth, win_h)
                 panel.setPos(x + offset, face_y, row_z)
                 panel.setMaterial(square_material(tone), 1)
             face = "+x" if sign > 0 else "-x"
@@ -344,7 +403,7 @@ class SceneBuilders:
                 if z == 0 and offset == 0 and face in door_faces:
                     add_door(face_x, y + offset, width_along_x=False)
                     continue
-                panel = box_instance(root, depth, square, square)
+                panel = box_instance(root, depth, win_w, win_h)
                 panel.setPos(face_x, y + offset, row_z)
                 panel.setMaterial(square_material(tone), 1)
 
@@ -355,14 +414,20 @@ class SceneBuilders:
         road_top: float,
         block_size: tuple[float, float, float],
     ) -> None:
-        """Vertical rod from the road up to traffic-light height."""
+        """Mast post with a wider base flange up to traffic-light height."""
         floor = block_size[2]
-        rod_thin = floor * 0.05
+        rod_thin = floor * 0.06
         rod_z = road_top + 8.0
         post_h = rod_z - road_top
-        post = box_instance(self.city, rod_thin, rod_thin, post_h)
-        post.setPos(x, y, road_top + post_h / 2)
-        post.setMaterial(signal_material("housing"), 1)
+        trim = signal_material("trim")
+        housing = signal_material("housing")
+        base_h = floor * 0.2
+        base = box_instance(self.city, rod_thin * 3.2, rod_thin * 3.2, base_h)
+        base.setPos(x, y, road_top + base_h / 2)
+        base.setMaterial(trim, 1)
+        post = box_instance(self.city, rod_thin, rod_thin, post_h - base_h)
+        post.setPos(x, y, road_top + base_h + (post_h - base_h) / 2)
+        post.setMaterial(housing, 1)
 
     def _add_traffic_light(
         self,
@@ -376,17 +441,18 @@ class SceneBuilders:
         face_x: float,
         face_y: float,
     ) -> None:
-        """Signal hung under a thin rod that spans building to building."""
+        """Signal hung under a mast arm: backboard, yellow head, visored lenses."""
         floor = block_size[2]
         rod_z = road_top + 8.0
-        box_w = floor * 0.4
-        box_d = floor * 0.18
-        box_h = floor * 1.2
-        lamp = floor * 0.28
-        lamp_depth = floor * 0.06
-        gap = floor * 0.06
-        rod_thin = floor * 0.05
+        box_w = floor * 0.42
+        box_d = floor * 0.22
+        box_h = floor * 1.35
+        lamp = floor * 0.26
+        lamp_depth = floor * 0.05
+        gap = floor * 0.08
+        rod_thin = floor * 0.06
         housing = signal_material("housing")
+        trim = signal_material("trim")
 
         along_x = abs(x1 - x0) >= abs(y1 - y0)
         rod_len = abs(x1 - x0) if along_x else abs(y1 - y0)
@@ -399,24 +465,47 @@ class SceneBuilders:
         rod.setPos(mid_x, mid_y, rod_z)
         rod.setMaterial(housing, 1)
 
-        # Hang from the underside of the rod, centred on the span.
+        # Hang from the underside of the mast arm, facing the intersection.
+        hang = floor * 0.2
         root = self.city.attachNewNode("traffic-light")
-        root.setPos(mid_x, mid_y, rod_z - rod_thin / 2 - box_h / 2)
+        root.setPos(mid_x, mid_y, rod_z - rod_thin / 2 - hang - box_h / 2)
         root.lookAt(face_x, face_y, root.getZ())
+
+        # Short drop pipe from the arm into the head.
+        drop = box_instance(root, rod_thin * 0.9, rod_thin * 0.9, hang)
+        drop.setPos(0.0, 0.0, box_h / 2 + hang / 2)
+        drop.setMaterial(trim, 1)
+
+        # Dark backboard behind the head (reads clearly from a distance).
+        board_w = box_w * 1.55
+        board_h = box_h * 1.12
+        board = box_instance(root, board_w, floor * 0.04, board_h)
+        board.setPos(0.0, -box_d / 2 - floor * 0.02, 0.0)
+        board.setMaterial(trim, 1)
 
         head = box_instance(root, box_w, box_d, box_h)
         head.setPos(0.0, 0.0, 0.0)
         head.setMaterial(housing, 1)
 
         lamp_y = box_d / 2 + lamp_depth / 2
-        # Top to bottom: red, amber, green, same stacking as a real signal.
+        # Top to bottom: red (lit), amber and green unlit — a stopped signal.
         colours = ("red", "amber", "green")
         span = 3 * lamp + 2 * gap
+        visor_depth = floor * 0.14
+        visor_h = floor * 0.05
         for index, name in enumerate(colours):
             lamp_z = span / 2 - lamp / 2 - index * (lamp + gap)
             lens = box_instance(root, lamp, lamp_depth, lamp)
             lens.setPos(0.0, lamp_y, lamp_z)
             lens.setMaterial(signal_material(name), 1)
+            # Hood over each lens so they read as real signal visors.
+            visor = box_instance(root, lamp * 1.15, visor_depth, visor_h)
+            visor.setPos(
+                0.0,
+                box_d / 2 + visor_depth / 2,
+                lamp_z + lamp / 2 - visor_h / 2,
+            )
+            visor.setMaterial(trim, 1)
 
     def _add_road(
         self,
@@ -444,8 +533,10 @@ class SceneBuilders:
         road_length: float,
         along_x: bool = True,
         parent=None,
+        *,
+        paint: Material | None = None,
     ) -> None:
-        """Yellow dashes on the road centerline, one unit apart edge to edge."""
+        """Dashes on the road centerline, one unit apart edge to edge."""
         length = 2.0
         width = 0.5
         gap = 1.0
@@ -454,7 +545,7 @@ class SceneBuilders:
         count = int((road_length + gap) / (length + gap))
         span = count * length + (count - 1) * gap
         z = road_top + thickness / 2
-        yellow = square_material(1.0)
+        paint = paint if paint is not None else centerline_material()
         root = self.city if parent is None else parent
         for index in range(count):
             offset = -span / 2 + length / 2 + index * (length + gap)
@@ -464,7 +555,7 @@ class SceneBuilders:
             else:
                 mark = box_instance(root, width, length, thickness)
                 mark.setPos(x, y + offset, z)
-            mark.setMaterial(yellow, 1)
+            mark.setMaterial(paint, 1)
 
     def _add_housing_lot(
         self,
@@ -523,14 +614,14 @@ class SceneBuilders:
                 )
 
     def _add_house(self, x: float, y: float) -> None:
-        """Brown 2x2 cube capped by a 3x3 pyramid, centred on ``(x, y)``."""
+        """Brown 2x2 cube capped by a 3x3 slate pyramid, centred on ``(x, y)``."""
         cube_size = (2.0, 2.0, 2.0)
         pyramid_size = (3.0, 3.0, 1.5)
-        self._add_block(x, y, 0.0, cube_size, brown_material(0.6), top=False)
+        self._add_block(x, y, 0.0, cube_size, brown_material(0.7), top=False)
         self._add_cube_squares(x, y, 0.0, cube_size)
         pyramid = self.city.attachNewNode(make_pyramid(*pyramid_size))
         pyramid.setPos(x, y, cube_size[2] / 2)
-        pyramid.setMaterial(brown_material(0.6), 1)
+        pyramid.setMaterial(roof_material(), 1)
 
     def _add_cube_squares(
         self,
@@ -539,18 +630,19 @@ class SceneBuilders:
         z: float,
         size: tuple[float, float, float],
     ) -> None:
-        """One centered 0.75×0.75 square on each vertical face except the front (−Y)."""
+        """One centered glass pane on each vertical face except the front (−Y)."""
         sx, sy, sz = size
-        square = 0.75
+        win_w = 0.7
+        win_h = 0.85
         depth = 0.04
         # Right, left, then back. The front face, toward the camera, has no square.
         faces = (
-            (x + sx / 2 + depth / 2, y, z, depth, square, 0),
-            (x - sx / 2 - depth / 2, y, z, depth, square, 1),
-            (x, y + sy / 2 + depth / 2, z, square, depth, 2),
+            (x + sx / 2 + depth / 2, y, z + 0.1, depth, win_w, 0),
+            (x - sx / 2 - depth / 2, y, z + 0.1, depth, win_w, 1),
+            (x, y + sy / 2 + depth / 2, z + 0.1, win_w, depth, 2),
         )
         for px, py, pz, panel_x, panel_y, level in faces:
-            panel = box_instance(self.city, panel_x, panel_y, square)
+            panel = box_instance(self.city, panel_x, panel_y, win_h)
             panel.setPos(px, py, pz)
             panel.setMaterial(square_material(square_lightness(level)), 1)
 
@@ -568,8 +660,8 @@ class SceneBuilders:
         self.render.setLight(ambient_np)
 
         sun = DirectionalLight("sun")
-        sun.setColor((0.95, 0.93, 0.88, 1))
+        sun.setColor((1.05, 0.98, 0.88, 1))
         sun_np = self.render.attachNewNode(sun)
-        sun_np.setHpr(35, -45, 0)
+        sun_np.setHpr(40, -50, 0)
         self.render.setLight(sun_np)
         self.render.setShaderAuto()

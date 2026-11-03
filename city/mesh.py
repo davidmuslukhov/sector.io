@@ -18,8 +18,10 @@ from panda3d.core import (
 from city.materials import (
     block_material,
     car_material,
+    roof_material,
     square_lightness,
     square_material,
+    stack_material,
 )
 
 def make_sphere(radius: float = 1.0, rings: int = 32, segments: int = 48) -> GeomNode:
@@ -181,30 +183,41 @@ def factory_template(
     root = NodePath("factory")
     body = box_instance(root, sx, sy, height)
     body.setPos(0.0, 0.0, bottom_z + height / 2)
-    body.setMaterial(block_material(), 1)
+    body.setMaterial(block_material(0.92), 1)
 
-    stack_size = (2.0, 2.0, 6.0)
-    stack_z = bottom_z + height + stack_size[2] / 2
+    # Cornice lip and dark roof deck on the factory hall.
+    roof_z = bottom_z + height
+    cornice = box_instance(root, sx + 0.2, sy + 0.2, 0.2)
+    cornice.setPos(0.0, 0.0, roof_z + 0.08)
+    cornice.setMaterial(block_material(0.78), 1)
+    deck = box_instance(root, sx - 0.3, sy - 0.3, 0.12)
+    deck.setPos(0.0, 0.0, roof_z + 0.2)
+    deck.setMaterial(roof_material(), 1)
+
+    stack_size = (1.8, 1.8, 5.5)
+    stack_z = roof_z + 0.3 + stack_size[2] / 2
+    sooty = stack_material()
     for stack_x in (-sx / 4, 0.0, sx / 4):
         stack = box_instance(root, *stack_size)
         stack.setPos(stack_x, 0.0, stack_z)
-        stack.setMaterial(block_material(), 1)
+        stack.setMaterial(sooty, 1)
 
-    window = 1.0
-    window_depth = 0.04
+    window_w = 0.85
+    window_h = 1.2
+    window_depth = 0.05
     side_count = 5
-    window_gap = (sy - side_count * window) / (side_count + 1)
-    long_count = int((sx - window_gap) / (window + window_gap))
-    lower_z = bottom_z + height / 2
-    window_zs = (lower_z, lower_z + 2.0)
+    window_gap = (sy - side_count * window_w) / (side_count + 1)
+    long_count = int((sx - window_gap) / (window_w + window_gap))
+    lower_z = bottom_z + height * 0.38
+    window_zs = (lower_z, lower_z + 2.4)
     level = 0
 
     def window_offsets(span: float, count: int) -> list[float]:
         return [
             -span / 2
             + window_gap
-            + window / 2
-            + index * (window + window_gap)
+            + window_w / 2
+            + index * (window_w + window_gap)
             for index in range(count)
         ]
 
@@ -212,14 +225,14 @@ def factory_template(
         face_x = sign * (sx / 2 + window_depth / 2)
         for window_z in window_zs:
             for offset_y in window_offsets(sy, side_count):
-                panel = box_instance(root, window_depth, window, window)
+                panel = box_instance(root, window_depth, window_w, window_h)
                 panel.setPos(face_x, offset_y, window_z)
                 panel.setMaterial(square_material(square_lightness(level)), 1)
                 level += 1
         face_y = sign * (sy / 2 + window_depth / 2)
         for window_z in window_zs:
             for offset_x in window_offsets(sx, long_count):
-                panel = box_instance(root, window, window_depth, window)
+                panel = box_instance(root, window_w, window_depth, window_h)
                 panel.setPos(offset_x, face_y, window_z)
                 panel.setMaterial(square_material(square_lightness(level)), 1)
                 level += 1

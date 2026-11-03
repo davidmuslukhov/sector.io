@@ -12,7 +12,7 @@ from direct.showbase.ShowBase import ShowBase
 
 from city.builders import SceneBuilders
 from city.car import CarController
-from city.materials import block_material, road_material, sphere_material
+from city.materials import block_material, mark_material, road_material, sphere_material
 from city.plan import default_city_plan
 
 
@@ -21,7 +21,8 @@ class CityApp(ShowBase):
         super().__init__()
         self.screenshot_path = screenshot
         self.disableMouse()
-        self.setBackgroundColor(0.08, 0.09, 0.12, 1)
+        # Soft daylight sky; fog in SceneBuilders matches this tint.
+        self.setBackgroundColor(0.62, 0.72, 0.84, 1)
 
         plan = default_city_plan()
         self.plan = plan
@@ -192,6 +193,7 @@ class CityApp(ShowBase):
         road_top = road_z + road_thickness / 2
         centre_divider = plan.highway_lanes // 2
         for divider in range(1, plan.highway_lanes):
+            # Physical median barrier occupies the center; skip its paint.
             if divider == centre_divider:
                 continue
             mark_x = highway_east - divider * lane_width
@@ -202,6 +204,7 @@ class CityApp(ShowBase):
                 highway_length,
                 along_x=False,
                 parent=self.highway,
+                paint=mark_material(),
             )
         for exit_y in exit_ys:
             builders._add_road(
@@ -314,7 +317,7 @@ class CityApp(ShowBase):
                 parent=self.a2dTopRight,
                 pos=(-0.04, -0.08),
                 scale=0.09,
-                fg=(1, 1, 1, 1),
+                fg=(0.12, 0.14, 0.18, 1),
                 align=TextNode.ARight,
                 mayChange=True,
             )
