@@ -20,6 +20,7 @@ from city.materials import (
     plinth_material,
     road_material,
     roof_material,
+    signal_lens_material,
     signal_material,
     square_lightness,
     square_material,
@@ -455,6 +456,8 @@ class SceneBuilders:
         trim = signal_material("trim")
 
         along_x = abs(x1 - x0) >= abs(y1 - y0)
+        # Mast along X faces N/S traffic; mast along Y faces E/W.
+        axis = "ns" if along_x else "ew"
         rod_len = abs(x1 - x0) if along_x else abs(y1 - y0)
         mid_x = (x0 + x1) / 2
         mid_y = (y0 + y1) / 2
@@ -488,7 +491,7 @@ class SceneBuilders:
         head.setMaterial(housing, 1)
 
         lamp_y = box_d / 2 + lamp_depth / 2
-        # Top to bottom: red (lit), amber and green unlit — a stopped signal.
+        # Top to bottom: red, amber, green. Axis materials are phase-mutated.
         colours = ("red", "amber", "green")
         span = 3 * lamp + 2 * gap
         visor_depth = floor * 0.14
@@ -497,7 +500,7 @@ class SceneBuilders:
             lamp_z = span / 2 - lamp / 2 - index * (lamp + gap)
             lens = box_instance(root, lamp, lamp_depth, lamp)
             lens.setPos(0.0, lamp_y, lamp_z)
-            lens.setMaterial(signal_material(name), 1)
+            lens.setMaterial(signal_lens_material(name, axis), 1)
             # Hood over each lens so they read as real signal visors.
             visor = box_instance(root, lamp * 1.15, visor_depth, visor_h)
             visor.setPos(

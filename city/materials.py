@@ -199,8 +199,77 @@ def brown_material(lightness: float = 1.0) -> Material:
     return material
 
 
+# ambient, diffuse, specular, shininess, emission-or-None for each lens look.
+_SIGNAL_LENS_LOOKS: dict[str, dict[bool, tuple]] = {
+    "red": {
+        True: (
+            (0.55, 0.05, 0.04),
+            (0.95, 0.12, 0.08),
+            (0.55, 0.15, 0.1),
+            48,
+            (0.7, 0.08, 0.05),
+        ),
+        False: (
+            (0.18, 0.04, 0.03),
+            (0.28, 0.06, 0.05),
+            (0.1, 0.04, 0.03),
+            24,
+            None,
+        ),
+    },
+    "amber": {
+        True: (
+            (0.7, 0.35, 0.02),
+            (1.0, 0.55, 0.05),
+            (0.65, 0.3, 0.05),
+            48,
+            (1.0, 0.45, 0.0),
+        ),
+        False: (
+            (0.18, 0.12, 0.02),
+            (0.32, 0.22, 0.05),
+            (0.12, 0.1, 0.04),
+            24,
+            None,
+        ),
+    },
+    "green": {
+        True: (
+            (0.04, 0.45, 0.12),
+            (0.1, 0.85, 0.28),
+            (0.15, 0.5, 0.2),
+            48,
+            (0.08, 0.65, 0.18),
+        ),
+        False: (
+            (0.02, 0.14, 0.05),
+            (0.04, 0.22, 0.1),
+            (0.06, 0.12, 0.08),
+            24,
+            None,
+        ),
+    },
+}
+
+
+def _write_signal_look(material: Material, look: tuple) -> None:
+    ambient, diffuse, specular, shininess, emission = look
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((*specular, 1))
+    material.setShininess(shininess)
+    if emission is not None:
+        material.setEmission((*emission, 1))
+    else:
+        material.setEmission((0, 0, 0, 1))
+
+
+# Opposing approaches share a material set so flattenStrong still updates.
+SIGNAL_AXES = ("ns", "ew")
+
+
 def signal_material(name: str) -> Material:
-    """Traffic-signal paint: yellow head, dark trim, lit or unlit lenses."""
+    """Traffic-signal paint: yellow head or dark trim."""
     cached = _SIGNAL_MATERIALS.get(name)
     if cached is not None:
         return cached
@@ -221,38 +290,36 @@ def signal_material(name: str) -> Material:
             6,
             None,
         ),
-        "red": (
-            (0.55, 0.05, 0.04),
-            (0.95, 0.12, 0.08),
-            (0.55, 0.15, 0.1),
-            48,
-            (0.7, 0.08, 0.05),
-        ),
-        "amber": (
-            (0.18, 0.12, 0.02),
-            (0.32, 0.22, 0.05),
-            (0.12, 0.1, 0.04),
-            24,
-            None,
-        ),
-        "green": (
-            (0.02, 0.14, 0.05),
-            (0.04, 0.22, 0.1),
-            (0.06, 0.12, 0.08),
-            24,
-            None,
-        ),
     }
-    ambient, diffuse, specular, shininess, emission = colours[name]
     material = Material()
-    material.setAmbient((*ambient, 1))
-    material.setDiffuse((*diffuse, 1))
-    material.setSpecular((*specular, 1))
-    material.setShininess(shininess)
-    if emission is not None:
-        material.setEmission((*emission, 1))
+    _write_signal_look(material, colours[name])
     _SIGNAL_MATERIALS[name] = material
     return material
+
+
+def signal_lens_material(colour: str, axis: str) -> Material:
+    """Shared lit/unlit lens for one approach axis (``ns`` or ``ew``).
+
+    Mutated in place by ``apply_signal_lenses`` so flattened meshes update.
+    """
+    key = f"{colour}:{axis}"
+    cached = _SIGNAL_MATERIALS.get(key)
+    if cached is not None:
+        return cached
+    material = Material()
+    _write_signal_look(material, _SIGNAL_LENS_LOOKS[colour][False])
+    _SIGNAL_MATERIALS[key] = material
+    return material
+
+
+def apply_signal_lenses(ns: str, ew: str) -> None:
+    """Set active lens colour per opposing pair (other lenses go dark)."""
+    for axis, active in (("ns", ns), ("ew", ew)):
+        for colour in _SIGNAL_LENS_LOOKS:
+            _write_signal_look(
+                signal_lens_material(colour, axis),
+                _SIGNAL_LENS_LOOKS[colour][colour == active],
+            )
 
 
 def car_material(name: str) -> Material:

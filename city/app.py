@@ -14,6 +14,7 @@ from city.builders import SceneBuilders
 from city.car import CarController
 from city.materials import block_material, mark_material, road_material, sphere_material
 from city.plan import default_city_plan
+from city.signals import TrafficLightController
 
 
 class CityApp(ShowBase):
@@ -166,6 +167,9 @@ class CityApp(ShowBase):
         north_city = self.render.attachNewNode("city-north")
         north_city.setY(plan.north_shift)
         self.city.instanceTo(north_city)
+
+        self._signals = TrafficLightController(self)
+        self.taskMgr.add(self._signals.update, "traffic-lights")
 
         hwy = plan.highway_geometry()
         lane_width = hwy["lane_width"]
