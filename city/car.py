@@ -58,7 +58,10 @@ class CarController:
         self._car_cruise = 10.0
         self._car_accel = 12.0
         self._car_decel_dist = 6.0
-        self._car_wait_time = 3.0
+        # Brief stop so blinkers read and right-on-red is a full stop first.
+        self._car_min_stop = 0.75
+        # No signal (city edge or highway): full stop, then go.
+        self._car_unsignalized_wait = 3.0
         self._car_blink_period = 0.35
         self._car_speed = self._car_cruise
         self._car_state = "drive"
@@ -70,6 +73,7 @@ class CarController:
         self._car_pending_dir: tuple[int, int] | None = None
         self._car_signal: str | None = None
         self._car_blink_t = 0.0
+        self._signals = None
         self._car_pos = list(self._car_stop_xy(*self._car_to, self._car_dir))
         self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
         self._place_car()
@@ -281,11 +285,28 @@ class CarController:
         self._car_blink_t = 0.0
         self._car_apply_signals(None, True)
 
+    def _car_has_traffic_light(self) -> bool:
+        """Interior city crosses get signals; edges and the highway do not."""
+        if self._car_on_highway or self._signals is None:
+            return False
+        v, h = self._car_to
+        return 1 <= v < self._car_cols and 1 <= h < self._car_rows
+
+    def _car_may_proceed(self, new_dir: tuple[int, int]) -> bool:
+        """True once the stop is legal for ``new_dir`` given the light (if any)."""
+        if not self._car_has_traffic_light():
+            return True
+        return self._signals.may_proceed(self._car_dir, new_dir)
+
     def _car_begin_wait(self) -> None:
         """Stop at the line, pick the next move, and start signalling it."""
         self._car_speed = 0.0
         self._car_state = "wait"
-        self._car_wait = self._car_wait_time
+        self._car_wait = (
+            self._car_min_stop
+            if self._car_has_traffic_light()
+            else self._car_unsignalized_wait
+        )
         self._car_pending_dir = self._car_choose_turn()
         self._car_signal = self._car_signal_side(self._car_dir, self._car_pending_dir)
         self._car_blink_t = 0.0
@@ -444,8 +465,9 @@ class CarController:
             self._car_update_signals(dt)
             if self._car_wait <= 0.0:
                 pending = self._car_pending_dir or self._car_choose_turn()
-                self._car_begin_maneuver(pending)
-                self._place_car()
+                if self._car_may_proceed(pending):
+                    self._car_begin_maneuver(pending)
+                    self._place_car()
             return task.cont
 
         if self._car_state == "u-turn":

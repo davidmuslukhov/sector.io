@@ -283,6 +283,7 @@ class CityApp(ShowBase):
         car._car_pos = list(car._car_highway_stop(0, car._car_dir))
         car._car_target = car._car_highway_stop(0, car._car_dir)
         car._car_state = "drive"
+        car._signals = self._signals
         car._place_car()
         self.taskMgr.add(car._car_task, "car-drive")
 

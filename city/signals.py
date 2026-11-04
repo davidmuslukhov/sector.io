@@ -36,6 +36,30 @@ class TrafficLightController:
             self._apply("red", "amber")
         return task.cont
 
+    def approach_colour(self, direction: tuple[int, int]) -> str:
+        """Active lens colour for traffic approaching along ``direction``.
+
+        +Y/−Y (north/south) reads the N–S phase; +X/−X (east/west) the E–W.
+        """
+        dx, dy = direction
+        ns, ew = self._phase or ("green", "red")
+        return ns if abs(dy) >= abs(dx) else ew
+
+    def may_proceed(
+        self,
+        approach: tuple[int, int],
+        turn: tuple[int, int],
+    ) -> bool:
+        """Whether a stopped car may leave the stop line for ``turn``.
+
+        Right turns are allowed on any colour (right-on-red after a stop).
+        Straight and left need a green for the approach axis.
+        """
+        cross = approach[0] * turn[1] - approach[1] * turn[0]
+        if cross < 0:
+            return True
+        return self.approach_colour(approach) == "green"
+
     def _apply(self, ns: str, ew: str) -> None:
         phase = (ns, ew)
         if phase == self._phase:
