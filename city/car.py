@@ -9,9 +9,13 @@ from city.materials import car_material
 from city.mesh import car_template
 
 # Body length along travel; bumper gap when queued or following.
+# Centre-to-centre spacing is length + gap so bodies never touch.
 _CAR_LENGTH = 2.0
+_CAR_WIDTH = 1.0
 _CAR_GAP = 1.0
 _CAR_FOLLOW = _CAR_LENGTH + _CAR_GAP
+# Hard overlap radius (above body length so 2×1 boxes never clip at angles).
+_CAR_TOUCH = 2.25
 # Same-lane lateral tolerance (road is 5 wide; right-lane centre ± a bit).
 _CAR_LANE_TOL = 1.6
 
@@ -69,8 +73,9 @@ class CarController:
         self._car_rows = rows
         # Stop with the front bumper on the 5-wide intersection edge.
         self._car_stop_offset = 5.0 / 2 + size[0] / 2
-        # Two lanes on a 5-wide road; sit in the middle of the right lane.
-        self._car_lane_offset = 5.0 / 4
+        # Right-hand traffic: sit in the middle of the right half of the road.
+        # Never use a negative offset (that would be the oncoming/left lane).
+        self._car_lane_offset = abs(5.0 / 4)
         # Cruise ~one short block per couple of seconds; decel into the stop line.
         self._car_cruise = 10.0
         self._car_accel = 12.0
@@ -94,6 +99,14 @@ class CarController:
         self._car_on_highway = False
         self._car_pos = list(self._car_stop_xy(*self._car_to, self._car_dir))
         self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
+        self._nb_leader: CarController | None = None
+        self._nb_leader_along: float | None = None
+        self._nb_queue_index = 0
+        self._nb_dir = self._car_travel_dir()
+        self._nb_stop = self._car_approach_stop()
+        self._nb_slot = self._nb_stop
+        self._nb_hold: tuple[float, float] | None = None
+        self._car_signal_applied: tuple[str | None, bool] | None = None
         self._place_car()
         self._car_apply_signals(None, True)
         if self not in self.fleet:
@@ -105,13 +118,51 @@ class CarController:
             self._car_origin_y + h * self._car_stride_y,
         )
 
-    def _car_set_highway_lane(self, direction: tuple[int, int]) -> None:
-        """Pick the right-hand highway lane for northbound or southbound travel."""
+    def _car_set_highway_lane(
+        self,
+        direction: tuple[int, int],
+        *,
+        pick: bool = False,
+        snap: bool = False,
+    ) -> None:
+        """Stay in the three right-hand lanes for this travel direction.
+
+        Northbound uses the eastern half; southbound the western half. Lane
+        preference 0 is the rightmost (outer) lane from the driver's view,
+        2 is nearest the median. Never places a car in the oncoming half.
+        """
         dx, dy = direction
-        if dy < 0:
-            self._car_highway_x = self._car_highway_west_lane_x
-        elif dy > 0:
-            self._car_highway_x = self._car_highway_east_lane_x
+        if dy == 0:
+            return
+        half = max(1, self._car_highway_lanes // 2)
+        if pick or not hasattr(self, "_car_highway_lane"):
+            self._car_highway_lane = random.randrange(half)
+        else:
+            self._car_highway_lane = max(0, min(half - 1, self._car_highway_lane))
+        # Lane centres east→west: 0 is easternmost (rightmost when heading north).
+        if dy > 0:
+            lane_i = self._car_highway_lane
+        else:
+            # Southbound rightmost is westernmost = last index.
+            lane_i = self._car_highway_lanes - 1 - self._car_highway_lane
+        self._car_highway_x = self._car_highway_lane_xs[lane_i]
+        # U-turns / joins must move onto the new carriageway immediately so the
+        # car never drives north in a southbound lane (or the reverse).
+        if snap:
+            self._car_pos[0] = self._car_highway_x
+
+    def _car_hold_highway_lane(self) -> None:
+        """Keep N/S highway travel glued to the assigned right-hand lane centre."""
+        if not self._car_on_highway:
+            return
+        # Let merge arcs curve freely; snap once they finish.
+        if self._car_state == "turning":
+            return
+        dx, dy = self._car_dir
+        if dy == 0:
+            return
+        self._car_set_highway_lane(self._car_dir)
+        self._car_pos[0] = self._car_highway_x
 
     def _car_highway_intersection_xy(self, exit_i: int) -> tuple[float, float]:
         return (self._car_highway_x, self._car_highway_exits[exit_i])
@@ -131,6 +182,7 @@ class CarController:
         # sideways along the highway (that was pushing the car into the barriers).
         if dx == 0:
             return cx, cy - dy * offset
+        # City↔highway exit spur: keep the right-hand side of that road.
         _, ly = self._car_lane_shift(direction)
         return cx - dx * offset, cy + ly
 
@@ -182,6 +234,9 @@ class CarController:
         self._car_on_highway = True
         self._car_origin_y = self._car_south_road0
         self._car_exit_i = exit_i
+        # Exit spur stop uses the eastern (city-facing) edge until a N/S lane
+        # is chosen; prefer the rightmost northbound lane as the reference.
+        self._car_highway_x = self._car_highway_lane_xs[0]
 
     @staticmethod
     def _car_right(direction: tuple[int, int]) -> tuple[int, int]:
@@ -281,6 +336,10 @@ class CarController:
 
     def _car_apply_signals(self, side: str | None, lit: bool) -> None:
         """Dim the signalling side when ``lit`` is false; other lamps stay on."""
+        key = (side, lit)
+        if getattr(self, "_car_signal_applied", None) == key:
+            return
+        self._car_signal_applied = key
         for name, lamps in self._car_lights.items():
             if side is not None and name == side and not lit:
                 scale = 0.12
@@ -303,6 +362,7 @@ class CarController:
         self._car_signal = None
         self._car_pending_dir = None
         self._car_blink_t = 0.0
+        self._car_signal_applied = None
         self._car_apply_signals(None, True)
 
     def _car_has_traffic_light(self) -> bool:
@@ -326,81 +386,185 @@ class CarController:
         rad = math.radians(self._car_heading)
         return math.cos(rad), math.sin(rad)
 
-    def _car_same_corridor(self, other: CarController) -> bool:
-        """True when ``other`` shares this car's road corridor (city or highway)."""
-        if bool(self._car_on_highway) != bool(other._car_on_highway):
-            return False
-        if self._car_on_highway:
-            return abs(self._car_highway_x - other._car_highway_x) < 0.5
-        return abs(self._car_origin_y - other._car_origin_y) < 1e-6
-
-    def _car_find_leader(self) -> CarController | None:
-        """Nearest same-lane car ahead, or None."""
-        dx, dy = self._car_travel_dir()
-        best: CarController | None = None
-        best_along = float("inf")
-        for other in self.fleet:
-            if other is self:
-                continue
-            if not self._car_same_corridor(other):
-                continue
-            ox = other._car_pos[0] - self._car_pos[0]
-            oy = other._car_pos[1] - self._car_pos[1]
-            along = ox * dx + oy * dy
-            if along <= 0.05:
-                continue
-            lateral = abs(ox * -dy + oy * dx)
-            if lateral > _CAR_LANE_TOL:
-                continue
-            # Only treat cars with a similar heading as leaders in this lane.
-            odx, ody = other._car_travel_dir()
-            if odx * dx + ody * dy < 0.5:
-                continue
-            if along < best_along:
-                best_along = along
-                best = other
-        return best
-
     def _car_approach_stop(self) -> tuple[float, float]:
         """Ideal stop-line position for the current approach."""
         if self._car_on_highway:
             return self._car_highway_stop(self._car_exit_i, self._car_dir)
         return self._car_stop_xy(*self._car_to, self._car_dir)
 
-    def _car_follow_hold_xy(self) -> tuple[float, float] | None:
-        """Point 1 unit bumper-gap behind the leader, or None if clear ahead."""
-        leader = self._car_find_leader()
-        if leader is None:
-            return None
+    def _car_refresh_neighbors(self, *, resolve: bool = True) -> None:
+        """One fleet pass: leader, queue index, optional collision separation."""
         dx, dy = self._car_travel_dir()
-        return (
-            leader._car_pos[0] - dx * _CAR_FOLLOW,
-            leader._car_pos[1] - dy * _CAR_FOLLOW,
+        stop = self._car_approach_stop()
+        sx = self._car_pos[0]
+        sy = self._car_pos[1]
+        my_behind = (stop[0] - sx) * dx + (stop[1] - sy) * dy
+        on_hwy = self._car_on_highway
+        my_exit = self._car_exit_i
+        my_to = self._car_to
+        origin_y = self._car_origin_y
+        hwy_x = self._car_highway_x if on_hwy else 0.0
+        follow = _CAR_FOLLOW
+        touch = _CAR_TOUCH
+        lane_tol = _CAR_LANE_TOL
+        follow_sq = (follow - 0.01) * (follow - 0.01)
+        touch_sq = (touch - 0.01) * (touch - 0.01)
+
+        leader: CarController | None = None
+        best_along = float("inf")
+        queue_index = 0
+
+        for other in self.fleet:
+            if other is self:
+                continue
+            ox = other._car_pos[0] - sx
+            oy = other._car_pos[1] - sy
+            dist_sq = ox * ox + oy * oy
+
+            other_hwy = other._car_on_highway
+            if on_hwy != other_hwy:
+                same_corridor = False
+            elif on_hwy:
+                same_corridor = abs(hwy_x - other._car_highway_x) < 0.5
+            else:
+                same_corridor = abs(origin_y - other._car_origin_y) < 1e-6
+
+            odx, ody = other._car_dir
+            if odx or ody:
+                odx_f, ody_f = float(odx), float(ody)
+            else:
+                odx_f, ody_f = other._car_travel_dir()
+            heading_ok = odx_f * dx + ody_f * dy >= 0.5
+
+            if resolve:
+                if dist_sq < 1e-12:
+                    sx -= dx * follow
+                    sy -= dy * follow
+                    self._car_pos[0] = sx
+                    self._car_pos[1] = sy
+                    self._car_speed = 0.0
+                    continue
+                along = ox * dx + oy * dy
+                lateral = abs(ox * -dy + oy * dx)
+                same_lane = (
+                    same_corridor and heading_ok and lateral <= lane_tol and along > 0.0
+                )
+                if same_lane and dist_sq < follow_sq:
+                    dist = math.sqrt(dist_sq)
+                    push = follow - dist
+                    sx -= dx * push
+                    sy -= dy * push
+                    self._car_pos[0] = sx
+                    self._car_pos[1] = sy
+                    self._car_speed = 0.0
+                    continue
+                if dist_sq < touch_sq:
+                    dist = math.sqrt(dist_sq)
+                    push = touch - dist
+                    if along > 0.0:
+                        sx -= dx * push
+                        sy -= dy * push
+                    else:
+                        inv = 1.0 / dist
+                        sx -= ox * inv * push
+                        sy -= oy * inv * push
+                    self._car_pos[0] = sx
+                    self._car_pos[1] = sy
+                    self._car_speed = 0.0
+                    continue
+            else:
+                along = ox * dx + oy * dy
+                lateral = abs(ox * -dy + oy * dx)
+
+            if not same_corridor or not heading_ok:
+                continue
+            if along > 0.05 and lateral <= lane_tol and along < best_along:
+                best_along = along
+                leader = other
+
+            if other._car_state in ("turning", "u-turn"):
+                continue
+            if on_hwy:
+                if other._car_exit_i != my_exit:
+                    continue
+            elif other._car_to != my_to:
+                continue
+            other_behind = (
+                (stop[0] - other._car_pos[0]) * dx + (stop[1] - other._car_pos[1]) * dy
+            )
+            if other_behind < my_behind - 0.05:
+                queue_index += 1
+
+        self._nb_leader = leader
+        self._nb_queue_index = queue_index
+        self._nb_dir = (dx, dy)
+        self._nb_stop = stop
+        self._nb_slot = (
+            stop[0] - dx * follow * queue_index,
+            stop[1] - dy * follow * queue_index,
         )
+        if leader is None:
+            self._nb_hold = None
+            self._nb_leader_along = None
+        else:
+            hold = (
+                leader._car_pos[0] - dx * follow,
+                leader._car_pos[1] - dy * follow,
+            )
+            hold_along = (hold[0] - self._car_pos[0]) * dx + (
+                hold[1] - self._car_pos[1]
+            ) * dy
+            self._nb_hold = hold if hold_along > 0.1 else None
+            self._nb_leader_along = best_along
+
+    def _car_queue_slot_xy(self) -> tuple[float, float]:
+        """Equally spaced hold: stop, stop−FOLLOW, stop−2·FOLLOW, …"""
+        return self._nb_slot
+
+    def _car_follow_hold_xy(self) -> tuple[float, float] | None:
+        """Point one bumper-gap behind the live leader, or None if clear ahead."""
+        return self._nb_hold
 
     def _car_drive_target(self) -> tuple[float, float]:
-        """Stop line, or the follow hold if a leader is closer than that."""
-        stop = self._car_approach_stop()
-        hold = self._car_follow_hold_xy()
+        """Nearest of: equal queue slot, live follow hold."""
+        slot = self._nb_slot
+        hold = self._nb_hold
         if hold is None:
-            return stop
-        dx, dy = self._car_travel_dir()
-        # Choose whichever lies sooner along travel from our position.
+            return slot
+        dx, dy = self._nb_dir
+
         def along(pt: tuple[float, float]) -> float:
             return (pt[0] - self._car_pos[0]) * dx + (pt[1] - self._car_pos[1]) * dy
 
-        return hold if along(hold) < along(stop) else stop
+        return hold if along(hold) < along(slot) else slot
 
     def _car_at_stop_line(self) -> bool:
-        sx, sy = self._car_approach_stop()
+        """True when this car has reached its equal-spaced queue slot."""
+        sx, sy = self._nb_slot
         return math.hypot(sx - self._car_pos[0], sy - self._car_pos[1]) < 0.2
 
+    def _car_is_queue_head(self) -> bool:
+        return self._nb_queue_index == 0
+
+    def _car_resolve_collisions(self) -> None:
+        """Re-scan fleet and push this car clear of overlaps."""
+        self._car_refresh_neighbors(resolve=True)
+
+    def _car_snap_queue_slot(self) -> None:
+        """Lock a stopped car onto its equal-spaced approach slot."""
+        if self._car_state != "wait":
+            return
+        sx, sy = self._nb_slot
+        if math.hypot(sx - self._car_pos[0], sy - self._car_pos[1]) < 0.35:
+            self._car_pos[0] = sx
+            self._car_pos[1] = sy
+
     def _car_begin_wait(self) -> None:
-        """Stop at the line (or in queue), pick the next move, and start signalling."""
+        """Stop at the queue slot; only the head picks a turn / watches the light."""
         self._car_speed = 0.0
         self._car_state = "wait"
-        # Queued behind another car: hold still until the gap opens; no turn yet.
-        if not self._car_at_stop_line():
+        # Queued behind another car: hold the equal-spaced slot; no turn yet.
+        if not self._car_is_queue_head():
             self._car_wait = 0.0
             self._car_pending_dir = None
             self._car_signal = None
@@ -518,24 +682,35 @@ class CarController:
 
         # Continue or join travel along the highway (north/south).
         if new_dir[0] == 0 and new_dir[1] != 0:
-            self._car_set_highway_lane(new_dir)
+            # Joining from the exit spur or reversing: pick a right-side lane and
+            # snap onto that carriageway. Continuing straight keeps the lane.
+            reversing = old_dir[1] * new_dir[1] < 0
+            joining = old_dir[1] == 0 or reversing
+            self._car_set_highway_lane(new_dir, pick=joining, snap=joining)
             cx, cy = self._car_highway_intersection_xy(exit_i)
             nxt = self._car_next_highway_exit(exit_i, new_dir[1])
             if nxt is None:
+                # End of highway: u-turn in the new right-hand lane at this exit.
+                self._car_set_highway_lane(new_dir, pick=True, snap=True)
                 self._car_after_cross = self._car_highway_stop(exit_i, new_dir)
                 self._car_start_u_turn(new_dir)
                 return
-            self._car_exit_i = nxt
-            self._car_after_cross = self._car_highway_stop(nxt, new_dir)
             if dot > 0:
+                self._car_exit_i = nxt
+                self._car_after_cross = self._car_highway_stop(nxt, new_dir)
                 self._car_clear_signals()
                 self._car_state = "crossing"
                 self._car_target = self._car_highway_leave(exit_i, new_dir)
                 return
             if cross == 0:
+                # Reverse direction: already snapped to the correct half above.
+                self._car_exit_i = nxt
+                self._car_after_cross = self._car_highway_stop(nxt, new_dir)
                 self._car_start_u_turn(new_dir)
                 return
-            # Turn from the exit onto the highway in the correct lane.
+            # Turn from the exit onto the highway in the correct right-side lane.
+            self._car_exit_i = nxt
+            self._car_after_cross = self._car_highway_stop(nxt, new_dir)
             self._car_start_arc(old_dir, new_dir, cx, cy)
             return
 
@@ -548,6 +723,7 @@ class CarController:
             self._car_target = self._car_highway_leave(exit_i, new_dir)
             return
 
+        self._car_set_highway_lane(new_dir, pick=True, snap=True)
         self._car_after_cross = self._car_highway_stop(exit_i, new_dir)
         self._car_start_u_turn(new_dir)
 
@@ -557,44 +733,68 @@ class CarController:
 
     def _car_advance_speed(self, dt: float, dist: float | None = None) -> None:
         if dist is not None and dist < self._car_decel_dist:
+            # Cap speed for the remaining distance, but still accelerate up to
+            # that cap — otherwise a car that stopped behind a leader (speed 0)
+            # can never leave once the gap opens inside decel range.
             target = self._car_cruise * math.sqrt(max(dist, 0.0) / self._car_decel_dist)
-            self._car_speed = min(self._car_speed, target)
+            if self._car_speed < target:
+                self._car_speed = min(target, self._car_speed + self._car_accel * dt)
+            else:
+                self._car_speed = target
         else:
             self._car_speed = min(self._car_cruise, self._car_speed + self._car_accel * dt)
 
+    def _car_gap_clear(self) -> bool:
+        """True when no same-lane leader sits closer than FOLLOW ahead."""
+        along = self._nb_leader_along
+        if along is None:
+            return True
+        return along >= _CAR_FOLLOW - 0.05
+
+    def _car_finish_frame(self) -> None:
+        """One neighbor/collision scan + scene graph sync per tick."""
+        self._car_refresh_neighbors(resolve=True)
+        # Collisions can nudge sideways; re-assert the right-hand highway lane.
+        self._car_hold_highway_lane()
+        self._place_car()
+
     def _car_task(self, task):
         dt = min(self.clock.getDt(), 0.05)
+        # Targeting uses last tick's neighbor cache; we rescan once at the end.
+
         if self._car_state == "wait":
-            # Still queued behind a leader: creep up when the 1-unit gap opens.
-            if not self._car_at_stop_line():
-                hold = self._car_follow_hold_xy()
-                stop = self._car_approach_stop()
-                goal = stop if hold is None else self._car_drive_target()
+            # Hold equal-spaced slots; creep forward when the queue advances.
+            if not self._car_is_queue_head() or not self._car_at_stop_line():
+                goal = self._car_drive_target()
                 gx = goal[0] - self._car_pos[0]
                 gy = goal[1] - self._car_pos[1]
                 if math.hypot(gx, gy) > 0.08:
                     self._car_state = "drive"
                     self._car_target = goal
-                    self._car_speed = 0.0
-                self._place_car()
+                else:
+                    self._car_snap_queue_slot()
+                self._car_finish_frame()
                 return task.cont
+            self._car_snap_queue_slot()
             self._car_wait -= dt
             self._car_update_signals(dt)
             if self._car_wait <= 0.0:
                 pending = self._car_pending_dir or self._car_choose_turn()
-                # Do not enter the intersection while nose-to-tail with a leader.
-                leader = self._car_find_leader()
-                clear = True
-                if leader is not None:
-                    dx, dy = self._car_travel_dir()
-                    along = (
-                        (leader._car_pos[0] - self._car_pos[0]) * dx
-                        + (leader._car_pos[1] - self._car_pos[1]) * dy
-                    )
-                    clear = along >= _CAR_FOLLOW - 0.05
-                if clear and self._car_may_proceed(pending):
+                # Re-roll a blocked turn occasionally so a left on red does not
+                # pin a whole queue while a right is legal.
+                if (
+                    pending is not None
+                    and not self._car_may_proceed(pending)
+                    and self._car_wait < -4.0
+                ):
+                    pending = self._car_choose_turn()
+                    self._car_pending_dir = pending
+                    self._car_signal = self._car_signal_side(self._car_dir, pending)
+                    self._car_blink_t = 0.0
+                    self._car_signal_applied = None
+                if self._car_gap_clear() and self._car_may_proceed(pending):
                     self._car_begin_maneuver(pending)
-                    self._place_car()
+            self._car_finish_frame()
             return task.cont
 
         if self._car_state == "u-turn":
@@ -614,10 +814,15 @@ class CarController:
                     self._car_heading_from
                     + (self._car_heading_to - self._car_heading_from) * t
                 )
-            self._place_car()
+            self._car_finish_frame()
             return task.cont
 
         if self._car_state == "turning":
+            # Pause the arc if we'd nose into another car.
+            if not self._car_gap_clear():
+                self._car_speed = 0.0
+                self._car_finish_frame()
+                return task.cont
             self._car_advance_speed(dt)
             self._car_update_signals(dt)
             radius = self._car_arc_radius
@@ -643,7 +848,7 @@ class CarController:
                 self._car_heading = math.degrees(
                     self._car_arc_angle + self._car_arc_sign * (math.pi / 2)
                 )
-            self._place_car()
+            self._car_finish_frame()
             return task.cont
 
         if self._car_state == "drive":
@@ -659,29 +864,35 @@ class CarController:
             if self._car_state == "crossing":
                 self._car_target = self._car_after_cross
                 self._car_state = "drive"
-                self._place_car()
+                self._car_finish_frame()
                 return task.cont
+            # Refresh queue rank at the stop before choosing head vs follower.
+            self._car_refresh_neighbors(resolve=False)
             self._car_begin_wait()
-            self._place_car()
+            self._car_finish_frame()
             return task.cont
 
         if self._car_state == "drive":
-            # Also decel for the bumper gap to a moving leader.
-            hold = self._car_follow_hold_xy()
-            follow_dist = None
+            # Decel for the bumper gap / queue slot ahead.
+            limit = dist
+            hold = self._nb_hold
             if hold is not None:
-                follow_dist = math.hypot(
-                    hold[0] - self._car_pos[0],
-                    hold[1] - self._car_pos[1],
+                limit = min(
+                    limit,
+                    math.hypot(hold[0] - self._car_pos[0], hold[1] - self._car_pos[1]),
                 )
-            limit = dist if follow_dist is None else min(dist, follow_dist)
             self._car_advance_speed(dt, limit)
         else:
-            self._car_advance_speed(dt)
+            # Crossing: still respect a leader so we don't rear-end in the box.
+            if not self._car_gap_clear():
+                self._car_speed = max(0.0, self._car_speed - self._car_accel * dt)
+            else:
+                self._car_advance_speed(dt)
 
         step = min(self._car_speed * dt, dist)
-        self._car_pos[0] += dx / dist * step
-        self._car_pos[1] += dy / dist * step
-        self._car_heading = math.degrees(math.atan2(dy, dx))
-        self._place_car()
+        if dist > 1e-6:
+            self._car_pos[0] += dx / dist * step
+            self._car_pos[1] += dy / dist * step
+            self._car_heading = math.degrees(math.atan2(dy, dx))
+        self._car_finish_frame()
         return task.cont

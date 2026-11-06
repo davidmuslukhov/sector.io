@@ -256,58 +256,98 @@ class CityApp(ShowBase):
         self.highway.flattenStrong()
 
         self._cars: list[CarController] = []
-        hwy_east_lane = highway_east - lane_width / 2
-        hwy_west_lane = highway_east - highway_width + lane_width / 2
-        # Spread five colours across highway + city approaches so they do not
-        # spawn nose-to-tail on the same stop line.
-        spawns = (
-            {
-                "colour": (0.22, 0.48, 0.72),  # blue
-                "start_v": 0,
-                "start_h": plan.exit_row,
-                "start_dir": (0, 1),
-                "on_highway": True,
-                "exit_i": 0,
-                "origin_y": plan.south_road_full0,
-            },
-            {
-                "colour": (0.72, 0.18, 0.16),  # red
-                "start_v": max(2, plan.cols // 3),
-                "start_h": plan.exit_row,
-                "start_dir": (1, 0),
-                "on_highway": False,
-                "exit_i": 0,
-                "origin_y": plan.south_road_full0,
-            },
-            {
-                "colour": (0.18, 0.55, 0.28),  # green
-                "start_v": min(plan.cols - 1, (2 * plan.cols) // 3),
-                "start_h": max(1, plan.rows // 2),
-                "start_dir": (0, -1),
-                "on_highway": False,
-                "exit_i": 0,
-                "origin_y": plan.south_road_full0,
-            },
-            {
-                "colour": (0.82, 0.62, 0.12),  # amber
-                "start_v": max(1, plan.cols // 2),
-                "start_h": plan.exit_row,
-                "start_dir": (-1, 0),
-                "on_highway": False,
-                "exit_i": 1,
-                "origin_y": plan.south_road_full0 + plan.north_shift,
-            },
-            {
-                "colour": (0.78, 0.78, 0.8),  # silver
-                "start_v": 0,
-                "start_h": plan.exit_row,
-                "start_dir": (0, -1),
-                "on_highway": True,
-                "exit_i": 1,
-                "origin_y": plan.south_road_full0,
-            },
+        # Lane centres east→west. Northbound uses the eastern half (right side
+        # when facing north); southbound uses the western half.
+        hwy_lane_xs = [
+            highway_east - lane_width * (i + 0.5) for i in range(plan.highway_lanes)
+        ]
+        hwy_east_lane = hwy_lane_xs[0]
+        hwy_west_lane = hwy_lane_xs[-1]
+        # Dense fleet across highway queues + both city grids so lights and
+        # follow-gaps actually produce traffic. Stacked approaches sit 3 units
+        # behind the lead car (body 2 + bumper gap 1).
+        colours = (
+            (0.22, 0.48, 0.72),  # blue
+            (0.72, 0.18, 0.16),  # red
+            (0.18, 0.55, 0.28),  # green
+            (0.82, 0.62, 0.12),  # amber
+            (0.78, 0.78, 0.8),  # silver
+            (0.55, 0.22, 0.55),  # purple
+            (0.9, 0.45, 0.12),  # orange
+            (0.15, 0.15, 0.18),  # charcoal
+            (0.2, 0.65, 0.7),  # teal
+            (0.85, 0.35, 0.55),  # pink
+            (0.45, 0.32, 0.18),  # brown
+            (0.55, 0.7, 0.25),  # lime
         )
+        follow_gap = 3.0
+        city_origins = (
+            plan.south_road_full0,
+            plan.south_road_full0 + plan.north_shift,
+        )
+        spawns: list[dict] = []
+        # Highway: 2-deep queues in each of the 3 right-hand lanes, both ways.
+        hwy_half = plan.highway_lanes // 2
+        for exit_i, origin_y in enumerate(city_origins):
+            for start_dir in ((0, 1), (0, -1)):
+                for lane in range(hwy_half):
+                    for queue in range(2):
+                        spawns.append(
+                            {
+                                "start_v": 0,
+                                "start_h": plan.exit_row,
+                                "start_dir": start_dir,
+                                "on_highway": True,
+                                "exit_i": exit_i,
+                                "origin_y": origin_y,
+                                "queue": queue,
+                                "highway_lane": lane,
+                            }
+                        )
+        # City streets: spread across both twins; short queues on the exit
+        # arterials so red lights back up into real traffic.
+        city_dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        city_nodes = (
+            (1, 1),
+            (plan.cols // 2, 1),
+            (plan.cols - 1, 2),
+            (1, plan.exit_row),
+            (plan.cols // 2, plan.exit_row),
+            (plan.cols - 1, plan.exit_row),
+            (2, plan.rows // 2),
+            (plan.cols // 2, plan.rows // 2),
+            (plan.cols - 1, plan.rows // 2),
+            (1, plan.rows - 1),
+            (plan.cols // 2, plan.rows - 1),
+            (plan.cols - 1, plan.rows - 1),
+        )
+        for origin_y in city_origins:
+            exit_i = 0 if origin_y == plan.south_road_full0 else 1
+            for v, h in city_nodes:
+                for di, start_dir in enumerate(city_dirs):
+                    # Two directions per node keeps coverage without stacking
+                    # four cars on every stop line.
+                    if (v + h + di) % 2 != 0:
+                        continue
+                    if v == 0 and start_dir == (-1, 0):
+                        continue
+                    # Second car only for east-west traffic on the exit row.
+                    queued = h == plan.exit_row and start_dir[1] == 0
+                    for queue in range(2 if queued else 1):
+                        spawns.append(
+                            {
+                                "start_v": v,
+                                "start_h": h,
+                                "start_dir": start_dir,
+                                "on_highway": False,
+                                "exit_i": exit_i,
+                                "origin_y": origin_y,
+                                "queue": queue,
+                                "highway_lane": (v + h + di) % hwy_half,
+                            }
+                        )
         for index, spawn in enumerate(spawns):
+            colour = colours[index % len(colours)]
             car = CarController(self, self._cars)
             car.setup(
                 plan.road_top,
@@ -320,8 +360,10 @@ class CityApp(ShowBase):
                 start_h=spawn["start_h"],
                 start_v=spawn["start_v"],
                 start_dir=spawn["start_dir"],
-                body_colour=spawn["colour"],
+                body_colour=colour,
             )
+            car._car_highway_lane_xs = list(hwy_lane_xs)
+            car._car_highway_lanes = plan.highway_lanes
             car._car_highway_east_lane_x = hwy_east_lane
             car._car_highway_west_lane_x = hwy_west_lane
             car._car_highway_exits = list(exit_ys)
@@ -330,22 +372,35 @@ class CityApp(ShowBase):
             car._car_exit_row = plan.exit_row
             car._car_on_highway = spawn["on_highway"]
             car._car_exit_i = spawn["exit_i"]
+            car._car_highway_lane = spawn["highway_lane"]
             car._car_dir = spawn["start_dir"]
             car._car_heading = math.degrees(
                 math.atan2(spawn["start_dir"][1], spawn["start_dir"][0])
             )
             if spawn["on_highway"]:
                 car._car_set_highway_lane(car._car_dir)
-                stop = car._car_highway_stop(car._car_exit_i, car._car_dir)
+                approach = car._car_highway_stop(car._car_exit_i, car._car_dir)
             else:
-                stop = car._car_stop_xy(*car._car_to, car._car_dir)
-            car._car_pos = list(stop)
-            car._car_target = stop
+                approach = car._car_stop_xy(*car._car_to, car._car_dir)
+            dx, dy = spawn["start_dir"]
+            queue = spawn["queue"]
+            # Queue behind the stop line; target stays the approach so followers
+            # drive forward instead of treating their spawn point as arrival.
+            pos = (
+                approach[0] - dx * follow_gap * queue,
+                approach[1] - dy * follow_gap * queue,
+            )
+            car._car_pos = list(pos)
+            car._car_target = approach
             car._car_state = "drive"
             car._signals = self._signals
             car._place_car()
-            self.taskMgr.add(car._car_task, f"car-drive-{index}")
         self._car = self._cars[0]
+        # Seed neighbor caches so the first tick has valid queue/leader data.
+        for car in self._cars:
+            car._car_refresh_neighbors(resolve=False)
+        # One fleet task instead of N car tasks — less scheduler overhead.
+        self.taskMgr.add(self._fleet_task, "car-fleet")
 
         bounds = plan.framing_bounds(cube_center_x, pyramid_size[0] / 2)
         left = bounds["left"]
@@ -399,6 +454,11 @@ class CityApp(ShowBase):
 
     def _fps_task(self, task):
         self.fps_text.setText(f"FPS: {self.clock.getAverageFrameRate():.0f}")
+        return task.cont
+
+    def _fleet_task(self, task):
+        for car in self._cars:
+            car._car_task(task)
         return task.cont
 
     def _car_look_at(self, car: CarController) -> list[float]:
