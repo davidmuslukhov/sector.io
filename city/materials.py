@@ -16,7 +16,7 @@ _CENTERLINE_MATERIAL: Material | None = None
 _SQUARE_MATERIALS: dict[float, Material] = {}
 _BROWN_MATERIALS: dict[float, Material] = {}
 _SIGNAL_MATERIALS: dict[str, Material] = {}
-_CAR_MATERIALS: dict[str, Material] = {}
+_CAR_MATERIALS: dict[str | tuple[str, tuple[float, float, float]], Material] = {}
 
 
 def sphere_material() -> Material:
@@ -322,33 +322,51 @@ def apply_signal_lenses(ns: str, ew: str) -> None:
             )
 
 
-def car_material(name: str) -> Material:
-    """Paint, glass, trim, lamps, and rubber for the blocky car parts."""
-    cached = _CAR_MATERIALS.get(name)
+def car_material(
+    name: str,
+    colour: tuple[float, float, float] | None = None,
+) -> Material:
+    """Paint, glass, trim, lamps, and rubber for the blocky car parts.
+
+    Pass ``colour`` with ``name="body"`` for a custom paint job; other part
+    names ignore it and share the usual cached materials.
+    """
+    key: str | tuple[str, tuple[float, float, float]]
+    if name == "body" and colour is not None:
+        key = ("body", colour)
+    else:
+        key = name
+    cached = _CAR_MATERIALS.get(key)
     if cached is not None:
         return cached
-    # body matches the landmark spheres; lamps emit so they read under sun.
-    colours = {
-        "body": ((0.12, 0.22, 0.32), (0.22, 0.48, 0.72), (0.55, 0.55, 0.6), 40, None),
-        "glass": ((0.04, 0.06, 0.09), (0.08, 0.12, 0.18), (0.45, 0.5, 0.55), 64, None),
-        "trim": ((0.05, 0.05, 0.055), (0.12, 0.12, 0.13), (0.18, 0.18, 0.2), 10, None),
-        "wheel": ((0.03, 0.03, 0.03), (0.06, 0.06, 0.065), (0.04, 0.04, 0.04), 3, None),
-        "headlight": (
-            (0.5, 0.48, 0.35),
-            (0.92, 0.88, 0.7),
-            (0.65, 0.6, 0.4),
-            48,
-            (0.5, 0.48, 0.32),
-        ),
-        "taillight": (
-            (0.4, 0.04, 0.04),
-            (0.82, 0.1, 0.08),
-            (0.5, 0.12, 0.08),
-            36,
-            (0.38, 0.04, 0.03),
-        ),
-    }
-    ambient, diffuse, specular, shininess, emission = colours[name]
+    # Default body matches the landmark spheres; lamps emit so they read under sun.
+    if name == "body":
+        diffuse = colour or (0.22, 0.48, 0.72)
+        ambient = tuple(channel * 0.45 for channel in diffuse)
+        specular = (0.55, 0.55, 0.6)
+        shininess = 40
+        emission = None
+    else:
+        colours = {
+            "glass": ((0.04, 0.06, 0.09), (0.08, 0.12, 0.18), (0.45, 0.5, 0.55), 64, None),
+            "trim": ((0.05, 0.05, 0.055), (0.12, 0.12, 0.13), (0.18, 0.18, 0.2), 10, None),
+            "wheel": ((0.03, 0.03, 0.03), (0.06, 0.06, 0.065), (0.04, 0.04, 0.04), 3, None),
+            "headlight": (
+                (0.5, 0.48, 0.35),
+                (0.92, 0.88, 0.7),
+                (0.65, 0.6, 0.4),
+                48,
+                (0.5, 0.48, 0.32),
+            ),
+            "taillight": (
+                (0.4, 0.04, 0.04),
+                (0.82, 0.1, 0.08),
+                (0.5, 0.12, 0.08),
+                36,
+                (0.38, 0.04, 0.03),
+            ),
+        }
+        ambient, diffuse, specular, shininess, emission = colours[name]
     material = Material()
     material.setAmbient((*ambient, 1))
     material.setDiffuse((*diffuse, 1))
@@ -356,5 +374,5 @@ def car_material(name: str) -> Material:
     material.setShininess(shininess)
     if emission is not None:
         material.setEmission((*emission, 1))
-    _CAR_MATERIALS[name] = material
+    _CAR_MATERIALS[key] = material
     return material

@@ -255,37 +255,97 @@ class CityApp(ShowBase):
         wall_segments(fence_x, plan.fence_w, plan.fence_h, fence_z, fence_mat)
         self.highway.flattenStrong()
 
-        car = CarController(self)
-        self._car = car
-        car.setup(
-            plan.road_top,
-            plan.west_road_full0,
-            plan.south_road_full0,
-            plan.stride_x,
-            plan.stride_y,
-            plan.cols,
-            plan.rows,
-            start_h=plan.exit_row,
-            start_v=0,
-            start_dir=(0, 1),
+        self._cars: list[CarController] = []
+        hwy_east_lane = highway_east - lane_width / 2
+        hwy_west_lane = highway_east - highway_width + lane_width / 2
+        # Spread five colours across highway + city approaches so they do not
+        # spawn nose-to-tail on the same stop line.
+        spawns = (
+            {
+                "colour": (0.22, 0.48, 0.72),  # blue
+                "start_v": 0,
+                "start_h": plan.exit_row,
+                "start_dir": (0, 1),
+                "on_highway": True,
+                "exit_i": 0,
+                "origin_y": plan.south_road_full0,
+            },
+            {
+                "colour": (0.72, 0.18, 0.16),  # red
+                "start_v": max(2, plan.cols // 3),
+                "start_h": plan.exit_row,
+                "start_dir": (1, 0),
+                "on_highway": False,
+                "exit_i": 0,
+                "origin_y": plan.south_road_full0,
+            },
+            {
+                "colour": (0.18, 0.55, 0.28),  # green
+                "start_v": min(plan.cols - 1, (2 * plan.cols) // 3),
+                "start_h": max(1, plan.rows // 2),
+                "start_dir": (0, -1),
+                "on_highway": False,
+                "exit_i": 0,
+                "origin_y": plan.south_road_full0,
+            },
+            {
+                "colour": (0.82, 0.62, 0.12),  # amber
+                "start_v": max(1, plan.cols // 2),
+                "start_h": plan.exit_row,
+                "start_dir": (-1, 0),
+                "on_highway": False,
+                "exit_i": 1,
+                "origin_y": plan.south_road_full0 + plan.north_shift,
+            },
+            {
+                "colour": (0.78, 0.78, 0.8),  # silver
+                "start_v": 0,
+                "start_h": plan.exit_row,
+                "start_dir": (0, -1),
+                "on_highway": True,
+                "exit_i": 1,
+                "origin_y": plan.south_road_full0,
+            },
         )
-        car._car_highway_east_lane_x = highway_east - lane_width / 2
-        car._car_highway_west_lane_x = highway_east - highway_width + lane_width / 2
-        car._car_highway_x = car._car_highway_east_lane_x
-        car._car_highway_exits = list(exit_ys)
-        car._car_south_road0 = plan.south_road_full0
-        car._car_north_shift = plan.north_shift
-        car._car_exit_row = plan.exit_row
-        car._car_on_highway = True
-        car._car_exit_i = 0
-        car._car_dir = (0, 1)
-        car._car_heading = 90.0
-        car._car_pos = list(car._car_highway_stop(0, car._car_dir))
-        car._car_target = car._car_highway_stop(0, car._car_dir)
-        car._car_state = "drive"
-        car._signals = self._signals
-        car._place_car()
-        self.taskMgr.add(car._car_task, "car-drive")
+        for index, spawn in enumerate(spawns):
+            car = CarController(self, self._cars)
+            car.setup(
+                plan.road_top,
+                plan.west_road_full0,
+                spawn["origin_y"],
+                plan.stride_x,
+                plan.stride_y,
+                plan.cols,
+                plan.rows,
+                start_h=spawn["start_h"],
+                start_v=spawn["start_v"],
+                start_dir=spawn["start_dir"],
+                body_colour=spawn["colour"],
+            )
+            car._car_highway_east_lane_x = hwy_east_lane
+            car._car_highway_west_lane_x = hwy_west_lane
+            car._car_highway_exits = list(exit_ys)
+            car._car_south_road0 = plan.south_road_full0
+            car._car_north_shift = plan.north_shift
+            car._car_exit_row = plan.exit_row
+            car._car_on_highway = spawn["on_highway"]
+            car._car_exit_i = spawn["exit_i"]
+            car._car_dir = spawn["start_dir"]
+            car._car_heading = math.degrees(
+                math.atan2(spawn["start_dir"][1], spawn["start_dir"][0])
+            )
+            if spawn["on_highway"]:
+                car._car_set_highway_lane(car._car_dir)
+                stop = car._car_highway_stop(car._car_exit_i, car._car_dir)
+            else:
+                stop = car._car_stop_xy(*car._car_to, car._car_dir)
+            car._car_pos = list(stop)
+            car._car_target = stop
+            car._car_state = "drive"
+            car._signals = self._signals
+            car._place_car()
+            self.taskMgr.add(car._car_task, f"car-drive-{index}")
+        self._car = self._cars[0]
 
         bounds = plan.framing_bounds(cube_center_x, pyramid_size[0] / 2)
         left = bounds["left"]
@@ -308,14 +368,23 @@ class CityApp(ShowBase):
         self.dragging = False
         self.last_x = 0.0
         self.last_y = 0.0
+        # Space cycles: car 0..n-1, then restore this overview framing.
+        self._default_look_at = list(self.look_at)
+        self._default_distance = self.distance
+        self._default_heading = self.heading
+        self._default_pitch = self.pitch
+        self._focus_index = -1  # -1 = overview; 0..len(_cars)-1 = follow car
+        self._car_focus_distance = 14.0
         self._update_camera()
 
         self.accept("escape", sys.exit)
+        self.accept("space", self._cycle_car_focus)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
         self.accept("mouse1", self._start_drag)
         self.accept("mouse1-up", self._end_drag)
         self.taskMgr.add(self._drag_task, "orbit-drag")
+        self.taskMgr.add(self._follow_focus_task, "follow-car-focus")
         if not self.screenshot_path:
             self.fps_text = OnscreenText(
                 text="",
@@ -330,6 +399,39 @@ class CityApp(ShowBase):
 
     def _fps_task(self, task):
         self.fps_text.setText(f"FPS: {self.clock.getAverageFrameRate():.0f}")
+        return task.cont
+
+    def _car_look_at(self, car: CarController) -> list[float]:
+        return [car._car_pos[0], car._car_pos[1], car._car_z + 0.5]
+
+    def _cycle_car_focus(self) -> None:
+        """Space: zoom to next car; after the last car, restore the city overview."""
+        if not self._cars:
+            return
+        self._focus_index += 1
+        if self._focus_index >= len(self._cars):
+            self._focus_index = -1
+            self.look_at = list(self._default_look_at)
+            self.distance = self._default_distance
+            self.heading = self._default_heading
+            self.pitch = self._default_pitch
+            self._update_camera()
+            return
+
+        car = self._cars[self._focus_index]
+        self.look_at = self._car_look_at(car)
+        self.distance = min(
+            self.max_distance,
+            max(self.min_distance, self._car_focus_distance),
+        )
+        # Top-down follow; keep heading so the city stays oriented.
+        self.pitch = 85.0
+        self._update_camera()
+
+    def _follow_focus_task(self, task):
+        if 0 <= self._focus_index < len(self._cars):
+            self.look_at = self._car_look_at(self._cars[self._focus_index])
+            self._update_camera()
         return task.cont
 
     def _update_camera(self) -> None:
@@ -349,6 +451,9 @@ class CityApp(ShowBase):
             self.max_distance,
             max(self.min_distance, self.distance * factor),
         )
+        # While following a car, keep wheel zoom as the new follow distance.
+        if self._focus_index >= 0:
+            self._car_focus_distance = self.distance
         self._update_camera()
 
     def _start_drag(self) -> None:

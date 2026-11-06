@@ -253,7 +253,9 @@ def car_template() -> NodePath:
         return CAR_TEMPLATE
 
     root = NodePath("car")
-    hull = root.attachNewNode("hull")
+    # Body stays its own node so copies can swap paint without retinting trim.
+    body_np = root.attachNewNode("body")
+    detail = root.attachNewNode("detail")
     body = car_material("body")
     glass = car_material("glass")
     trim = car_material("trim")
@@ -280,30 +282,31 @@ def car_template() -> NodePath:
         return box
 
     # Lower hull and raised cabin keep the familiar 2×1×1 silhouette.
-    part(hull, 1.7, 0.92, 0.42, 0.0, 0.0, -0.12, body)
-    part(hull, 1.05, 0.84, 0.36, -0.05, 0.0, 0.27, body)
+    part(body_np, 1.7, 0.92, 0.42, 0.0, 0.0, -0.12, body)
+    part(body_np, 1.05, 0.84, 0.36, -0.05, 0.0, 0.27, body)
 
     # Dark window panes inset on the cabin faces.
-    part(hull, 0.06, 0.72, 0.26, 0.505, 0.0, 0.28, glass)
-    part(hull, 0.06, 0.72, 0.26, -0.58, 0.0, 0.28, glass)
+    part(detail, 0.06, 0.72, 0.26, 0.505, 0.0, 0.28, glass)
+    part(detail, 0.06, 0.72, 0.26, -0.58, 0.0, 0.28, glass)
     for side in (-1.0, 1.0):
-        part(hull, 0.7, 0.05, 0.24, -0.05, side * 0.445, 0.28, glass)
+        part(detail, 0.7, 0.05, 0.24, -0.05, side * 0.445, 0.28, glass)
 
     # Front and rear bumpers, plus a grille between the headlights.
-    part(hull, 0.18, 1.0, 0.22, 0.94, 0.0, -0.2, trim)
-    part(hull, 0.18, 1.0, 0.22, -0.94, 0.0, -0.2, trim)
-    part(hull, 0.08, 0.5, 0.16, 0.9, 0.0, -0.08, trim)
+    part(detail, 0.18, 1.0, 0.22, 0.94, 0.0, -0.2, trim)
+    part(detail, 0.18, 1.0, 0.22, -0.94, 0.0, -0.2, trim)
+    part(detail, 0.08, 0.5, 0.16, 0.9, 0.0, -0.08, trim)
 
     # Side mirrors and a thin roof light bar.
     for side in (-1.0, 1.0):
-        part(hull, 0.14, 0.12, 0.1, 0.28, side * 0.52, 0.12, trim)
-    part(hull, 0.5, 0.2, 0.06, -0.05, 0.0, 0.48, trim)
+        part(detail, 0.14, 0.12, 0.1, 0.28, side * 0.52, 0.12, trim)
+    part(detail, 0.5, 0.2, 0.06, -0.05, 0.0, 0.48, trim)
 
     # Four blocky wheels under the corners.
     for wx, wy in ((0.55, 0.42), (0.55, -0.42), (-0.55, 0.42), (-0.55, -0.42)):
-        part(hull, 0.38, 0.2, 0.38, wx, wy, -0.31, wheel)
+        part(detail, 0.38, 0.2, 0.38, wx, wy, -0.31, wheel)
 
-    hull.flattenStrong()
+    body_np.flattenStrong()
+    detail.flattenStrong()
 
     # +Y is the car's left; -Y is right. Lamps stay unflattened for signalling.
     for side, label in ((1.0, "left"), (-1.0, "right")):

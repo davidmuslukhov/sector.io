@@ -5,16 +5,25 @@ from __future__ import annotations
 import math
 import random
 
+from city.materials import car_material
 from city.mesh import car_template
+
+# Body length along travel; bumper gap when queued or following.
+_CAR_LENGTH = 2.0
+_CAR_GAP = 1.0
+_CAR_FOLLOW = _CAR_LENGTH + _CAR_GAP
+# Same-lane lateral tolerance (road is 5 wide; right-lane centre ± a bit).
+_CAR_LANE_TOL = 1.6
 
 
 class CarController:
-    """Drives the blue blocky car; owns car state and the per-frame task."""
+    """Drives one blocky car; owns car state and the per-frame task."""
 
-    def __init__(self, app) -> None:
+    def __init__(self, app, fleet: list[CarController] | None = None) -> None:
         self.app = app
         self.render = app.render
         self.clock = app.clock
+        self.fleet = fleet if fleet is not None else []
 
     def setup(
         self,
@@ -29,10 +38,18 @@ class CarController:
         start_h: int,
         start_v: int,
         start_dir: tuple[int, int] = (1, 0),
+        body_colour: tuple[float, float, float] = (0.22, 0.48, 0.72),
     ) -> None:
-        """Blue blocky 2×1×1 car on the road grid, long axis along travel."""
-        size = (2.0, 1.0, 1.0)
+        """Blocky 2×1×1 car on the road grid, long axis along travel."""
+        size = (_CAR_LENGTH, 1.0, 1.0)
         self.car = car_template().copyTo(self.render)
+        # Flatten bakes paint onto geom state; replace it so each car keeps a unique colour.
+        body = self.car.find("**/body")
+        if not body.isEmpty():
+            body.replaceMaterial(
+                car_material("body"),
+                car_material("body", body_colour),
+            )
         self._car_lights = {
             "left": [
                 self.car.find("**/headlight-left"),
@@ -74,10 +91,13 @@ class CarController:
         self._car_signal: str | None = None
         self._car_blink_t = 0.0
         self._signals = None
+        self._car_on_highway = False
         self._car_pos = list(self._car_stop_xy(*self._car_to, self._car_dir))
         self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
         self._place_car()
         self._car_apply_signals(None, True)
+        if self not in self.fleet:
+            self.fleet.append(self)
 
     def _car_intersection_xy(self, v: int, h: int) -> tuple[float, float]:
         return (
@@ -298,10 +318,94 @@ class CarController:
             return True
         return self._signals.may_proceed(self._car_dir, new_dir)
 
+    def _car_travel_dir(self) -> tuple[float, float]:
+        """Unit travel vector for spacing checks (grid dir, else heading)."""
+        dx, dy = self._car_dir
+        if dx or dy:
+            return float(dx), float(dy)
+        rad = math.radians(self._car_heading)
+        return math.cos(rad), math.sin(rad)
+
+    def _car_same_corridor(self, other: CarController) -> bool:
+        """True when ``other`` shares this car's road corridor (city or highway)."""
+        if bool(self._car_on_highway) != bool(other._car_on_highway):
+            return False
+        if self._car_on_highway:
+            return abs(self._car_highway_x - other._car_highway_x) < 0.5
+        return abs(self._car_origin_y - other._car_origin_y) < 1e-6
+
+    def _car_find_leader(self) -> CarController | None:
+        """Nearest same-lane car ahead, or None."""
+        dx, dy = self._car_travel_dir()
+        best: CarController | None = None
+        best_along = float("inf")
+        for other in self.fleet:
+            if other is self:
+                continue
+            if not self._car_same_corridor(other):
+                continue
+            ox = other._car_pos[0] - self._car_pos[0]
+            oy = other._car_pos[1] - self._car_pos[1]
+            along = ox * dx + oy * dy
+            if along <= 0.05:
+                continue
+            lateral = abs(ox * -dy + oy * dx)
+            if lateral > _CAR_LANE_TOL:
+                continue
+            # Only treat cars with a similar heading as leaders in this lane.
+            odx, ody = other._car_travel_dir()
+            if odx * dx + ody * dy < 0.5:
+                continue
+            if along < best_along:
+                best_along = along
+                best = other
+        return best
+
+    def _car_approach_stop(self) -> tuple[float, float]:
+        """Ideal stop-line position for the current approach."""
+        if self._car_on_highway:
+            return self._car_highway_stop(self._car_exit_i, self._car_dir)
+        return self._car_stop_xy(*self._car_to, self._car_dir)
+
+    def _car_follow_hold_xy(self) -> tuple[float, float] | None:
+        """Point 1 unit bumper-gap behind the leader, or None if clear ahead."""
+        leader = self._car_find_leader()
+        if leader is None:
+            return None
+        dx, dy = self._car_travel_dir()
+        return (
+            leader._car_pos[0] - dx * _CAR_FOLLOW,
+            leader._car_pos[1] - dy * _CAR_FOLLOW,
+        )
+
+    def _car_drive_target(self) -> tuple[float, float]:
+        """Stop line, or the follow hold if a leader is closer than that."""
+        stop = self._car_approach_stop()
+        hold = self._car_follow_hold_xy()
+        if hold is None:
+            return stop
+        dx, dy = self._car_travel_dir()
+        # Choose whichever lies sooner along travel from our position.
+        def along(pt: tuple[float, float]) -> float:
+            return (pt[0] - self._car_pos[0]) * dx + (pt[1] - self._car_pos[1]) * dy
+
+        return hold if along(hold) < along(stop) else stop
+
+    def _car_at_stop_line(self) -> bool:
+        sx, sy = self._car_approach_stop()
+        return math.hypot(sx - self._car_pos[0], sy - self._car_pos[1]) < 0.2
+
     def _car_begin_wait(self) -> None:
-        """Stop at the line, pick the next move, and start signalling it."""
+        """Stop at the line (or in queue), pick the next move, and start signalling."""
         self._car_speed = 0.0
         self._car_state = "wait"
+        # Queued behind another car: hold still until the gap opens; no turn yet.
+        if not self._car_at_stop_line():
+            self._car_wait = 0.0
+            self._car_pending_dir = None
+            self._car_signal = None
+            self._car_apply_signals(None, True)
+            return
         self._car_wait = (
             self._car_min_stop
             if self._car_has_traffic_light()
@@ -461,11 +565,34 @@ class CarController:
     def _car_task(self, task):
         dt = min(self.clock.getDt(), 0.05)
         if self._car_state == "wait":
+            # Still queued behind a leader: creep up when the 1-unit gap opens.
+            if not self._car_at_stop_line():
+                hold = self._car_follow_hold_xy()
+                stop = self._car_approach_stop()
+                goal = stop if hold is None else self._car_drive_target()
+                gx = goal[0] - self._car_pos[0]
+                gy = goal[1] - self._car_pos[1]
+                if math.hypot(gx, gy) > 0.08:
+                    self._car_state = "drive"
+                    self._car_target = goal
+                    self._car_speed = 0.0
+                self._place_car()
+                return task.cont
             self._car_wait -= dt
             self._car_update_signals(dt)
             if self._car_wait <= 0.0:
                 pending = self._car_pending_dir or self._car_choose_turn()
-                if self._car_may_proceed(pending):
+                # Do not enter the intersection while nose-to-tail with a leader.
+                leader = self._car_find_leader()
+                clear = True
+                if leader is not None:
+                    dx, dy = self._car_travel_dir()
+                    along = (
+                        (leader._car_pos[0] - self._car_pos[0]) * dx
+                        + (leader._car_pos[1] - self._car_pos[1]) * dy
+                    )
+                    clear = along >= _CAR_FOLLOW - 0.05
+                if clear and self._car_may_proceed(pending):
                     self._car_begin_maneuver(pending)
                     self._place_car()
             return task.cont
@@ -519,6 +646,9 @@ class CarController:
             self._place_car()
             return task.cont
 
+        if self._car_state == "drive":
+            self._car_target = self._car_drive_target()
+
         tx, ty = self._car_target
         dx = tx - self._car_pos[0]
         dy = ty - self._car_pos[1]
@@ -536,7 +666,16 @@ class CarController:
             return task.cont
 
         if self._car_state == "drive":
-            self._car_advance_speed(dt, dist)
+            # Also decel for the bumper gap to a moving leader.
+            hold = self._car_follow_hold_xy()
+            follow_dist = None
+            if hold is not None:
+                follow_dist = math.hypot(
+                    hold[0] - self._car_pos[0],
+                    hold[1] - self._car_pos[1],
+                )
+            limit = dist if follow_dist is None else min(dist, follow_dist)
+            self._car_advance_speed(dt, limit)
         else:
             self._car_advance_speed(dt)
 
