@@ -570,6 +570,7 @@ class SceneBuilders:
         y_offset: float,
         eastern_road: bool,
         southern_road: bool,
+        northern_road: bool = True,
         houses_across: int = 6,
         houses_deep: int = 2,
     ) -> None:
@@ -586,12 +587,17 @@ class SceneBuilders:
         mid_y = (south + north) / 2
         if southern_road:
             self._add_road(mid_x, south - road_width / 2, road_z, east - west, along_x=True)
-        self._add_road(mid_x, north + road_width / 2, road_z, east - west, along_x=True)
+        if northern_road:
+            self._add_road(mid_x, north + road_width / 2, road_z, east - west, along_x=True)
         self._add_road(west - road_width / 2, mid_y, road_z, north - south, along_x=False)
         if eastern_road:
             self._add_road(east + road_width / 2, mid_y, road_z, north - south, along_x=False)
         x_edges = ((west, -1.0), (east, 1.0)) if eastern_road else ((west, -1.0),)
-        y_edges = ((south, -1.0), (north, 1.0)) if southern_road else ((north, 1.0),)
+        y_edges: list[tuple[float, float]] = []
+        if southern_road:
+            y_edges.append((south, -1.0))
+        if northern_road:
+            y_edges.append((north, 1.0))
         for x_edge, x_sign in x_edges:
             for y_edge, y_sign in y_edges:
                 self._add_block(

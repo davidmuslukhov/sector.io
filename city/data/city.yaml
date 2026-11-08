@@ -28,9 +28,8 @@ districts:
     row_span: 2
     houses_across: 2
     houses_deep: 6
-
-twin:
-  north_shift_lots: 20
+  between_housing:
+    rows: 12
 
 highway:
   lanes: 6

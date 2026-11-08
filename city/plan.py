@@ -14,11 +14,13 @@ tower city and its southern factories; each shares roads with its neighbours
 and holds a grey factory building 29 by 11 by 9 with three 2-by-2-by-6 stacks
 on the roof. Each ring has stacks of unique random heights, from ten to
 twenty-five floors. A block leaves out the road on any side that faces another
-block, so neighbours share one road. An exact copy of the whole city sits
-twenty block-strides due north. A six-lane north-south highway runs along the
-west edge of both cities, with exits onto each city's fifth east-west road.
-The sphere group and a brown cube capped by a pyramid stand 30 units to the
-right of the road.
+block, so neighbours share one road. Twelve rows of full housing blocks fill
+the strip between the two cities, spanning the full city width; the northern
+copy sits exactly far enough north that those lots share the south city's
+north road and the north city's south road. A six-lane north-south highway
+runs along the west edge of both cities, with exits onto each city's fifth
+east-west road. The sphere group and a brown cube capped by a pyramid stand
+30 units to the right of the road.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ class HousingLot:
     lot_depth: float
     eastern_road: bool
     southern_road: bool
+    northern_road: bool
     houses_across: int
     houses_deep: int
 
@@ -79,6 +82,7 @@ class CityPlan:
     gap_row_span: int
     gap_houses_across: int
     gap_houses_deep: int
+    between_housing_rows: int
 
     north_shift_lots: int
     highway_lanes: int
@@ -157,6 +161,7 @@ class CityPlan:
                     lot_depth=self.road_depth,
                     eastern_road=hcol == self.housing_cols - 1,
                     southern_road=False,
+                    northern_road=True,
                     houses_across=6,
                     houses_deep=2,
                 )
@@ -171,6 +176,7 @@ class CityPlan:
                     lot_depth=self.road_depth,
                     eastern_road=False,
                     southern_road=wrow == 0,
+                    northern_road=True,
                     houses_across=6,
                     houses_deep=2,
                 )
@@ -209,9 +215,28 @@ class CityPlan:
                 lot_depth=self.gap_lot_depth,
                 eastern_road=False,
                 southern_road=grow == 0,
+                northern_road=True,
                 houses_across=self.gap_houses_across,
                 houses_deep=self.gap_houses_deep,
             )
+
+    def iter_between_housing_lots(self) -> Iterator[HousingLot]:
+        """Full-size housing grid filling the strip between the twin cities."""
+        west0 = self.tower_west - self.west_housing_cols * self.stride_x
+        y0 = (self.grid + self.housing_rows) * self.stride_y
+        for brow in range(self.between_housing_rows):
+            for bcol in range(self.cols):
+                yield HousingLot(
+                    west_face=west0 + bcol * self.stride_x,
+                    y_offset=y0 + brow * self.stride_y,
+                    lot_width=self.lot_width,
+                    lot_depth=self.road_depth,
+                    eastern_road=bcol == self.cols - 1,
+                    southern_road=False,
+                    northern_road=brow < self.between_housing_rows - 1,
+                    houses_across=6,
+                    houses_deep=2,
+                )
 
     def highway_geometry(self) -> dict[str, float | list[float]]:
         """Derived highway placement shared by scene assembly and the car."""
@@ -307,8 +332,7 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     gap_row_span = int(_require(data, "districts", "gap", "row_span"))
     gap_houses_across = int(_require(data, "districts", "gap", "houses_across"))
     gap_houses_deep = int(_require(data, "districts", "gap", "houses_deep"))
-
-    north_shift_lots = int(_require(data, "twin", "north_shift_lots"))
+    between_housing_rows = int(_require(data, "districts", "between_housing", "rows"))
 
     highway_lanes = int(_require(data, "highway", "lanes"))
     fence_w = float(_require(data, "highway", "fence_w"))
@@ -363,6 +387,9 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     gap_lot_depth = gap_row_span * stride_y - road_width
     gap_west_face = city_west_edge - gap_lot_width
     gap_housing_rows = rows // gap_row_span
+    # Twin offset: city footprint (rows) plus the between-housing strip so the
+    # connector lots share the south city's north road and north city's south road.
+    north_shift_lots = rows + between_housing_rows
     north_shift = north_shift_lots * stride_y
 
     return CityPlan(
@@ -385,6 +412,7 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
         gap_row_span=gap_row_span,
         gap_houses_across=gap_houses_across,
         gap_houses_deep=gap_houses_deep,
+        between_housing_rows=between_housing_rows,
         north_shift_lots=north_shift_lots,
         highway_lanes=highway_lanes,
         fence_w=fence_w,

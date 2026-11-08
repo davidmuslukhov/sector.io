@@ -69,6 +69,7 @@ class CityApp(ShowBase):
                 y_offset=lot.y_offset,
                 eastern_road=lot.eastern_road,
                 southern_road=lot.southern_road,
+                northern_road=lot.northern_road,
                 houses_across=lot.houses_across,
                 houses_deep=lot.houses_deep,
             )
@@ -82,6 +83,7 @@ class CityApp(ShowBase):
                 y_offset=lot.y_offset,
                 eastern_road=lot.eastern_road,
                 southern_road=lot.southern_road,
+                northern_road=lot.northern_road,
                 houses_across=lot.houses_across,
                 houses_deep=lot.houses_deep,
             )
@@ -115,6 +117,7 @@ class CityApp(ShowBase):
                 y_offset=lot.y_offset,
                 eastern_road=lot.eastern_road,
                 southern_road=lot.southern_road,
+                northern_road=lot.northern_road,
                 houses_across=lot.houses_across,
                 houses_deep=lot.houses_deep,
             )
@@ -167,6 +170,24 @@ class CityApp(ShowBase):
         north_city = self.render.attachNewNode("city-north")
         north_city.setY(plan.north_shift)
         self.city.instanceTo(north_city)
+
+        # Full housing blocks between the twins (outside the instanced city mesh).
+        between = self.render.attachNewNode("between-housing")
+        between_builders = SceneBuilders(between, plan, self.render)
+        for lot in plan.iter_between_housing_lots():
+            between_builders._add_housing_lot(
+                lot.west_face,
+                block_size,
+                lot.lot_width,
+                lot.lot_depth,
+                y_offset=lot.y_offset,
+                eastern_road=lot.eastern_road,
+                southern_road=lot.southern_road,
+                northern_road=lot.northern_road,
+                houses_across=lot.houses_across,
+                houses_deep=lot.houses_deep,
+            )
+        between.flattenStrong()
 
         self._signals = TrafficLightController(self)
         self.taskMgr.add(self._signals.update, "traffic-lights")
