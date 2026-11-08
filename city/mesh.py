@@ -95,6 +95,122 @@ def make_cylinder(radius: float, length: float, segments: int = 24) -> GeomNode:
     return node
 
 
+def make_annulus_sector(
+    inner_radius: float,
+    outer_radius: float,
+    start_angle: float,
+    end_angle: float,
+    thickness: float,
+    segments: int = 24,
+) -> GeomNode:
+    """Flat annular sector in XY, centred on the origin, extruded along Z.
+
+    Angles are radians from +X toward +Y (standard CCW). ``segments`` is the
+    number of wedges across the arc. Suitable for highway corner pads.
+    """
+    if outer_radius <= inner_radius:
+        raise ValueError("outer_radius must exceed inner_radius")
+    if segments < 1:
+        raise ValueError("segments must be at least 1")
+    hz = thickness / 2.0
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("annulus_sector", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    def add_cap(z: float, nz: float, reverse: bool) -> None:
+        base = vertex.getWriteRow()
+        for i in range(segments + 1):
+            t = i / segments
+            angle = start_angle + (end_angle - start_angle) * t
+            c = math.cos(angle)
+            s = math.sin(angle)
+            vertex.addData3(inner_radius * c, inner_radius * s, z)
+            normal.addData3(0.0, 0.0, nz)
+            vertex.addData3(outer_radius * c, outer_radius * s, z)
+            normal.addData3(0.0, 0.0, nz)
+        for i in range(segments):
+            i0 = base + 2 * i
+            i1 = i0 + 1
+            i2 = i0 + 2
+            i3 = i0 + 3
+            if reverse:
+                tris.addVertices(i0, i1, i3)
+                tris.addVertices(i0, i3, i2)
+            else:
+                tris.addVertices(i0, i3, i1)
+                tris.addVertices(i0, i2, i3)
+
+    # Top (+Z) and bottom (-Z) decks.
+    add_cap(hz, 1.0, reverse=False)
+    add_cap(-hz, -1.0, reverse=True)
+
+    def add_arc_wall(radius: float, outward: bool) -> None:
+        base = vertex.getWriteRow()
+        for i in range(segments + 1):
+            t = i / segments
+            angle = start_angle + (end_angle - start_angle) * t
+            c = math.cos(angle)
+            s = math.sin(angle)
+            nx = c if outward else -c
+            ny = s if outward else -s
+            vertex.addData3(radius * c, radius * s, -hz)
+            normal.addData3(nx, ny, 0.0)
+            vertex.addData3(radius * c, radius * s, hz)
+            normal.addData3(nx, ny, 0.0)
+        for i in range(segments):
+            i0 = base + 2 * i
+            i1 = i0 + 1
+            i2 = i0 + 2
+            i3 = i0 + 3
+            if outward:
+                tris.addVertices(i0, i2, i1)
+                tris.addVertices(i1, i2, i3)
+            else:
+                tris.addVertices(i0, i1, i2)
+                tris.addVertices(i1, i3, i2)
+
+    add_arc_wall(outer_radius, outward=True)
+    add_arc_wall(inner_radius, outward=False)
+
+    def add_radial_wall(angle: float, at_end: bool) -> None:
+        c = math.cos(angle)
+        s = math.sin(angle)
+        # Outward normals point into the missing sector: opposite the CCW sweep
+        # at the start cut, along the CCW sweep at the end cut.
+        if at_end:
+            nx, ny = -s, c
+        else:
+            nx, ny = s, -c
+        corners = (
+            (inner_radius * c, inner_radius * s, -hz),
+            (outer_radius * c, outer_radius * s, -hz),
+            (outer_radius * c, outer_radius * s, hz),
+            (inner_radius * c, inner_radius * s, hz),
+        )
+        base = vertex.getWriteRow()
+        for corner in corners:
+            vertex.addData3(*corner)
+            normal.addData3(nx, ny, 0.0)
+        if at_end:
+            tris.addVertices(base, base + 1, base + 2)
+            tris.addVertices(base, base + 2, base + 3)
+        else:
+            tris.addVertices(base, base + 2, base + 1)
+            tris.addVertices(base, base + 3, base + 2)
+
+    add_radial_wall(start_angle, at_end=False)
+    add_radial_wall(end_angle, at_end=True)
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("annulus_sector")
+    node.addGeom(geom)
+    return node
+
+
 def make_box(
     sx: float,
     sy: float,

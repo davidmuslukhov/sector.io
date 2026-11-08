@@ -13,6 +13,7 @@ from direct.showbase.ShowBase import ShowBase
 from city.builders import SceneBuilders
 from city.car import CarController
 from city.materials import block_material, mark_material, road_material, sphere_material
+from city.mesh import box_instance
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
 
@@ -198,39 +199,144 @@ class CityApp(ShowBase):
         highway_east = hwy["highway_east"]
         highway_mid_x = hwy["highway_mid_x"]
         fence_x = hwy["fence_x"]
-        city_south = hwy["city_south"]
-        city_north = hwy["city_north"]
         highway_length = hwy["highway_length"]
         highway_mid_y = hwy["highway_mid_y"]
         road_z = hwy["road_z"]
         exit_ys = hwy["exit_ys"]
         road_thickness = hwy["road_thickness"]
+        east_mid_x = hwy["east_mid_x"]
+        south_mid_y = hwy["south_mid_y"]
+        north_mid_y = hwy["north_mid_y"]
+        belt_east_inner = hwy["belt_east_inner"]
+        belt_south_inner = hwy["belt_south_inner"]
+        belt_north_inner = hwy["belt_north_inner"]
+        corner_radius = hwy["corner_radius"]
+        ns_y0 = hwy["ns_y0"]
+        ns_y1 = hwy["ns_y1"]
+        ew_x0 = hwy["ew_x0"]
+        ew_x1 = hwy["ew_x1"]
+        ew_span = hwy["ew_span"]
+        ew_mid_x = hwy["ew_mid_x"]
+        corner_sw = hwy["corner_sw"]
+        corner_se = hwy["corner_se"]
+        corner_ne = hwy["corner_ne"]
+        corner_nw = hwy["corner_nw"]
+        corner_segments = 24
 
         self.highway = self.render.attachNewNode("highway")
-        builders._add_block(
-            highway_mid_x,
-            highway_mid_y,
-            road_z,
-            (highway_width, highway_length, road_thickness),
-            road_material(),
-            parent=self.highway,
-        )
-        road_top = road_z + road_thickness / 2
+        road_mat = road_material()
+        mark_paint = mark_material()
         centre_divider = plan.highway_lanes // 2
-        for divider in range(1, plan.highway_lanes):
-            # Physical median barrier occupies the center; skip its paint.
-            if divider == centre_divider:
-                continue
-            mark_x = highway_east - divider * lane_width
-            builders._add_road_marks(
-                mark_x,
+        road_top = road_z + road_thickness / 2
+        mark_z = road_top + 0.02
+        mark_len = 2.0
+        mark_w = 0.5
+        mark_h = 0.04
+        mark_gap = 1.0
+
+        def add_ns_leg(mid_x: float, inner_edge_x: float, toward_east: bool) -> None:
+            """Six-lane north-south carriageway between the rounded corners."""
+            builders._add_block(
+                mid_x,
                 highway_mid_y,
-                road_top,
-                highway_length,
-                along_x=False,
+                road_z,
+                (highway_width, highway_length, road_thickness),
+                road_mat,
                 parent=self.highway,
-                paint=mark_material(),
             )
+            for divider in range(1, plan.highway_lanes):
+                if divider == centre_divider:
+                    continue
+                mark_x = (
+                    inner_edge_x + divider * lane_width
+                    if toward_east
+                    else inner_edge_x - divider * lane_width
+                )
+                builders._add_road_marks(
+                    mark_x,
+                    highway_mid_y,
+                    road_top,
+                    highway_length,
+                    along_x=False,
+                    parent=self.highway,
+                    paint=mark_paint,
+                )
+
+        def add_ew_leg(mid_y: float, inner_edge_y: float, toward_north: bool) -> None:
+            """Six-lane east-west carriageway between the rounded corners."""
+            builders._add_block(
+                ew_mid_x,
+                mid_y,
+                road_z,
+                (ew_span, highway_width, road_thickness),
+                road_mat,
+                parent=self.highway,
+            )
+            for divider in range(1, plan.highway_lanes):
+                if divider == centre_divider:
+                    continue
+                mark_y = (
+                    inner_edge_y + divider * lane_width
+                    if toward_north
+                    else inner_edge_y - divider * lane_width
+                )
+                builders._add_road_marks(
+                    ew_mid_x,
+                    mark_y,
+                    road_top,
+                    ew_span,
+                    along_x=True,
+                    parent=self.highway,
+                    paint=mark_paint,
+                )
+
+        def add_corner(
+            center: tuple[float, float],
+            start_angle: float,
+            end_angle: float,
+        ) -> None:
+            """Quarter-annulus road pad with curved lane dashes."""
+            cx, cy = center
+            builders._add_annulus_sector(
+                cx,
+                cy,
+                road_z,
+                corner_radius,
+                corner_radius + highway_width,
+                start_angle,
+                end_angle,
+                road_thickness,
+                road_mat,
+                parent=self.highway,
+                segments=corner_segments,
+            )
+            sweep = end_angle - start_angle
+            for divider in range(1, plan.highway_lanes):
+                if divider == centre_divider:
+                    continue
+                radius = corner_radius + divider * lane_width
+                arc_len = abs(sweep) * radius
+                count = max(1, int((arc_len + mark_gap) / (mark_len + mark_gap)))
+                for index in range(count):
+                    t = (index + 0.5) / count
+                    angle = start_angle + sweep * t
+                    c = math.cos(angle)
+                    s = math.sin(angle)
+                    mark = box_instance(self.highway, mark_len, mark_w, mark_h)
+                    mark.setPos(cx + radius * c, cy + radius * s, mark_z)
+                    # Panda heading is clockwise from +X; align length with the tangent.
+                    mark.setH(-math.degrees(angle) - 90.0)
+                    mark.setMaterial(mark_paint, 1)
+
+        add_ns_leg(highway_mid_x, highway_east, toward_east=False)
+        add_ns_leg(east_mid_x, belt_east_inner, toward_east=True)
+        add_ew_leg(south_mid_y, belt_south_inner, toward_north=False)
+        add_ew_leg(north_mid_y, belt_north_inner, toward_north=True)
+        add_corner(corner_sw, math.pi, 1.5 * math.pi)
+        add_corner(corner_se, 1.5 * math.pi, 2.0 * math.pi)
+        add_corner(corner_ne, 0.0, 0.5 * math.pi)
+        add_corner(corner_nw, 0.5 * math.pi, math.pi)
+
         for exit_y in exit_ys:
             builders._add_road(
                 highway_mid_x,
@@ -246,10 +352,19 @@ class CityApp(ShowBase):
         fence_mat = block_material(0.55)
         opening_half = plan.road_width / 2
 
-        def wall_segments(x: float, width: float, height: float, z: float, mat) -> None:
-            cursor = city_south
-            for exit_y in exit_ys:
-                gap_start = exit_y - opening_half
+        def wall_segments_ns(
+            x: float,
+            width: float,
+            height: float,
+            z: float,
+            mat,
+            y0: float,
+            y1: float,
+            openings: list[float] | tuple[float, ...] = (),
+        ) -> None:
+            cursor = y0
+            for open_y in openings:
+                gap_start = open_y - opening_half
                 if gap_start > cursor:
                     seg_len = gap_start - cursor
                     builders._add_block(
@@ -260,9 +375,9 @@ class CityApp(ShowBase):
                         mat,
                         parent=self.highway,
                     )
-                cursor = exit_y + opening_half
-            if city_north > cursor:
-                seg_len = city_north - cursor
+                cursor = open_y + opening_half
+            if y1 > cursor:
+                seg_len = y1 - cursor
                 builders._add_block(
                     x,
                     cursor + seg_len / 2,
@@ -272,8 +387,162 @@ class CityApp(ShowBase):
                     parent=self.highway,
                 )
 
-        wall_segments(highway_mid_x, plan.barrier_w, plan.barrier_h, barrier_z, barrier_mat)
-        wall_segments(fence_x, plan.fence_w, plan.fence_h, fence_z, fence_mat)
+        def wall_segments_ew(
+            y: float,
+            depth: float,
+            height: float,
+            z: float,
+            mat,
+            x0: float,
+            x1: float,
+        ) -> None:
+            seg_len = x1 - x0
+            if seg_len <= 0:
+                return
+            builders._add_block(
+                (x0 + x1) / 2,
+                y,
+                z,
+                (seg_len, depth, height),
+                mat,
+                parent=self.highway,
+            )
+
+        def add_arc_wall(
+            center: tuple[float, float],
+            radius: float,
+            start_angle: float,
+            end_angle: float,
+            radial_thickness: float,
+            height: float,
+            z: float,
+            mat,
+            segments: int = corner_segments,
+        ) -> None:
+            """Approximate a curved wall with short boxes tangent to the arc."""
+            cx, cy = center
+            sweep = end_angle - start_angle
+            for index in range(segments):
+                t0 = index / segments
+                t1 = (index + 1) / segments
+                a0 = start_angle + sweep * t0
+                a1 = start_angle + sweep * t1
+                mid = 0.5 * (a0 + a1)
+                c = math.cos(mid)
+                s = math.sin(mid)
+                chord = max(abs(a1 - a0) * radius, 0.05)
+                wall = box_instance(self.highway, radial_thickness, chord, height)
+                wall.setPos(cx + radius * c, cy + radius * s, z)
+                # Radial thickness along the ray; Panda H is clockwise from +X.
+                wall.setH(-math.degrees(mid))
+                wall.setMaterial(mat, 1)
+
+        # West straight: median + city-side fence open at the twin exits.
+        wall_segments_ns(
+            highway_mid_x,
+            plan.barrier_w,
+            plan.barrier_h,
+            barrier_z,
+            barrier_mat,
+            ns_y0,
+            ns_y1,
+            exit_ys,
+        )
+        wall_segments_ns(
+            fence_x,
+            plan.fence_w,
+            plan.fence_h,
+            fence_z,
+            fence_mat,
+            ns_y0,
+            ns_y1,
+            exit_ys,
+        )
+        # East straight.
+        wall_segments_ns(
+            east_mid_x,
+            plan.barrier_w,
+            plan.barrier_h,
+            barrier_z,
+            barrier_mat,
+            ns_y0,
+            ns_y1,
+        )
+        wall_segments_ns(
+            hwy["east_fence_x"],
+            plan.fence_w,
+            plan.fence_h,
+            fence_z,
+            fence_mat,
+            ns_y0,
+            ns_y1,
+        )
+        # South / north straights.
+        wall_segments_ew(
+            south_mid_y,
+            plan.barrier_w,
+            plan.barrier_h,
+            barrier_z,
+            barrier_mat,
+            ew_x0,
+            ew_x1,
+        )
+        wall_segments_ew(
+            hwy["south_fence_y"],
+            plan.fence_w,
+            plan.fence_h,
+            fence_z,
+            fence_mat,
+            ew_x0,
+            ew_x1,
+        )
+        wall_segments_ew(
+            north_mid_y,
+            plan.barrier_w,
+            plan.barrier_h,
+            barrier_z,
+            barrier_mat,
+            ew_x0,
+            ew_x1,
+        )
+        wall_segments_ew(
+            hwy["north_fence_y"],
+            plan.fence_w,
+            plan.fence_h,
+            fence_z,
+            fence_mat,
+            ew_x0,
+            ew_x1,
+        )
+        # Curved median + city-side fence through each rounded corner.
+        median_r = corner_radius + highway_width / 2
+        fence_r = corner_radius - plan.fence_w / 2
+        for center, a0, a1 in (
+            (corner_sw, math.pi, 1.5 * math.pi),
+            (corner_se, 1.5 * math.pi, 2.0 * math.pi),
+            (corner_ne, 0.0, 0.5 * math.pi),
+            (corner_nw, 0.5 * math.pi, math.pi),
+        ):
+            add_arc_wall(
+                center,
+                median_r,
+                a0,
+                a1,
+                plan.barrier_w,
+                plan.barrier_h,
+                barrier_z,
+                barrier_mat,
+            )
+            add_arc_wall(
+                center,
+                fence_r,
+                a0,
+                a1,
+                plan.fence_w,
+                plan.fence_h,
+                fence_z,
+                fence_mat,
+            )
         self.highway.flattenStrong()
 
         self._cars: list[CarController] = []
@@ -426,18 +695,20 @@ class CityApp(ShowBase):
         bounds = plan.framing_bounds(cube_center_x, pyramid_size[0] / 2)
         left = bounds["left"]
         right = bounds["right"]
+        frame_south = bounds["city_south"]
+        frame_north = bounds["city_north"]
         stack_bottom = bounds["stack_bottom"]
         stack_top = bounds["stack_top"]
         self.look_at = (
             (left + right) / 2,
-            (city_south + city_north) / 2,
+            (frame_south + frame_north) / 2,
             (stack_bottom + stack_top) / 2,
         )
         self.heading = 30.0
         self.pitch = 20.0
         half_fov = math.tan(math.radians(20.0))
         fit_x = ((right - left) / 2) / half_fov / math.cos(math.radians(self.heading))
-        fit_y = ((city_north - city_south) / 2) / half_fov / math.cos(math.radians(self.pitch))
+        fit_y = ((frame_north - frame_south) / 2) / half_fov / math.cos(math.radians(self.pitch))
         self.distance = max(fit_x, fit_y) * 1.25
         self.min_distance = 2.0
         self.max_distance = max(80.0, self.distance * 2.0)

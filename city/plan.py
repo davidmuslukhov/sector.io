@@ -17,10 +17,12 @@ twenty-five floors. A block leaves out the road on any side that faces another
 block, so neighbours share one road. Twelve rows of full housing blocks fill
 the strip between the two cities, spanning the full city width; the northern
 copy sits exactly far enough north that those lots share the south city's
-north road and the north city's south road. A six-lane north-south highway
-runs along the west edge of both cities, with exits onto each city's fifth
-east-west road. The sphere group and a brown cube capped by a pyramid stand
-30 units to the right of the road.
+north road and the north city's south road. A six-lane ring beltway wraps
+both cities: the west leg carries exits onto each city's fifth east-west
+road, and matching six-lane north, east, and south legs close the loop
+outside the twin footprint, with quarter-turn rounded corners. The sphere
+group and a brown cube capped by a pyramid stand 30 units to the right of
+the road.
 """
 
 from __future__ import annotations
@@ -239,7 +241,14 @@ class CityPlan:
                 )
 
     def highway_geometry(self) -> dict[str, float | list[float]]:
-        """Derived highway placement shared by scene assembly and the car."""
+        """Derived beltway placement shared by scene assembly and the car.
+
+        City-facing edges of the four legs form an inner rounded rectangle flush
+        with the twin footprint on the north and south, west of the gap housing,
+        and a road-width clearance past the easternmost city road. Each leg is
+        ``highway_lanes`` wide; quarter-annulus pads of inner radius
+        ``corner_radius`` round the four corners.
+        """
         lane_width = self.road_width / 2
         highway_width = self.highway_lanes * lane_width
         west_road_west = self.gap_west_face - self.road_width
@@ -253,8 +262,40 @@ class CityPlan:
             + (self.grid + self.housing_rows) * self.road_width
             + self.north_shift
         )
-        highway_length = city_north - city_south
-        highway_mid_y = (city_north + city_south) / 2
+        city_east = (
+            self.west_road_full0 + self.cols * self.stride_x + self.road_width / 2
+        )
+        # Mirror the west clearance beyond the gap lots: one road width + fence.
+        belt_east_inner = city_east + self.road_width + self.fence_w
+        belt_west_inner = highway_east
+        belt_south_inner = city_south
+        belt_north_inner = city_north
+        belt_west_outer = belt_west_inner - highway_width
+        belt_east_outer = belt_east_inner + highway_width
+        belt_south_outer = belt_south_inner - highway_width
+        belt_north_outer = belt_north_inner + highway_width
+        # Inner-corner radius: two highway widths keeps a clear curve without
+        # swallowing the straight legs of the twin footprint.
+        corner_radius = 2.0 * highway_width
+        inner_width = belt_east_inner - belt_west_inner
+        inner_height = belt_north_inner - belt_south_inner
+        max_radius = min(inner_width, inner_height) / 2 - lane_width
+        if corner_radius > max_radius:
+            corner_radius = max(lane_width, max_radius)
+        east_mid_x = belt_east_inner + highway_width / 2
+        south_mid_y = belt_south_inner - highway_width / 2
+        north_mid_y = belt_north_inner + highway_width / 2
+        ring_mid_x = (belt_west_outer + belt_east_outer) / 2
+        ring_mid_y = (belt_south_outer + belt_north_outer) / 2
+        ring_outer_width = belt_east_outer - belt_west_outer
+        ring_outer_height = belt_north_outer - belt_south_outer
+        # Straight N-S legs stop where the corner arcs begin.
+        ns_y0 = belt_south_inner + corner_radius
+        ns_y1 = belt_north_inner - corner_radius
+        ew_x0 = belt_west_inner + corner_radius
+        ew_x1 = belt_east_inner - corner_radius
+        highway_length = ns_y1 - ns_y0
+        highway_mid_y = (ns_y0 + ns_y1) / 2
         road_thickness = 0.1
         road_z = -self.block_size[2] / 2 + road_thickness / 2
         exit_ys = [
@@ -269,11 +310,41 @@ class CityPlan:
             "fence_x": fence_x,
             "city_south": city_south,
             "city_north": city_north,
+            "city_east": city_east,
             "highway_length": highway_length,
             "highway_mid_y": highway_mid_y,
             "road_thickness": road_thickness,
             "road_z": road_z,
             "exit_ys": exit_ys,
+            "belt_west_inner": belt_west_inner,
+            "belt_east_inner": belt_east_inner,
+            "belt_south_inner": belt_south_inner,
+            "belt_north_inner": belt_north_inner,
+            "belt_west_outer": belt_west_outer,
+            "belt_east_outer": belt_east_outer,
+            "belt_south_outer": belt_south_outer,
+            "belt_north_outer": belt_north_outer,
+            "east_mid_x": east_mid_x,
+            "south_mid_y": south_mid_y,
+            "north_mid_y": north_mid_y,
+            "ring_mid_x": ring_mid_x,
+            "ring_mid_y": ring_mid_y,
+            "ring_outer_width": ring_outer_width,
+            "ring_outer_height": ring_outer_height,
+            "east_fence_x": belt_east_inner - self.fence_w / 2,
+            "south_fence_y": belt_south_inner + self.fence_w / 2,
+            "north_fence_y": belt_north_inner - self.fence_w / 2,
+            "corner_radius": corner_radius,
+            "ns_y0": ns_y0,
+            "ns_y1": ns_y1,
+            "ew_x0": ew_x0,
+            "ew_x1": ew_x1,
+            "ew_span": ew_x1 - ew_x0,
+            "ew_mid_x": (ew_x0 + ew_x1) / 2,
+            "corner_sw": (belt_west_inner + corner_radius, belt_south_inner + corner_radius),
+            "corner_se": (belt_east_inner - corner_radius, belt_south_inner + corner_radius),
+            "corner_ne": (belt_east_inner - corner_radius, belt_north_inner - corner_radius),
+            "corner_nw": (belt_west_inner + corner_radius, belt_north_inner - corner_radius),
         }
 
     def framing_bounds(self, cube_center_x: float, pyramid_half_x: float) -> dict[str, float]:
@@ -281,16 +352,16 @@ class CityPlan:
         left = min(
             self.city_west_edge,
             self.circle_left + self.group_shift,
-            hwy["highway_east"] - hwy["highway_width"],
+            hwy["belt_west_outer"],
         )
-        right = cube_center_x + pyramid_half_x
+        right = max(cube_center_x + pyramid_half_x, hwy["belt_east_outer"])
         stack_bottom = -self.block_size[2] / 2
         stack_top = (self.tallest - 1) * self.block_size[2] + self.block_size[2] / 2
         return {
             "left": left,
             "right": right,
-            "city_south": hwy["city_south"],
-            "city_north": hwy["city_north"],
+            "city_south": hwy["belt_south_outer"],
+            "city_north": hwy["belt_north_outer"],
             "stack_bottom": stack_bottom,
             "stack_top": stack_top,
         }

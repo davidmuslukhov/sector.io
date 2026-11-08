@@ -29,6 +29,7 @@ from city.materials import (
 from city.mesh import (
     box_instance,
     factory_template,
+    make_annulus_sector,
     make_cylinder,
     make_pyramid,
     make_sphere,
@@ -338,6 +339,35 @@ class SceneBuilders:
         block = box_instance(root, *size, top=top, bottom=bottom)
         block.setPos(x, y, z)
         block.setMaterial(material, 1)
+
+    def _add_annulus_sector(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        inner_radius: float,
+        outer_radius: float,
+        start_angle: float,
+        end_angle: float,
+        thickness: float,
+        material: Material,
+        parent=None,
+        segments: int = 24,
+    ) -> None:
+        """Place a flat annular sector centred at ``(x, y, z)``."""
+        root = self.city if parent is None else parent
+        pad = root.attachNewNode(
+            make_annulus_sector(
+                inner_radius,
+                outer_radius,
+                start_angle,
+                end_angle,
+                thickness,
+                segments=segments,
+            )
+        )
+        pad.setPos(x, y, z)
+        pad.setMaterial(material, 1)
 
     def _add_face_squares(
         self,
