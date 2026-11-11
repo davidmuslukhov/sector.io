@@ -339,8 +339,8 @@ class CityApp(ShowBase):
         fence_z = road_top + plan.fence_h / 2
         barrier_mat = block_material(0.75)
         fence_mat = block_material(0.55)
-        # Slightly wider than a city road so angled diamond arms clear the curb.
-        opening_half = plan.road_width * 0.75
+        # Wide enough for flared diamond merge arms at each curb.
+        opening_half = max(plan.road_width * 0.75, highway_width * 0.4)
         diamonds = hwy["diamonds"]
         ns_openings = sorted({d["hy"] for d in diamonds if d["axis"] == "ns"})
         ew_openings = sorted({d["hx"] for d in diamonds if d["axis"] == "ew"})
@@ -557,6 +557,11 @@ class CityApp(ShowBase):
 
         slip_paint = centerline_material()
         lawn_mat = lawn_material()
+        pier_mat = block_material(0.62)
+        # Deck clears the median barrier with clear headroom for the belt below.
+        bridge_clearance = plan.barrier_h + 2.8
+        bridge_z = road_z + bridge_clearance
+        bridge_mark_z = bridge_z + road_thickness / 2 + 0.02
 
         def add_slip_segment(
             x0: float,
@@ -564,6 +569,8 @@ class CityApp(ShowBase):
             x1: float,
             y1: float,
             width: float,
+            z: float = road_z,
+            mark_z_pos: float | None = None,
         ) -> None:
             """Angled asphalt slab with a few centerline dashes."""
             dx = x1 - x0
@@ -575,27 +582,40 @@ class CityApp(ShowBase):
             cy = (y0 + y1) / 2
             heading = math.degrees(math.atan2(dy, dx))
             pad = box_instance(self.highway, length, width, road_thickness)
-            pad.setPos(cx, cy, road_z)
+            pad.setPos(cx, cy, z)
             pad.setH(heading)
             pad.setMaterial(road_mat, 1)
+            mz = bridge_mark_z if mark_z_pos is None and abs(z - bridge_z) < 1e-6 else (
+                mark_z if mark_z_pos is None else mark_z_pos
+            )
             mark_len = 1.6
             mark_w = 0.35
             count = max(1, int((length + 1.0) / 3.2))
             for index in range(count):
                 t = (index + 0.5) / count
                 mark = box_instance(self.highway, mark_len, mark_w, mark_h)
-                mark.setPos(x0 + dx * t, y0 + dy * t, mark_z)
+                mark.setPos(x0 + dx * t, y0 + dy * t, mz)
                 mark.setH(heading)
                 mark.setMaterial(slip_paint, 1)
 
-        def add_diamond_ground(
-            verts: tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]],
-            inset: float,
+        def add_chevron_lawn(
+            apex: tuple[float, float],
+            merge_a: tuple[float, float],
+            merge_b: tuple[float, float],
         ) -> None:
-            """Lawn under the whole footprint, then a tighter grass median island."""
-            xs = [v[0] for v in verts]
-            ys = [v[1] for v in verts]
-            pad = plan.road_width * 0.6
+            """Grass wedge inside one half of the diamond."""
+            cx = (apex[0] + merge_a[0] + merge_b[0]) / 3.0
+            cy = (apex[1] + merge_a[1] + merge_b[1]) / 3.0
+            scale = 0.72
+            inner = (
+                (cx + (apex[0] - cx) * scale, cy + (apex[1] - cy) * scale),
+                (cx + (merge_a[0] - cx) * scale, cy + (merge_a[1] - cy) * scale),
+                (cx + (merge_b[0] - cx) * scale, cy + (merge_b[1] - cy) * scale),
+            )
+            # Ground pad under the half so tips don't float on sky.
+            xs = (apex[0], merge_a[0], merge_b[0])
+            ys = (apex[1], merge_a[1], merge_b[1])
+            pad = plan.road_width * 0.45
             builders._add_block(
                 (min(xs) + max(xs)) / 2,
                 (min(ys) + max(ys)) / 2,
@@ -604,186 +624,212 @@ class CityApp(ShowBase):
                 lawn_mat,
                 parent=self.highway,
             )
-            cx = sum(xs) / 4.0
-            cy = sum(ys) / 4.0
-            # Pull vertices inward so the island sits inside the road ribbons.
-            scale = max(
-                0.35,
-                1.0 - inset / max(abs(verts[0][0] - cx), abs(verts[0][1] - cy), 1.0),
-            )
-            inner = tuple(
-                (cx + (x - cx) * scale, cy + (y - cy) * scale) for x, y in verts
-            )
             island = self.highway.attachNewNode(
                 make_rhombus_slab(inner, road_thickness * 0.9)
             )
             island.setPos(0.0, 0.0, road_z - 0.01)
             island.setMaterial(lawn_mat, 1)
 
+        def add_stepped_approach(
+            x0: float,
+            y0: float,
+            z0: float,
+            x1: float,
+            y1: float,
+            z1: float,
+            width: float,
+            steps: int = 5,
+        ) -> None:
+            """Blocky stair ramp from ground up to the bridge abutment."""
+            dx = x1 - x0
+            dy = y1 - y0
+            if math.hypot(dx, dy) < 0.05:
+                return
+            # Climb on the early treads; keep the last two flat as a landing.
+            climb_steps = max(1, steps - 2)
+            for index in range(steps):
+                t0 = index / steps
+                t1 = (index + 1) / steps
+                xa = x0 + dx * t0
+                ya = y0 + dy * t0
+                xb = x0 + dx * t1
+                yb = y0 + dy * t1
+                if index < climb_steps:
+                    z = z0 + (z1 - z0) * ((index + 1) / climb_steps)
+                else:
+                    z = z1
+                add_slip_segment(
+                    xa,
+                    ya,
+                    xb,
+                    yb,
+                    width,
+                    z=z,
+                    mark_z_pos=z + road_thickness / 2 + 0.02,
+                )
+
+        def add_bridge_span(
+            x0: float,
+            y0: float,
+            x1: float,
+            y1: float,
+            width: float,
+            pier_points: tuple[tuple[float, float], ...] = (),
+        ) -> None:
+            """Elevated deck over the highway; piers sit on the median only."""
+            dx = x1 - x0
+            dy = y1 - y0
+            length = math.hypot(dx, dy)
+            if length < 0.05:
+                return
+            cx = (x0 + x1) / 2
+            cy = (y0 + y1) / 2
+            heading = math.degrees(math.atan2(dy, dx))
+            deck = box_instance(self.highway, length, width, road_thickness)
+            deck.setPos(cx, cy, bridge_z)
+            deck.setH(heading)
+            deck.setMaterial(road_mat, 1)
+            rail_h = 0.55
+            rail_w = 0.22
+            for side in (-1.0, 1.0):
+                rail = box_instance(self.highway, length, rail_w, rail_h)
+                ox = -math.sin(math.radians(heading)) * side * (width / 2 - rail_w / 2)
+                oy = math.cos(math.radians(heading)) * side * (width / 2 - rail_w / 2)
+                rail.setPos(cx + ox, cy + oy, bridge_z + road_thickness / 2 + rail_h / 2)
+                rail.setH(heading)
+                rail.setMaterial(pier_mat, 1)
+            mark_len = 1.6
+            mark_w = 0.35
+            count = max(1, int((length + 1.0) / 3.2))
+            for index in range(count):
+                t = (index + 0.5) / count
+                mark = box_instance(self.highway, mark_len, mark_w, mark_h)
+                mark.setPos(x0 + dx * t, y0 + dy * t, bridge_mark_z)
+                mark.setH(heading)
+                mark.setMaterial(slip_paint, 1)
+            pier_w = min(width * 0.55, plan.barrier_w * 3.0)
+            pier_h = bridge_clearance - road_thickness / 2
+            for px, py in pier_points:
+                pier = box_instance(self.highway, pier_w, pier_w, pier_h)
+                pier.setPos(px, py, road_z + pier_h / 2)
+                pier.setMaterial(pier_mat, 1)
+
         def add_diamond(diamond: dict) -> None:
-            """City-side diamond: four slip ramps, grass median, belt connector."""
+            """Opposite-side chevrons ``<||>`` joined by an elevated bridge.
+
+            Ground-level slip arms form the ``<`` / ``>``; elevated tip pads sit
+            on piers and are linked by the bridge deck over the highway.
+            """
             hx = diamond["hx"]
             hy = diamond["hy"]
             rw = plan.road_width
             side = diamond["side"]
-            stub = rw * 0.7
-            # Bite into the carriageway so slips visually merge with the belt.
-            merge = rw * 0.55
-            # Split the highway throat so the two slips meet the curb apart.
-            throat = opening_half * 0.85
+            merge = rw * 0.35
+            throat = max(opening_half * 0.95, highway_width * 0.42)
+            outer_reach = max(diamond["slip_len"], highway_width * 0.9)
+            pier_h = bridge_clearance - road_thickness / 2
+
+            def add_half(
+                apex: tuple[float, float],
+                merge_a: tuple[float, float],
+                merge_b: tuple[float, float],
+            ) -> None:
+                add_chevron_lawn(apex, merge_a, merge_b)
+                # Ground-level diamond arms.
+                add_slip_segment(apex[0], apex[1], merge_a[0], merge_a[1], rw)
+                add_slip_segment(apex[0], apex[1], merge_b[0], merge_b[1], rw)
+                # Pier + elevated tip pad above the chevron point.
+                pier = box_instance(self.highway, rw * 0.7, rw * 0.7, pier_h)
+                pier.setPos(apex[0], apex[1], road_z + pier_h / 2)
+                pier.setMaterial(pier_mat, 1)
+                builders._add_block(
+                    apex[0],
+                    apex[1],
+                    bridge_z,
+                    (rw * 1.2, rw * 1.2, road_thickness),
+                    road_mat,
+                    parent=self.highway,
+                )
 
             if side == "west":
                 city_x = diamond["city_x"]
-                gap = abs(city_x - belt_west_inner)
-                span = max(diamond["slip_len"], gap * 0.85)
-                mid_x = (city_x + belt_west_inner) / 2
-                hwy_n = (belt_west_inner - merge, hy + throat)
-                hwy_s = (belt_west_inner - merge, hy - throat)
-                city_v = (city_x, hy)
-                north_v = (mid_x, hy + span)
-                south_v = (mid_x, hy - span)
-                add_diamond_ground(
-                    (hwy_n, north_v, city_v, south_v),
-                    rw * 0.55,
+                city_apex = ((city_x + belt_west_inner) / 2, hy)
+                outer_apex = (belt_west_outer - outer_reach, hy)
+                inner_n = (belt_west_inner - merge, hy + throat)
+                inner_s = (belt_west_inner - merge, hy - throat)
+                outer_n = (belt_west_outer + merge, hy + throat)
+                outer_s = (belt_west_outer + merge, hy - throat)
+                add_half(city_apex, inner_n, inner_s)
+                add_half(outer_apex, outer_n, outer_s)
+                add_stepped_approach(
+                    city_x, hy, road_z,
+                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
                 )
-                # Curb pad tying both slip ends into the carriageway opening.
-                builders._add_block(
-                    belt_west_inner - merge / 2,
-                    hy,
-                    road_z,
-                    (merge + rw * 0.15, opening_half * 2, road_thickness),
-                    road_mat,
-                    parent=self.highway,
-                )
-                for a, b in (
-                    (hwy_n, north_v),
-                    (north_v, city_v),
-                    (city_v, south_v),
-                    (south_v, hwy_s),
-                ):
-                    add_slip_segment(a[0], a[1], b[0], b[1], rw)
-                x_end = belt_west_outer - stub
-                builders._add_block(
-                    (city_x + x_end) / 2,
-                    hy,
-                    road_z,
-                    (abs(x_end - city_x), rw, road_thickness),
-                    road_mat,
-                    parent=self.highway,
+                add_bridge_span(
+                    city_apex[0], city_apex[1],
+                    outer_apex[0], outer_apex[1],
+                    rw,
+                    pier_points=((highway_mid_x, hy),),
                 )
             elif side == "east":
                 city_x = diamond["city_x"]
-                gap = abs(city_x - belt_east_inner)
-                span = max(diamond["slip_len"], gap * 0.85)
-                mid_x = (city_x + belt_east_inner) / 2
-                hwy_n = (belt_east_inner + merge, hy + throat)
-                hwy_s = (belt_east_inner + merge, hy - throat)
-                city_v = (city_x, hy)
-                north_v = (mid_x, hy + span)
-                south_v = (mid_x, hy - span)
-                add_diamond_ground(
-                    (hwy_s, south_v, city_v, north_v),
-                    rw * 0.55,
+                city_apex = ((city_x + belt_east_inner) / 2, hy)
+                outer_apex = (belt_east_outer + outer_reach, hy)
+                inner_n = (belt_east_inner + merge, hy + throat)
+                inner_s = (belt_east_inner + merge, hy - throat)
+                outer_n = (belt_east_outer - merge, hy + throat)
+                outer_s = (belt_east_outer - merge, hy - throat)
+                add_half(city_apex, inner_n, inner_s)
+                add_half(outer_apex, outer_n, outer_s)
+                add_stepped_approach(
+                    city_x, hy, road_z,
+                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
                 )
-                builders._add_block(
-                    belt_east_inner + merge / 2,
-                    hy,
-                    road_z,
-                    (merge + rw * 0.15, opening_half * 2, road_thickness),
-                    road_mat,
-                    parent=self.highway,
-                )
-                for a, b in (
-                    (hwy_n, north_v),
-                    (north_v, city_v),
-                    (city_v, south_v),
-                    (south_v, hwy_s),
-                ):
-                    add_slip_segment(a[0], a[1], b[0], b[1], rw)
-                x_end = belt_east_outer + stub
-                builders._add_block(
-                    (city_x + x_end) / 2,
-                    hy,
-                    road_z,
-                    (abs(x_end - city_x), rw, road_thickness),
-                    road_mat,
-                    parent=self.highway,
+                add_bridge_span(
+                    city_apex[0], city_apex[1],
+                    outer_apex[0], outer_apex[1],
+                    rw,
+                    pier_points=((east_mid_x, hy),),
                 )
             elif side == "south":
                 city_y = diamond["city_y"]
-                gap = abs(city_y - belt_south_inner)
-                span = max(diamond["slip_len"], gap * 0.85)
-                mid_y = (city_y + belt_south_inner) / 2
-                hwy_w = (hx - throat, belt_south_inner - merge)
-                hwy_e = (hx + throat, belt_south_inner - merge)
-                city_v = (hx, city_y)
-                west_v = (hx - span, mid_y)
-                east_v = (hx + span, mid_y)
-                add_diamond_ground(
-                    (hwy_e, east_v, city_v, west_v),
-                    rw * 0.55,
+                city_apex = (hx, (city_y + belt_south_inner) / 2)
+                outer_apex = (hx, belt_south_outer - outer_reach)
+                inner_w = (hx - throat, belt_south_inner - merge)
+                inner_e = (hx + throat, belt_south_inner - merge)
+                outer_w = (hx - throat, belt_south_outer + merge)
+                outer_e = (hx + throat, belt_south_outer + merge)
+                add_half(city_apex, inner_w, inner_e)
+                add_half(outer_apex, outer_w, outer_e)
+                add_stepped_approach(
+                    hx, city_y, road_z,
+                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
                 )
-                builders._add_block(
-                    hx,
-                    belt_south_inner - merge / 2,
-                    road_z,
-                    (opening_half * 2, merge + rw * 0.15, road_thickness),
-                    road_mat,
-                    parent=self.highway,
-                )
-                for a, b in (
-                    (hwy_w, west_v),
-                    (west_v, city_v),
-                    (city_v, east_v),
-                    (east_v, hwy_e),
-                ):
-                    add_slip_segment(a[0], a[1], b[0], b[1], rw)
-                y_end = belt_south_outer - stub
-                builders._add_block(
-                    hx,
-                    (city_y + y_end) / 2,
-                    road_z,
-                    (rw, abs(y_end - city_y), road_thickness),
-                    road_mat,
-                    parent=self.highway,
+                add_bridge_span(
+                    city_apex[0], city_apex[1],
+                    outer_apex[0], outer_apex[1],
+                    rw,
+                    pier_points=((hx, south_mid_y),),
                 )
             else:  # north
                 city_y = diamond["city_y"]
-                gap = abs(city_y - belt_north_inner)
-                span = max(diamond["slip_len"], gap * 0.85)
-                mid_y = (city_y + belt_north_inner) / 2
-                hwy_w = (hx - throat, belt_north_inner + merge)
-                hwy_e = (hx + throat, belt_north_inner + merge)
-                city_v = (hx, city_y)
-                west_v = (hx - span, mid_y)
-                east_v = (hx + span, mid_y)
-                add_diamond_ground(
-                    (hwy_w, west_v, city_v, east_v),
-                    rw * 0.55,
+                city_apex = (hx, (city_y + belt_north_inner) / 2)
+                outer_apex = (hx, belt_north_outer + outer_reach)
+                inner_w = (hx - throat, belt_north_inner + merge)
+                inner_e = (hx + throat, belt_north_inner + merge)
+                outer_w = (hx - throat, belt_north_outer - merge)
+                outer_e = (hx + throat, belt_north_outer - merge)
+                add_half(city_apex, inner_w, inner_e)
+                add_half(outer_apex, outer_w, outer_e)
+                add_stepped_approach(
+                    hx, city_y, road_z,
+                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
                 )
-                builders._add_block(
-                    hx,
-                    belt_north_inner + merge / 2,
-                    road_z,
-                    (opening_half * 2, merge + rw * 0.15, road_thickness),
-                    road_mat,
-                    parent=self.highway,
-                )
-                for a, b in (
-                    (hwy_w, west_v),
-                    (west_v, city_v),
-                    (city_v, east_v),
-                    (east_v, hwy_e),
-                ):
-                    add_slip_segment(a[0], a[1], b[0], b[1], rw)
-                y_end = belt_north_outer + stub
-                builders._add_block(
-                    hx,
-                    (city_y + y_end) / 2,
-                    road_z,
-                    (rw, abs(y_end - city_y), road_thickness),
-                    road_mat,
-                    parent=self.highway,
+                add_bridge_span(
+                    city_apex[0], city_apex[1],
+                    outer_apex[0], outer_apex[1],
+                    rw,
+                    pier_points=((hx, north_mid_y),),
                 )
 
         for diamond in diamonds:

@@ -20,8 +20,9 @@ copy sits exactly far enough north that those lots share the south city's
 north road and the north city's south road. A six-lane ring beltway wraps
     both cities with a six-lane ring (west, north, east, south), quarter-turn
     rounded corners cleared past the street grid, and a diamond interchange on
-    each side linking the beltway to the city grid. The sphere group and a brown
-    cube capped by a pyramid stand 30 units to the right of the road.
+    each side (``<||>`` chevrons with an elevated cross bridge) linking the
+    beltway to the city grid. The sphere group and a brown cube capped by a
+    pyramid stand 30 units to the right of the road.
 """
 
 from __future__ import annotations
