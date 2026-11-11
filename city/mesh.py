@@ -135,12 +135,13 @@ def make_annulus_sector(
             i1 = i0 + 1
             i2 = i0 + 2
             i3 = i0 + 3
+            # reverse=False is CCW from +Z (top); reverse=True flips for the underside.
             if reverse:
-                tris.addVertices(i0, i1, i3)
-                tris.addVertices(i0, i3, i2)
-            else:
                 tris.addVertices(i0, i3, i1)
                 tris.addVertices(i0, i2, i3)
+            else:
+                tris.addVertices(i0, i1, i3)
+                tris.addVertices(i0, i3, i2)
 
     # Top (+Z) and bottom (-Z) decks.
     add_cap(hz, 1.0, reverse=False)
@@ -207,6 +208,72 @@ def make_annulus_sector(
     geom = Geom(vdata)
     geom.addPrimitive(tris)
     node = GeomNode("annulus_sector")
+    node.addGeom(geom)
+    return node
+
+
+def make_rhombus_slab(
+    vertices: tuple[tuple[float, float], ...],
+    thickness: float,
+) -> GeomNode:
+    """Flat slab whose top outline is the XY polygon ``vertices`` (CCW)."""
+    if len(vertices) < 3:
+        raise ValueError("rhombus slab needs at least 3 vertices")
+    hz = thickness / 2.0
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("rhombus_slab", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    # Ensure CCW in XY so the top deck faces +Z under right-hand winding.
+    area = 0.0
+    count = len(vertices)
+    for index in range(count):
+        x0, y0 = vertices[index]
+        x1, y1 = vertices[(index + 1) % count]
+        area += x0 * y1 - x1 * y0
+    ordered = vertices if area > 0 else tuple(reversed(vertices))
+
+    # Top face (normal +Z), fan from vertex 0.
+    top_base = vertex.getWriteRow()
+    for x, y in ordered:
+        vertex.addData3(x, y, hz)
+        normal.addData3(0.0, 0.0, 1.0)
+    for index in range(1, len(ordered) - 1):
+        tris.addVertices(top_base, top_base + index, top_base + index + 1)
+
+    # Bottom face (normal -Z), opposite winding.
+    bot_base = vertex.getWriteRow()
+    for x, y in ordered:
+        vertex.addData3(x, y, -hz)
+        normal.addData3(0.0, 0.0, -1.0)
+    for index in range(1, len(ordered) - 1):
+        tris.addVertices(bot_base, bot_base + index + 1, bot_base + index)
+
+    # Side walls (outward for a CCW polygon).
+    for index in range(count):
+        x0, y0 = ordered[index]
+        x1, y1 = ordered[(index + 1) % count]
+        edge_x, edge_y = x1 - x0, y1 - y0
+        length = math.hypot(edge_x, edge_y) or 1.0
+        nx, ny = edge_y / length, -edge_x / length
+        base = vertex.getWriteRow()
+        for corner in (
+            (x0, y0, -hz),
+            (x1, y1, -hz),
+            (x1, y1, hz),
+            (x0, y0, hz),
+        ):
+            vertex.addData3(*corner)
+            normal.addData3(nx, ny, 0.0)
+        tris.addVertices(base, base + 1, base + 2)
+        tris.addVertices(base, base + 2, base + 3)
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("rhombus_slab")
     node.addGeom(geom)
     return node
 

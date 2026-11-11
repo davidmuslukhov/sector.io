@@ -18,11 +18,10 @@ block, so neighbours share one road. Twelve rows of full housing blocks fill
 the strip between the two cities, spanning the full city width; the northern
 copy sits exactly far enough north that those lots share the south city's
 north road and the north city's south road. A six-lane ring beltway wraps
-both cities: the west leg carries exits onto each city's fifth east-west
-road, and matching six-lane north, east, and south legs close the loop
-outside the twin footprint, with quarter-turn rounded corners. The sphere
-group and a brown cube capped by a pyramid stand 30 units to the right of
-the road.
+    both cities with a six-lane ring (west, north, east, south), quarter-turn
+    rounded corners cleared past the street grid, and a diamond interchange on
+    each side linking the beltway to the city grid. The sphere group and a brown
+    cube capped by a pyramid stand 30 units to the right of the road.
 """
 
 from __future__ import annotations
@@ -81,9 +80,6 @@ class CityPlan:
     east_factory_cols: int
     east_factory_rows: int
 
-    gap_row_span: int
-    gap_houses_across: int
-    gap_houses_deep: int
     between_housing_rows: int
 
     north_shift_lots: int
@@ -125,10 +121,6 @@ class CityPlan:
     road_top: float
     south_face: float
     city_west_edge: float
-    gap_lot_width: float
-    gap_lot_depth: float
-    gap_west_face: float
-    gap_housing_rows: int
     north_shift: float
     tallest: int
 
@@ -205,23 +197,6 @@ class CityPlan:
                     empty=True,
                 )
 
-    def iter_gap_housing_lots(self) -> Iterator[HousingLot]:
-        for grow in range(self.gap_housing_rows):
-            h_south = grow * self.gap_row_span
-            lot_south = self.south_road_full0 + h_south * self.stride_y + self.road_width / 2
-            y_offset = lot_south - (-1.0 - self.block_size[1] / 2)
-            yield HousingLot(
-                west_face=self.gap_west_face,
-                y_offset=y_offset,
-                lot_width=self.gap_lot_width,
-                lot_depth=self.gap_lot_depth,
-                eastern_road=False,
-                southern_road=grow == 0,
-                northern_road=True,
-                houses_across=self.gap_houses_across,
-                houses_deep=self.gap_houses_deep,
-            )
-
     def iter_between_housing_lots(self) -> Iterator[HousingLot]:
         """Full-size housing grid filling the strip between the twin cities."""
         west0 = self.tower_west - self.west_housing_cols * self.stride_x
@@ -243,18 +218,17 @@ class CityPlan:
     def highway_geometry(self) -> dict[str, float | list[float]]:
         """Derived beltway placement shared by scene assembly and the car.
 
-        City-facing edges of the four legs form an inner rounded rectangle flush
-        with the twin footprint on the north and south, west of the gap housing,
-        and a road-width clearance past the easternmost city road. Each leg is
-        ``highway_lanes`` wide; quarter-annulus pads of inner radius
-        ``corner_radius`` round the four corners.
+        City-facing edges of the four legs form an inner rounded rectangle around
+        the twin footprint: west of the city-west fence, a road-width clearance
+        past the easternmost city road, and flush with the north/south extents.
+        Those keep-outs are then pushed outward by the corner-fillet depth so the
+        quarter-annulus pads cannot cut into the street grid. Each leg is
+        ``highway_lanes`` wide; ``corner_radius`` is the inner arc radius.
         """
         lane_width = self.road_width / 2
         highway_width = self.highway_lanes * lane_width
-        west_road_west = self.gap_west_face - self.road_width
-        highway_east = west_road_west - self.fence_w
-        highway_mid_x = highway_east - highway_width / 2
-        fence_x = west_road_west - self.fence_w / 2
+        # Keep-out rectangle: city footprint plus the existing service clearances.
+        keepout_west = self.city_west_edge - self.fence_w
         city_south = self.south_face - self.factory_rows * self.stride_y - self.road_width
         city_north = (
             self.south_face
@@ -265,23 +239,33 @@ class CityPlan:
         city_east = (
             self.west_road_full0 + self.cols * self.stride_x + self.road_width / 2
         )
-        # Mirror the west clearance beyond the gap lots: one road width + fence.
-        belt_east_inner = city_east + self.road_width + self.fence_w
-        belt_west_inner = highway_east
-        belt_south_inner = city_south
-        belt_north_inner = city_north
+        # Mirror the west clearance: one road width + fence past the east edge.
+        keepout_east = city_east + self.road_width + self.fence_w
+        keepout_south = city_south
+        keepout_north = city_north
+        # Inner-corner radius: two highway widths keeps a clear curve without
+        # swallowing the straight legs of the twin footprint.
+        corner_radius = 2.0 * highway_width
+        keepout_width = keepout_east - keepout_west
+        keepout_height = keepout_north - keepout_south
+        max_radius = min(keepout_width, keepout_height) / 2 - lane_width
+        if corner_radius > max_radius:
+            corner_radius = max(lane_width, max_radius)
+        # A rounded-rect inner edge bites ``inset`` into a sharp rectangle of the
+        # same bounds; push the belt out so that bite stays in empty margin.
+        inset = corner_radius * (1.0 - math.sqrt(2.0) / 2.0)
+        belt_west_inner = keepout_west - inset
+        belt_east_inner = keepout_east + inset
+        belt_south_inner = keepout_south - inset
+        belt_north_inner = keepout_north + inset
         belt_west_outer = belt_west_inner - highway_width
         belt_east_outer = belt_east_inner + highway_width
         belt_south_outer = belt_south_inner - highway_width
         belt_north_outer = belt_north_inner + highway_width
-        # Inner-corner radius: two highway widths keeps a clear curve without
-        # swallowing the straight legs of the twin footprint.
-        corner_radius = 2.0 * highway_width
-        inner_width = belt_east_inner - belt_west_inner
-        inner_height = belt_north_inner - belt_south_inner
-        max_radius = min(inner_width, inner_height) / 2 - lane_width
-        if corner_radius > max_radius:
-            corner_radius = max(lane_width, max_radius)
+        # City-facing edge of the west carriageway; fence sits on that curb.
+        highway_east = belt_west_inner
+        highway_mid_x = highway_east - highway_width / 2
+        fence_x = highway_east + self.fence_w / 2
         east_mid_x = belt_east_inner + highway_width / 2
         south_mid_y = belt_south_inner - highway_width / 2
         north_mid_y = belt_north_inner + highway_width / 2
@@ -298,9 +282,92 @@ class CityPlan:
         highway_mid_y = (ns_y0 + ns_y1) / 2
         road_thickness = 0.1
         road_z = -self.block_size[2] / 2 + road_thickness / 2
-        exit_ys = [
-            self.south_road_full0 + self.exit_row * self.stride_y + origin
-            for origin in (0.0, self.north_shift)
+        # One diamond per side, snapped to the city grid so cars can use them.
+        # Ordered CCW from west: west → north → east → south.
+        west_exit_y = self.south_road_full0 + self.exit_row * self.stride_y
+        east_exit_y = west_exit_y
+        mid_col = self.cols // 2
+        south_exit_x = self.west_road_full0 + mid_col * self.stride_x
+        north_exit_x = south_exit_x
+        north_origin_y = self.south_road_full0 + self.north_shift
+        north_exit_y = north_origin_y + self.rows * self.stride_y
+        south_exit_y = self.south_road_full0
+        # Along-highway half-span of each city-side diamond rhombus.
+        slip_len = highway_width * 0.85
+        diamonds = (
+            {
+                "side": "west",
+                "axis": "ns",
+                "hx": highway_mid_x,
+                "hy": west_exit_y,
+                "city_v": 0,
+                "city_h": self.exit_row,
+                "city_origin_y": self.south_road_full0,
+                "into_city": (1, 0),
+                "ccw_dir": (0, 1),
+                "cw_dir": (0, -1),
+                "city_x": self.west_road_full0,
+                "city_y": west_exit_y,
+                "slip_len": slip_len,
+            },
+            {
+                "side": "north",
+                "axis": "ew",
+                "hx": north_exit_x,
+                "hy": north_mid_y,
+                "city_v": mid_col,
+                "city_h": self.rows,
+                "city_origin_y": north_origin_y,
+                "into_city": (0, -1),
+                "ccw_dir": (1, 0),
+                "cw_dir": (-1, 0),
+                "city_x": north_exit_x,
+                "city_y": north_exit_y,
+                "slip_len": slip_len,
+            },
+            {
+                "side": "east",
+                "axis": "ns",
+                "hx": east_mid_x,
+                "hy": east_exit_y,
+                "city_v": self.cols,
+                "city_h": self.exit_row,
+                "city_origin_y": self.south_road_full0,
+                "into_city": (-1, 0),
+                "ccw_dir": (0, -1),
+                "cw_dir": (0, 1),
+                "city_x": self.west_road_full0 + self.cols * self.stride_x,
+                "city_y": east_exit_y,
+                "slip_len": slip_len,
+            },
+            {
+                "side": "south",
+                "axis": "ew",
+                "hx": south_exit_x,
+                "hy": south_mid_y,
+                "city_v": mid_col,
+                "city_h": 0,
+                "city_origin_y": self.south_road_full0,
+                "into_city": (0, 1),
+                "ccw_dir": (-1, 0),
+                "cw_dir": (1, 0),
+                "city_x": south_exit_x,
+                "city_y": south_exit_y,
+                "slip_len": slip_len,
+            },
+        )
+        # Lane centres per leg (index 0 = inner/city-side = right-hand for CCW).
+        west_lane_xs = [
+            belt_west_inner - lane_width * (i + 0.5) for i in range(self.highway_lanes)
+        ]
+        east_lane_xs = [
+            belt_east_inner + lane_width * (i + 0.5) for i in range(self.highway_lanes)
+        ]
+        south_lane_ys = [
+            belt_south_inner - lane_width * (i + 0.5) for i in range(self.highway_lanes)
+        ]
+        north_lane_ys = [
+            belt_north_inner + lane_width * (i + 0.5) for i in range(self.highway_lanes)
         ]
         return {
             "lane_width": lane_width,
@@ -315,7 +382,12 @@ class CityPlan:
             "highway_mid_y": highway_mid_y,
             "road_thickness": road_thickness,
             "road_z": road_z,
-            "exit_ys": exit_ys,
+            "exit_ys": [west_exit_y, east_exit_y],
+            "diamonds": diamonds,
+            "west_lane_xs": west_lane_xs,
+            "east_lane_xs": east_lane_xs,
+            "south_lane_ys": south_lane_ys,
+            "north_lane_ys": north_lane_ys,
             "belt_west_inner": belt_west_inner,
             "belt_east_inner": belt_east_inner,
             "belt_south_inner": belt_south_inner,
@@ -400,9 +472,6 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     factory_cols = int(_require(data, "districts", "south_factories", "cols"))
     east_factory_cols = int(_require(data, "districts", "east_factories", "cols"))
     east_factory_rows = int(_require(data, "districts", "east_factories", "rows"))
-    gap_row_span = int(_require(data, "districts", "gap", "row_span"))
-    gap_houses_across = int(_require(data, "districts", "gap", "houses_across"))
-    gap_houses_deep = int(_require(data, "districts", "gap", "houses_deep"))
     between_housing_rows = int(_require(data, "districts", "between_housing", "rows"))
 
     highway_lanes = int(_require(data, "highway", "lanes"))
@@ -454,10 +523,6 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     south_face = -1.0 - block_size[1] / 2
 
     city_west_edge = west_road_full0 - road_width / 2
-    gap_lot_width = road_depth
-    gap_lot_depth = gap_row_span * stride_y - road_width
-    gap_west_face = city_west_edge - gap_lot_width
-    gap_housing_rows = rows // gap_row_span
     # Twin offset: city footprint (rows) plus the between-housing strip so the
     # connector lots share the south city's north road and north city's south road.
     north_shift_lots = rows + between_housing_rows
@@ -480,9 +545,6 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
         west_housing_rows=west_housing_rows,
         east_factory_cols=east_factory_cols,
         east_factory_rows=east_factory_rows,
-        gap_row_span=gap_row_span,
-        gap_houses_across=gap_houses_across,
-        gap_houses_deep=gap_houses_deep,
         between_housing_rows=between_housing_rows,
         north_shift_lots=north_shift_lots,
         highway_lanes=highway_lanes,
@@ -520,10 +582,6 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
         road_top=road_top,
         south_face=south_face,
         city_west_edge=city_west_edge,
-        gap_lot_width=gap_lot_width,
-        gap_lot_depth=gap_lot_depth,
-        gap_west_face=gap_west_face,
-        gap_housing_rows=gap_housing_rows,
         north_shift=north_shift,
         tallest=floor_max,
     )

@@ -24,10 +24,6 @@ districts:
   east_factories:
     cols: 2
     rows: 6
-  gap:
-    row_span: 2
-    houses_across: 2
-    houses_deep: 6
   between_housing:
     rows: 12
 

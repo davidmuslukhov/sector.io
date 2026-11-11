@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections import defaultdict
 
 from city.materials import car_material
 from city.mesh import car_template
@@ -18,6 +19,13 @@ _CAR_FOLLOW = _CAR_LENGTH + _CAR_GAP
 _CAR_TOUCH = 2.25
 # Same-lane lateral tolerance (road is 5 wide; right-lane centre ± a bit).
 _CAR_LANE_TOL = 1.6
+# Spatial hash for collision candidates; larger than touch so one-frame drift stays covered.
+_CAR_CELL = 4.0
+
+# Rebuilt once per fleet tick so each car avoids a full O(n) scan.
+_FLEET_LANES: dict[tuple, list] = {}
+_FLEET_QUEUES: dict[tuple, list] = {}
+_FLEET_CELLS: dict[tuple[int, int], list] = {}
 
 
 class CarController:
@@ -97,6 +105,13 @@ class CarController:
         self._car_blink_t = 0.0
         self._signals = None
         self._car_on_highway = False
+        self._car_diamonds: list[dict] = []
+        self._car_exit_i = 0
+        self._car_ring_phase = "leg"  # leg | to_corner
+        self._car_pending_exit: int | None = None
+        self._car_highway_lane = 0
+        self._car_highway_x = 0.0
+        self._car_highway_y = 0.0
         self._car_pos = list(self._car_stop_xy(*self._car_to, self._car_dir))
         self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
         self._nb_leader: CarController | None = None
@@ -118,6 +133,16 @@ class CarController:
             self._car_origin_y + h * self._car_stride_y,
         )
 
+    def _car_diamond(self, exit_i: int | None = None) -> dict:
+        idx = self._car_exit_i if exit_i is None else exit_i
+        return self._car_diamonds[idx]
+
+    def _car_is_ccw(self, direction: tuple[int, int] | None = None) -> bool:
+        """True when ``direction`` matches the diamond's counter-clockwise leg."""
+        diamond = self._car_diamond()
+        dx, dy = direction if direction is not None else self._car_dir
+        return (dx, dy) == tuple(diamond["ccw_dir"])
+
     def _car_set_highway_lane(
         self,
         direction: tuple[int, int],
@@ -127,116 +152,218 @@ class CarController:
     ) -> None:
         """Stay in the three right-hand lanes for this travel direction.
 
-        Northbound uses the eastern half; southbound the western half. Lane
-        preference 0 is the rightmost (outer) lane from the driver's view,
-        2 is nearest the median. Never places a car in the oncoming half.
+        Lane preference 0 is rightmost from the driver's view (outer edge of the
+        half), 2 is nearest the median. CCW uses the inner half; CW the outer.
         """
-        dx, dy = direction
-        if dy == 0:
+        if not self._car_diamonds:
             return
         half = max(1, self._car_highway_lanes // 2)
-        if pick or not hasattr(self, "_car_highway_lane"):
+        if pick:
             self._car_highway_lane = random.randrange(half)
         else:
             self._car_highway_lane = max(0, min(half - 1, self._car_highway_lane))
-        # Lane centres east→west: 0 is easternmost (rightmost when heading north).
-        if dy > 0:
+        ccw = self._car_is_ccw(direction)
+        # Inner half = indices 0..half-1; outer half = reversed high indices.
+        if ccw:
             lane_i = self._car_highway_lane
         else:
-            # Southbound rightmost is westernmost = last index.
             lane_i = self._car_highway_lanes - 1 - self._car_highway_lane
-        self._car_highway_x = self._car_highway_lane_xs[lane_i]
-        # U-turns / joins must move onto the new carriageway immediately so the
-        # car never drives north in a southbound lane (or the reverse).
+        diamond = self._car_diamond()
+        side = diamond["side"]
+        if side == "west":
+            self._car_highway_x = self._car_west_lane_xs[lane_i]
+            self._car_highway_y = diamond["hy"]
+        elif side == "east":
+            self._car_highway_x = self._car_east_lane_xs[lane_i]
+            self._car_highway_y = diamond["hy"]
+        elif side == "south":
+            self._car_highway_y = self._car_south_lane_ys[lane_i]
+            self._car_highway_x = diamond["hx"]
+        else:
+            self._car_highway_y = self._car_north_lane_ys[lane_i]
+            self._car_highway_x = diamond["hx"]
         if snap:
-            self._car_pos[0] = self._car_highway_x
+            if diamond["axis"] == "ns":
+                self._car_pos[0] = self._car_highway_x
+            else:
+                self._car_pos[1] = self._car_highway_y
 
     def _car_hold_highway_lane(self) -> None:
-        """Keep N/S highway travel glued to the assigned right-hand lane centre."""
-        if not self._car_on_highway:
+        """Keep highway travel glued to the assigned right-hand lane centre."""
+        if not self._car_on_highway or not self._car_diamonds:
             return
-        # Let merge arcs curve freely; snap once they finish.
         if self._car_state == "turning":
             return
         dx, dy = self._car_dir
-        if dy == 0:
+        if dx == 0 and dy == 0:
             return
         self._car_set_highway_lane(self._car_dir)
-        self._car_pos[0] = self._car_highway_x
+        # N/S travel holds X; E/W travel holds Y.
+        if dx == 0:
+            self._car_pos[0] = self._car_highway_x
+        if dy == 0:
+            self._car_pos[1] = self._car_highway_y
 
     def _car_highway_intersection_xy(self, exit_i: int) -> tuple[float, float]:
-        return (self._car_highway_x, self._car_highway_exits[exit_i])
+        """Lane-centred point at a diamond (uses current lane assignment)."""
+        diamond = self._car_diamond(exit_i)
+        if diamond["axis"] == "ns":
+            return (self._car_highway_x, diamond["hy"])
+        return (diamond["hx"], self._car_highway_y)
 
     def _car_highway_stop(
         self,
         exit_i: int,
         direction: tuple[int, int],
     ) -> tuple[float, float]:
-        """Approach stop at a highway exit, centered in the active highway lane."""
+        """Approach stop at a diamond, centered in the active highway lane."""
+        self._car_exit_i = exit_i
+        self._car_set_highway_lane(direction)
         dx, dy = direction
-        if dy != 0:
-            self._car_set_highway_lane(direction)
         cx, cy = self._car_highway_intersection_xy(exit_i)
         offset = self._car_stop_offset
-        # Highway lane X is already the lane centre — do not apply city lane shift
-        # sideways along the highway (that was pushing the car into the barriers).
-        if dx == 0:
+        if dx == 0 and dy != 0:
             return cx, cy - dy * offset
-        # City↔highway exit spur: keep the right-hand side of that road.
-        _, ly = self._car_lane_shift(direction)
-        return cx - dx * offset, cy + ly
+        if dy == 0 and dx != 0:
+            return cx - dx * offset, cy
+        lx, ly = self._car_lane_shift(direction)
+        return cx - dx * offset + lx, cy - dy * offset + ly
 
     def _car_highway_leave(
         self,
         exit_i: int,
         direction: tuple[int, int],
     ) -> tuple[float, float]:
-        """Far edge leaving a highway exit, centered in the active highway lane."""
+        """Far edge leaving a diamond, centered in the active highway lane."""
+        self._car_exit_i = exit_i
+        self._car_set_highway_lane(direction)
         dx, dy = direction
-        if dy != 0:
-            self._car_set_highway_lane(direction)
         cx, cy = self._car_highway_intersection_xy(exit_i)
         offset = self._car_stop_offset
-        if dx == 0:
+        if dx == 0 and dy != 0:
             return cx, cy + dy * offset
-        _, ly = self._car_lane_shift(direction)
-        return cx + dx * offset, cy + ly
+        if dy == 0 and dx != 0:
+            return cx + dx * offset, cy
+        lx, ly = self._car_lane_shift(direction)
+        return cx + dx * offset + lx, cy + dy * offset + ly
 
-    def _car_next_highway_exit(self, exit_i: int, dy: int) -> int | None:
-        """Next exit index along the highway, or None at the end."""
-        nxt = exit_i + (1 if dy > 0 else -1)
-        if 0 <= nxt < len(self._car_highway_exits):
-            return nxt
-        return None
+    def _car_next_highway_exit(self, exit_i: int, direction: tuple[int, int]) -> int:
+        """Next diamond index around the ring for this travel direction."""
+        n = len(self._car_diamonds)
+        diamond = self._car_diamond(exit_i)
+        if tuple(direction) == tuple(diamond["ccw_dir"]):
+            return (exit_i + 1) % n
+        if tuple(direction) == tuple(diamond["cw_dir"]):
+            return (exit_i - 1) % n
+        # Joining from the city spur: prefer CCW (inner) carriageway.
+        return (exit_i + 1) % n
 
     def _car_gateway_exit_i(self) -> int | None:
-        """Highway exit index reachable from the current city node, if any."""
+        """Diamond index reachable from the current city node, if any."""
         v, h = self._car_to
-        if v != 0 or h != self._car_exit_row:
-            return None
-        if abs(self._car_origin_y - self._car_south_road0) < 1e-6:
-            return 0
-        if abs(self._car_origin_y - (self._car_south_road0 + self._car_north_shift)) < 1e-6:
-            return 1
+        for index, diamond in enumerate(self._car_diamonds):
+            if diamond["city_v"] != v or diamond["city_h"] != h:
+                continue
+            if abs(self._car_origin_y - diamond["city_origin_y"]) < 1e-6:
+                return index
         return None
 
     def _car_enter_city_from_highway(self, exit_i: int) -> None:
-        """Switch from a highway exit onto the connected city's western road."""
+        """Switch from a diamond onto the connected city grid node."""
+        diamond = self._car_diamond(exit_i)
         self._car_on_highway = False
-        if exit_i == 0:
-            self._car_origin_y = self._car_south_road0
-        else:
-            self._car_origin_y = self._car_south_road0 + self._car_north_shift
-        self._car_to = (0, self._car_exit_row)
+        self._car_ring_phase = "leg"
+        self._car_origin_y = diamond["city_origin_y"]
+        self._car_to = (diamond["city_v"], diamond["city_h"])
 
     def _car_enter_highway_from_city(self, exit_i: int) -> None:
-        """Switch from the city's western road onto the highway exit."""
+        """Switch from the city grid onto a diamond interchange."""
+        diamond = self._car_diamond(exit_i)
         self._car_on_highway = True
-        self._car_origin_y = self._car_south_road0
         self._car_exit_i = exit_i
-        # Exit spur stop uses the eastern (city-facing) edge until a N/S lane
-        # is chosen; prefer the rightmost northbound lane as the reference.
-        self._car_highway_x = self._car_highway_lane_xs[0]
+        self._car_ring_phase = "leg"
+        # Seed lane on the inner (CCW) half until a N/S or E/W dir is chosen.
+        self._car_set_highway_lane(tuple(diamond["ccw_dir"]), pick=True, snap=False)
+
+    def _car_corner_approach(
+        self,
+        exit_i: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Point at the end of the current straight leg, before the corner arc."""
+        self._car_exit_i = exit_i
+        self._car_set_highway_lane(direction)
+        diamond = self._car_diamond(exit_i)
+        dx, dy = direction
+        if diamond["side"] == "west":
+            y = self._car_ns_y1 if dy > 0 else self._car_ns_y0
+            return self._car_highway_x, y
+        if diamond["side"] == "east":
+            y = self._car_ns_y0 if dy < 0 else self._car_ns_y1
+            return self._car_highway_x, y
+        if diamond["side"] == "south":
+            x = self._car_ew_x0 if dx < 0 else self._car_ew_x1
+            return x, self._car_highway_y
+        x = self._car_ew_x1 if dx > 0 else self._car_ew_x0
+        return x, self._car_highway_y
+
+    def _car_corner_center(
+        self,
+        from_i: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Arc pivot between ``from_i`` and the next diamond along ``direction``."""
+        nxt = self._car_next_highway_exit(from_i, direction)
+        a = self._car_diamond(from_i)["side"]
+        b = self._car_diamond(nxt)["side"]
+        key = frozenset((a, b))
+        if key == frozenset(("west", "north")):
+            return self._car_corner_nw
+        if key == frozenset(("north", "east")):
+            return self._car_corner_ne
+        if key == frozenset(("east", "south")):
+            return self._car_corner_se
+        return self._car_corner_sw
+
+    def _car_start_highway_corner_arc(
+        self,
+        old_dir: tuple[int, int],
+        new_dir: tuple[int, int],
+        cx: float,
+        cy: float,
+    ) -> None:
+        """Quarter-turn around a beltway corner centre onto the next leg."""
+        cross = old_dir[0] * new_dir[1] - old_dir[1] * new_dir[0]
+        sign = 1.0 if cross > 0 else -1.0
+        self._car_state = "turning"
+        self._car_arc_center = (cx, cy)
+        rx = self._car_pos[0] - cx
+        ry = self._car_pos[1] - cy
+        self._car_arc_radius = max(math.hypot(rx, ry), 1.0)
+        self._car_arc_sign = sign
+        self._car_arc_angle = math.atan2(ry, rx)
+        self._car_arc_end = self._car_arc_angle + sign * (math.pi / 2)
+
+    def _car_begin_corner_turn(self) -> None:
+        """At the end of a straight leg: arc onto the next diamond's carriageway."""
+        from_i = self._car_exit_i
+        old_dir = self._car_dir
+        nxt = self._car_pending_exit
+        if nxt is None:
+            nxt = self._car_next_highway_exit(from_i, old_dir)
+        next_diamond = self._car_diamond(nxt)
+        if self._car_is_ccw(old_dir):
+            new_dir = tuple(next_diamond["ccw_dir"])
+        else:
+            new_dir = tuple(next_diamond["cw_dir"])
+        cx, cy = self._car_corner_center(from_i, old_dir)
+        self._car_exit_i = nxt
+        self._car_dir = new_dir
+        self._car_set_highway_lane(new_dir, pick=False, snap=False)
+        self._car_ring_phase = "leg"
+        self._car_pending_exit = None
+        self._car_after_cross = self._car_highway_stop(nxt, new_dir)
+        self._car_start_highway_corner_arc(old_dir, new_dir, cx, cy)
 
     @staticmethod
     def _car_right(direction: tuple[int, int]) -> tuple[int, int]:
@@ -285,12 +412,18 @@ class CarController:
         v, h = self._car_to
         dx, dy = self._car_dir
         options: list[tuple[int, int]] = []
+        gateway = self._car_gateway_exit_i()
+        into = None
+        if gateway is not None:
+            into = tuple(self._car_diamonds[gateway]["into_city"])
+            # Toward the highway is opposite the into-city vector.
+            toward_hwy = (-into[0], -into[1])
         for ndx, ndy in (
             (dx, dy),
             (-dy, dx),
             (dy, -dx),
         ):
-            if ndx == -1 and ndy == 0 and self._car_gateway_exit_i() is not None:
+            if gateway is not None and (ndx, ndy) == toward_hwy:
                 options.append((ndx, ndy))
                 continue
             if self._car_in_bounds(v + ndx, h + ndy):
@@ -300,25 +433,21 @@ class CarController:
         return random.choice(options)
 
     def _car_choose_highway_turn(self) -> tuple[int, int]:
-        """At a highway exit: continue, turn into the city, or reverse."""
+        """At a diamond: continue around the ring, enter the city, or reverse."""
+        diamond = self._car_diamond()
+        into = tuple(diamond["into_city"])
+        ccw = tuple(diamond["ccw_dir"])
+        cw = tuple(diamond["cw_dir"])
         dx, dy = self._car_dir
         options: list[tuple[int, int]] = []
-        if dy != 0:
-            # Traveling along the highway.
-            if self._car_next_highway_exit(self._car_exit_i, dy) is not None:
-                options.append((0, dy))
-            options.append((1, 0))
-            if self._car_next_highway_exit(self._car_exit_i, -dy) is not None:
-                options.append((0, -dy))
+        if (dx, dy) in (ccw, cw):
+            # Already on a carriageway: continue, reverse, or peel into the city.
+            options.append((dx, dy))
+            options.append(into)
+            options.append((-dx, -dy))
         else:
-            # Arrived from the city along the exit: join highway or go back.
-            if self._car_next_highway_exit(self._car_exit_i, 1) is not None:
-                options.append((0, 1))
-            if self._car_next_highway_exit(self._car_exit_i, -1) is not None:
-                options.append((0, -1))
-            options.append((1, 0))
-        if not options:
-            return (-dx, -dy)
+            # Arrived from the city spur: join either ring direction or go back.
+            options.extend((ccw, cw, into))
         return random.choice(options)
 
     @staticmethod
@@ -392,51 +521,83 @@ class CarController:
             return self._car_highway_stop(self._car_exit_i, self._car_dir)
         return self._car_stop_xy(*self._car_to, self._car_dir)
 
+    def _car_lane_key(self) -> tuple:
+        """Same travel lane / twin city corridor for leader search."""
+        dx, dy = self._car_dir if (self._car_dir[0] or self._car_dir[1]) else self._car_travel_dir()
+        if self._car_on_highway:
+            axis = (
+                round(self._car_highway_y * 2.0) / 2.0
+                if self._car_diamonds
+                and self._car_diamond()["axis"] == "ew"
+                else round(self._car_highway_x * 2.0) / 2.0
+            )
+            return ("h", axis, int(dx), int(dy))
+        return ("c", round(self._car_origin_y), int(dx), int(dy))
+
+    def _car_queue_key(self) -> tuple:
+        """Cars sharing one stop-line queue."""
+        dx, dy = self._car_dir if (self._car_dir[0] or self._car_dir[1]) else self._car_travel_dir()
+        if self._car_on_highway:
+            return ("h", self._car_exit_i, int(dx), int(dy))
+        return ("c", round(self._car_origin_y), self._car_to, int(dx), int(dy))
+
+    @staticmethod
+    def build_fleet_index(fleet: list[CarController]) -> None:
+        """Bucket the fleet once per tick for near-linear neighbor queries."""
+        lanes: dict[tuple, list] = defaultdict(list)
+        queues: dict[tuple, list] = defaultdict(list)
+        cells: dict[tuple[int, int], list] = defaultdict(list)
+        inv = 1.0 / _CAR_CELL
+        for car in fleet:
+            lanes[car._car_lane_key()].append(car)
+            queues[car._car_queue_key()].append(car)
+            cells[
+                (int(math.floor(car._car_pos[0] * inv)), int(math.floor(car._car_pos[1] * inv)))
+            ].append(car)
+        global _FLEET_LANES, _FLEET_QUEUES, _FLEET_CELLS
+        _FLEET_LANES = lanes
+        _FLEET_QUEUES = queues
+        _FLEET_CELLS = cells
+
+    def _car_cell_mates(self) -> list[CarController]:
+        """Cars in this cell and its 8 neighbours (collision candidates)."""
+        inv = 1.0 / _CAR_CELL
+        cx = int(math.floor(self._car_pos[0] * inv))
+        cy = int(math.floor(self._car_pos[1] * inv))
+        cells = _FLEET_CELLS
+        out: list[CarController] = []
+        for ox in (-1, 0, 1):
+            for oy in (-1, 0, 1):
+                bucket = cells.get((cx + ox, cy + oy))
+                if bucket:
+                    out.extend(bucket)
+        return out
+
     def _car_refresh_neighbors(self, *, resolve: bool = True) -> None:
-        """One fleet pass: leader, queue index, optional collision separation."""
+        """Leader, queue index, optional collision — using the per-tick index."""
         dx, dy = self._car_travel_dir()
         stop = self._car_approach_stop()
         sx = self._car_pos[0]
         sy = self._car_pos[1]
         my_behind = (stop[0] - sx) * dx + (stop[1] - sy) * dy
-        on_hwy = self._car_on_highway
-        my_exit = self._car_exit_i
-        my_to = self._car_to
-        origin_y = self._car_origin_y
-        hwy_x = self._car_highway_x if on_hwy else 0.0
         follow = _CAR_FOLLOW
-        touch = _CAR_TOUCH
         lane_tol = _CAR_LANE_TOL
         follow_sq = (follow - 0.01) * (follow - 0.01)
-        touch_sq = (touch - 0.01) * (touch - 0.01)
+        touch_sq = (_CAR_TOUCH - 0.01) * (_CAR_TOUCH - 0.01)
 
         leader: CarController | None = None
         best_along = float("inf")
         queue_index = 0
 
-        for other in self.fleet:
-            if other is self:
-                continue
-            ox = other._car_pos[0] - sx
-            oy = other._car_pos[1] - sy
-            dist_sq = ox * ox + oy * oy
-
-            other_hwy = other._car_on_highway
-            if on_hwy != other_hwy:
-                same_corridor = False
-            elif on_hwy:
-                same_corridor = abs(hwy_x - other._car_highway_x) < 0.5
-            else:
-                same_corridor = abs(origin_y - other._car_origin_y) < 1e-6
-
-            odx, ody = other._car_dir
-            if odx or ody:
-                odx_f, ody_f = float(odx), float(ody)
-            else:
-                odx_f, ody_f = other._car_travel_dir()
-            heading_ok = odx_f * dx + ody_f * dy >= 0.5
-
-            if resolve:
+        if resolve:
+            for other in self._car_cell_mates():
+                if other is self:
+                    continue
+                ox = other._car_pos[0] - sx
+                oy = other._car_pos[1] - sy
+                dist_sq = ox * ox + oy * oy
+                if dist_sq >= follow_sq and dist_sq >= touch_sq:
+                    continue
                 if dist_sq < 1e-12:
                     sx -= dx * follow
                     sy -= dy * follow
@@ -446,9 +607,7 @@ class CarController:
                     continue
                 along = ox * dx + oy * dy
                 lateral = abs(ox * -dy + oy * dx)
-                same_lane = (
-                    same_corridor and heading_ok and lateral <= lane_tol and along > 0.0
-                )
+                same_lane = lateral <= lane_tol and along > 0.0
                 if same_lane and dist_sq < follow_sq:
                     dist = math.sqrt(dist_sq)
                     push = follow - dist
@@ -460,7 +619,7 @@ class CarController:
                     continue
                 if dist_sq < touch_sq:
                     dist = math.sqrt(dist_sq)
-                    push = touch - dist
+                    push = _CAR_TOUCH - dist
                     if along > 0.0:
                         sx -= dx * push
                         sy -= dy * push
@@ -471,23 +630,22 @@ class CarController:
                     self._car_pos[0] = sx
                     self._car_pos[1] = sy
                     self._car_speed = 0.0
-                    continue
-            else:
-                along = ox * dx + oy * dy
-                lateral = abs(ox * -dy + oy * dx)
 
-            if not same_corridor or not heading_ok:
+        for other in _FLEET_LANES.get(self._car_lane_key(), ()):
+            if other is self:
                 continue
-            if along > 0.05 and lateral <= lane_tol and along < best_along:
+            ox = other._car_pos[0] - sx
+            oy = other._car_pos[1] - sy
+            along = ox * dx + oy * dy
+            if along <= 0.05:
+                continue
+            lateral = abs(ox * -dy + oy * dx)
+            if lateral <= lane_tol and along < best_along:
                 best_along = along
                 leader = other
 
-            if other._car_state in ("turning", "u-turn"):
-                continue
-            if on_hwy:
-                if other._car_exit_i != my_exit:
-                    continue
-            elif other._car_to != my_to:
+        for other in _FLEET_QUEUES.get(self._car_queue_key(), ()):
+            if other is self or other._car_state in ("turning", "u-turn"):
                 continue
             other_behind = (
                 (stop[0] - other._car_pos[0]) * dx + (stop[1] - other._car_pos[1]) * dy
@@ -629,15 +787,18 @@ class CarController:
 
         v, h = self._car_to
         gateway = self._car_gateway_exit_i()
-        # West from the gateway: leave the city intersection toward the highway exit.
-        if new_dir == (-1, 0) and gateway is not None:
-            self._car_dir = new_dir
-            self._car_enter_highway_from_city(gateway)
-            self._car_after_cross = self._car_highway_stop(gateway, new_dir)
-            self._car_clear_signals()
-            self._car_state = "crossing"
-            self._car_target = self._car_exit_xy(v, h, new_dir)
-            return
+        if gateway is not None:
+            into = tuple(self._car_diamonds[gateway]["into_city"])
+            toward_hwy = (-into[0], -into[1])
+            if new_dir == toward_hwy:
+                self._car_dir = new_dir
+                self._car_enter_highway_from_city(gateway)
+                # Stop on the spur facing the median; pick a ring dir at the diamond.
+                self._car_after_cross = self._car_highway_stop(gateway, new_dir)
+                self._car_clear_signals()
+                self._car_state = "crossing"
+                self._car_target = self._car_exit_xy(v, h, new_dir)
+                return
 
         cx, cy = self._car_intersection_xy(v, h)
         self._car_dir = new_dir
@@ -663,12 +824,14 @@ class CarController:
         cross: float,
         dot: float,
     ) -> None:
-        """Maneuver at a highway exit intersection."""
+        """Maneuver at a diamond: enter city, join a ring dir, or continue around."""
         exit_i = self._car_exit_i
+        diamond = self._car_diamond(exit_i)
+        into = tuple(diamond["into_city"])
         cx, cy = self._car_highway_intersection_xy(exit_i)
 
-        # Onto the exit toward the city (east).
-        if new_dir == (1, 0) and old_dir != (1, 0):
+        # Peel off into the city.
+        if new_dir == into:
             self._car_dir = new_dir
             self._car_enter_city_from_highway(exit_i)
             self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
@@ -679,53 +842,50 @@ class CarController:
             return
 
         self._car_dir = new_dir
-
-        # Continue or join travel along the highway (north/south).
-        if new_dir[0] == 0 and new_dir[1] != 0:
-            # Joining from the exit spur or reversing: pick a right-side lane and
-            # snap onto that carriageway. Continuing straight keeps the lane.
-            reversing = old_dir[1] * new_dir[1] < 0
-            joining = old_dir[1] == 0 or reversing
-            self._car_set_highway_lane(new_dir, pick=joining, snap=joining)
-            cx, cy = self._car_highway_intersection_xy(exit_i)
-            nxt = self._car_next_highway_exit(exit_i, new_dir[1])
-            if nxt is None:
-                # End of highway: u-turn in the new right-hand lane at this exit.
-                self._car_set_highway_lane(new_dir, pick=True, snap=True)
-                self._car_after_cross = self._car_highway_stop(exit_i, new_dir)
-                self._car_start_u_turn(new_dir)
-                return
-            if dot > 0:
-                self._car_exit_i = nxt
-                self._car_after_cross = self._car_highway_stop(nxt, new_dir)
-                self._car_clear_signals()
-                self._car_state = "crossing"
-                self._car_target = self._car_highway_leave(exit_i, new_dir)
-                return
-            if cross == 0:
-                # Reverse direction: already snapped to the correct half above.
-                self._car_exit_i = nxt
-                self._car_after_cross = self._car_highway_stop(nxt, new_dir)
-                self._car_start_u_turn(new_dir)
-                return
-            # Turn from the exit onto the highway in the correct right-side lane.
-            self._car_exit_i = nxt
-            self._car_after_cross = self._car_highway_stop(nxt, new_dir)
-            self._car_start_arc(old_dir, new_dir, cx, cy)
-            return
-
-        # East while already facing east: head to the city stop.
-        if new_dir == (1, 0):
+        ccw = tuple(diamond["ccw_dir"])
+        cw = tuple(diamond["cw_dir"])
+        if new_dir not in (ccw, cw):
+            # Facing back along the spur toward the city.
             self._car_enter_city_from_highway(exit_i)
             self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
             self._car_clear_signals()
             self._car_state = "crossing"
-            self._car_target = self._car_highway_leave(exit_i, new_dir)
+            self._car_target = (
+                diamond["city_x"] + into[0] * self._car_stop_offset,
+                diamond["city_y"] + into[1] * self._car_stop_offset,
+            )
             return
 
-        self._car_set_highway_lane(new_dir, pick=True, snap=True)
-        self._car_after_cross = self._car_highway_stop(exit_i, new_dir)
-        self._car_start_u_turn(new_dir)
+        reversing = old_dir[0] * new_dir[0] + old_dir[1] * new_dir[1] < 0
+        joining = old_dir not in (ccw, cw) or reversing
+        self._car_set_highway_lane(new_dir, pick=joining, snap=joining)
+        nxt = self._car_next_highway_exit(exit_i, new_dir)
+
+        if cross == 0 and reversing:
+            self._car_pending_exit = nxt
+            self._car_ring_phase = "to_corner"
+            self._car_after_cross = self._car_corner_approach(exit_i, new_dir)
+            self._car_start_u_turn(new_dir)
+            return
+
+        # Continue around the ring: first drive to the corner, then turn.
+        self._car_pending_exit = nxt
+        self._car_ring_phase = "to_corner"
+        corner = self._car_corner_approach(exit_i, new_dir)
+        if dot > 0 and not joining:
+            self._car_clear_signals()
+            self._car_state = "crossing"
+            self._car_target = self._car_highway_leave(exit_i, new_dir)
+            self._car_after_cross = corner
+            return
+        if joining and cross != 0:
+            self._car_after_cross = corner
+            self._car_start_arc(old_dir, new_dir, cx, cy)
+            return
+        self._car_clear_signals()
+        self._car_state = "drive"
+        self._car_target = corner
+        self._car_after_cross = corner
 
     def _place_car(self) -> None:
         self.car.setPos(self._car_pos[0], self._car_pos[1], self._car_z)
@@ -851,7 +1011,9 @@ class CarController:
             self._car_finish_frame()
             return task.cont
 
-        if self._car_state == "drive":
+        if self._car_state == "drive" and not (
+            self._car_on_highway and self._car_ring_phase == "to_corner"
+        ):
             self._car_target = self._car_drive_target()
 
         tx, ty = self._car_target
@@ -861,6 +1023,10 @@ class CarController:
         if dist <= max(self._car_speed * dt, 0.02):
             self._car_pos[0] = tx
             self._car_pos[1] = ty
+            if self._car_on_highway and self._car_ring_phase == "to_corner":
+                self._car_begin_corner_turn()
+                self._car_finish_frame()
+                return task.cont
             if self._car_state == "crossing":
                 self._car_target = self._car_after_cross
                 self._car_state = "drive"
