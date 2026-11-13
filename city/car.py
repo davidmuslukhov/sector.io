@@ -72,7 +72,9 @@ class CarController:
                 self.car.find("**/taillight-right"),
             ],
         }
-        self._car_z = road_top + size[2] / 2
+        self._car_body_half_z = size[2] / 2
+        self._car_grade_z = road_top
+        self._car_z = road_top + self._car_body_half_z
         self._car_origin_x = origin_x
         self._car_origin_y = origin_y
         self._car_stride_x = stride_x
@@ -112,6 +114,13 @@ class CarController:
         self._car_highway_lane = 0
         self._car_highway_x = 0.0
         self._car_highway_y = 0.0
+        # Elevated diamond ramp path: list of (x, y, surface_z).
+        self._car_path: list[tuple[float, float, float]] = []
+        self._car_path_i = 0
+        self._car_path_kind: str | None = None
+        self._car_path_from_z = road_top
+        self._car_path_seg_len = 1.0
+        self._car_surface_z = road_top
         self._car_pos = list(self._car_stop_xy(*self._car_to, self._car_dir))
         self._car_target = self._car_stop_xy(*self._car_to, self._car_dir)
         self._nb_leader: CarController | None = None
@@ -192,7 +201,9 @@ class CarController:
         """Keep highway travel glued to the assigned right-hand lane centre."""
         if not self._car_on_highway or not self._car_diamonds:
             return
-        if self._car_state == "turning":
+        if self._car_state in ("turning", "path"):
+            return
+        if self._car_path_kind in ("exit_city", "enter_ccw", "enter_cw", "enter_deck"):
             return
         dx, dy = self._car_dir
         if dx == 0 and dy == 0:
@@ -211,16 +222,45 @@ class CarController:
             return (self._car_highway_x, diamond["hy"])
         return (diamond["hx"], self._car_highway_y)
 
+    def _car_diverge_xy(
+        self,
+        exit_i: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Lane-centred diverge/merge station before an interchange."""
+        self._car_exit_i = exit_i
+        self._car_set_highway_lane(direction)
+        diamond = self._car_diamond(exit_i)
+        ramps = diamond["ramps"]
+        key = "diverge_ccw" if self._car_is_ccw(direction) else "diverge_cw"
+        dx, dy = direction
+        if diamond["axis"] == "ns":
+            return self._car_highway_x, ramps[key][1]
+        return ramps[key][0], self._car_highway_y
+
+    def _car_merge_xy(
+        self,
+        exit_i: int,
+        direction: tuple[int, int],
+    ) -> tuple[float, float]:
+        """Lane-centred merge station after joining from an on-ramp."""
+        self._car_exit_i = exit_i
+        self._car_set_highway_lane(direction)
+        diamond = self._car_diamond(exit_i)
+        ramps = diamond["ramps"]
+        key = "merge_ccw" if self._car_is_ccw(direction) else "merge_cw"
+        if diamond["axis"] == "ns":
+            return self._car_highway_x, ramps[key][1]
+        return ramps[key][0], self._car_highway_y
+
     def _car_highway_stop(
         self,
         exit_i: int,
         direction: tuple[int, int],
     ) -> tuple[float, float]:
-        """Approach stop at a diamond, centered in the active highway lane."""
-        self._car_exit_i = exit_i
-        self._car_set_highway_lane(direction)
+        """Approach stop at the off-ramp diverge, in the active highway lane."""
         dx, dy = direction
-        cx, cy = self._car_highway_intersection_xy(exit_i)
+        cx, cy = self._car_diverge_xy(exit_i, direction)
         offset = self._car_stop_offset
         if dx == 0 and dy != 0:
             return cx, cy - dy * offset
@@ -234,11 +274,9 @@ class CarController:
         exit_i: int,
         direction: tuple[int, int],
     ) -> tuple[float, float]:
-        """Far edge leaving a diamond, centered in the active highway lane."""
-        self._car_exit_i = exit_i
-        self._car_set_highway_lane(direction)
+        """Far edge past the diverge, still in the active highway lane."""
         dx, dy = direction
-        cx, cy = self._car_highway_intersection_xy(exit_i)
+        cx, cy = self._car_diverge_xy(exit_i, direction)
         offset = self._car_stop_offset
         if dx == 0 and dy != 0:
             return cx, cy + dy * offset
@@ -246,6 +284,109 @@ class CarController:
             return cx + dx * offset, cy
         lx, ly = self._car_lane_shift(direction)
         return cx + dx * offset + lx, cy + dy * offset + ly
+
+    def _car_set_surface_z(self, surface_z: float) -> None:
+        """Place the car body on a road/bridge/ramp surface."""
+        self._car_surface_z = surface_z
+        self._car_z = surface_z + self._car_body_half_z
+
+    def _car_begin_path(
+        self,
+        points: list[tuple[float, float, float]],
+        *,
+        kind: str,
+    ) -> None:
+        """Follow elevated diamond ramp waypoints; ``kind`` selects the finish."""
+        cleaned: list[tuple[float, float, float]] = []
+        for pt in points:
+            if cleaned:
+                prev = cleaned[-1]
+                if math.hypot(pt[0] - prev[0], pt[1] - prev[1]) < 0.15:
+                    cleaned[-1] = pt
+                    continue
+            cleaned.append(pt)
+        if not cleaned:
+            self._car_finish_path(kind)
+            return
+        self._car_path = cleaned
+        self._car_path_i = 0
+        self._car_path_kind = kind
+        self._car_state = "path"
+        self._car_speed = max(self._car_speed, self._car_cruise * 0.35)
+        self._car_target = (cleaned[0][0], cleaned[0][1])
+        self._car_path_from_z = self._car_surface_z
+        self._car_path_seg_len = max(
+            math.hypot(
+                cleaned[0][0] - self._car_pos[0],
+                cleaned[0][1] - self._car_pos[1],
+            ),
+            0.05,
+        )
+        # Don't snap Z yet — lerp along the first segment toward the waypoint.
+
+    def _car_finish_path(self, kind: str | None = None) -> None:
+        """Hand off after the last ramp waypoint."""
+        kind = self._car_path_kind if kind is None else kind
+        self._car_path = []
+        self._car_path_i = 0
+        self._car_path_kind = None
+        exit_i = self._car_exit_i
+        diamond = self._car_diamond(exit_i)
+        grade = diamond.get("grade_top", self._car_grade_z)
+
+        if kind == "exit_city":
+            into = tuple(diamond["into_city"])
+            self._car_dir = into
+            self._car_enter_city_from_highway(exit_i)
+            self._car_set_surface_z(grade)
+            self._car_after_cross = self._car_stop_xy(*self._car_to, into)
+            self._car_clear_signals()
+            self._car_state = "drive"
+            self._car_target = self._car_after_cross
+            return
+
+        if kind == "enter_deck":
+            # Arrived on the bridge deck from the city arterial; pick a ring dir.
+            self._car_on_highway = True
+            self._car_ring_phase = "deck"
+            city_ix = diamond["ramps"]["city_ix"]
+            self._car_pos[0], self._car_pos[1] = city_ix
+            self._car_set_surface_z(diamond.get("bridge_top", grade))
+            self._car_clear_signals()
+            self._car_state = "wait"
+            self._car_wait = self._car_unsignalized_wait
+            self._car_pending_dir = self._car_choose_highway_turn()
+            self._car_signal = self._car_signal_side(
+                tuple(diamond["into_city"]), self._car_pending_dir,
+            )
+            self._car_blink_t = 0.0
+            self._car_update_signals(0.0)
+            return
+
+        if kind in ("enter_ccw", "enter_cw"):
+            new_dir = (
+                tuple(diamond["ccw_dir"])
+                if kind == "enter_ccw"
+                else tuple(diamond["cw_dir"])
+            )
+            self._car_dir = new_dir
+            self._car_on_highway = True
+            self._car_ring_phase = "to_corner"
+            self._car_set_highway_lane(new_dir, pick=True, snap=True)
+            self._car_set_surface_z(grade)
+            merge = self._car_merge_xy(exit_i, new_dir)
+            self._car_pos[0], self._car_pos[1] = merge
+            nxt = self._car_next_highway_exit(exit_i, new_dir)
+            self._car_pending_exit = nxt
+            corner = self._car_corner_approach(exit_i, new_dir)
+            self._car_clear_signals()
+            self._car_state = "drive"
+            self._car_target = corner
+            self._car_after_cross = corner
+            return
+
+        self._car_set_surface_z(grade)
+        self._car_state = "drive"
 
     def _car_next_highway_exit(self, exit_i: int, direction: tuple[int, int]) -> int:
         """Next diamond index around the ring for this travel direction."""
@@ -277,13 +418,14 @@ class CarController:
         self._car_to = (diamond["city_v"], diamond["city_h"])
 
     def _car_enter_highway_from_city(self, exit_i: int) -> None:
-        """Switch from the city grid onto a diamond interchange."""
-        diamond = self._car_diamond(exit_i)
-        self._car_on_highway = True
+        """Mark the diamond we are joining; lane picked when the on-ramp merges."""
         self._car_exit_i = exit_i
         self._car_ring_phase = "leg"
-        # Seed lane on the inner (CCW) half until a N/S or E/W dir is chosen.
-        self._car_set_highway_lane(tuple(diamond["ccw_dir"]), pick=True, snap=False)
+
+    def _car_route_points(self, name: str, exit_i: int | None = None) -> list[tuple[float, float, float]]:
+        """Copy annotated ramp waypoints for this diamond."""
+        diamond = self._car_diamond(exit_i)
+        return [tuple(pt) for pt in diamond["routes"][name]]
 
     def _car_corner_approach(
         self,
@@ -433,7 +575,7 @@ class CarController:
         return random.choice(options)
 
     def _car_choose_highway_turn(self) -> tuple[int, int]:
-        """At a diamond: continue around the ring, enter the city, or reverse."""
+        """At a diverge or bridge deck: continue, exit, join a ring dir, or reverse."""
         diamond = self._car_diamond()
         into = tuple(diamond["into_city"])
         ccw = tuple(diamond["ccw_dir"])
@@ -441,12 +583,13 @@ class CarController:
         dx, dy = self._car_dir
         options: list[tuple[int, int]] = []
         if (dx, dy) in (ccw, cw):
-            # Already on a carriageway: continue, reverse, or peel into the city.
+            # On the carriageway at the diverge: continue, exit, or reverse.
             options.append((dx, dy))
+            options.append((dx, dy))  # prefer staying on the ring
             options.append(into)
             options.append((-dx, -dy))
         else:
-            # Arrived from the city spur: join either ring direction or go back.
+            # On the bridge deck after climbing from the city.
             options.extend((ccw, cw, into))
         return random.choice(options)
 
@@ -509,6 +652,9 @@ class CarController:
 
     def _car_travel_dir(self) -> tuple[float, float]:
         """Unit travel vector for spacing checks (grid dir, else heading)."""
+        if self._car_state == "path":
+            rad = math.radians(self._car_heading)
+            return math.cos(rad), math.sin(rad)
         dx, dy = self._car_dir
         if dx or dy:
             return float(dx), float(dy)
@@ -518,6 +664,8 @@ class CarController:
     def _car_approach_stop(self) -> tuple[float, float]:
         """Ideal stop-line position for the current approach."""
         if self._car_on_highway:
+            if self._car_ring_phase == "deck":
+                return tuple(self._car_diamond()["ramps"]["city_ix"])
             return self._car_highway_stop(self._car_exit_i, self._car_dir)
         return self._car_stop_xy(*self._car_to, self._car_dir)
 
@@ -788,16 +936,27 @@ class CarController:
         v, h = self._car_to
         gateway = self._car_gateway_exit_i()
         if gateway is not None:
-            into = tuple(self._car_diamonds[gateway]["into_city"])
+            diamond = self._car_diamonds[gateway]
+            into = tuple(diamond["into_city"])
             toward_hwy = (-into[0], -into[1])
             if new_dir == toward_hwy:
                 self._car_dir = new_dir
                 self._car_enter_highway_from_city(gateway)
-                # Stop on the spur facing the median; pick a ring dir at the diamond.
-                self._car_after_cross = self._car_highway_stop(gateway, new_dir)
                 self._car_clear_signals()
-                self._car_state = "crossing"
-                self._car_target = self._car_exit_xy(v, h, new_dir)
+                # Leave the city node, then climb the arterial onto the bridge deck.
+                grade = diamond.get("grade_top", self._car_grade_z)
+                city_end = diamond["ramps"]["city_end"]
+                city_ix = diamond["ramps"]["city_ix"]
+                bridge_top = diamond.get("bridge_top", grade)
+                leave = self._car_exit_xy(v, h, new_dir)
+                self._car_begin_path(
+                    [
+                        (leave[0], leave[1], grade),
+                        (city_end[0], city_end[1], grade),
+                        (city_ix[0], city_ix[1], bridge_top),
+                    ],
+                    kind="enter_deck",
+                )
                 return
 
         cx, cy = self._car_intersection_xy(v, h)
@@ -824,68 +983,82 @@ class CarController:
         cross: float,
         dot: float,
     ) -> None:
-        """Maneuver at a diamond: enter city, join a ring dir, or continue around."""
+        """Maneuver at a diverge or bridge deck: exit ramp, on-ramp, or continue."""
         exit_i = self._car_exit_i
         diamond = self._car_diamond(exit_i)
         into = tuple(diamond["into_city"])
-        cx, cy = self._car_highway_intersection_xy(exit_i)
-
-        # Peel off into the city.
-        if new_dir == into:
-            self._car_dir = new_dir
-            self._car_enter_city_from_highway(exit_i)
-            self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
-            if cross == 0:
-                self._car_start_u_turn(new_dir)
-            else:
-                self._car_start_arc(old_dir, new_dir, cx, cy)
-            return
-
-        self._car_dir = new_dir
         ccw = tuple(diamond["ccw_dir"])
         cw = tuple(diamond["cw_dir"])
-        if new_dir not in (ccw, cw):
-            # Facing back along the spur toward the city.
-            self._car_enter_city_from_highway(exit_i)
-            self._car_after_cross = self._car_stop_xy(*self._car_to, new_dir)
+        grade = diamond.get("grade_top", self._car_grade_z)
+
+        # Peel off into the city via the diamond off-ramp.
+        if new_dir == into:
             self._car_clear_signals()
-            self._car_state = "crossing"
-            self._car_target = (
-                diamond["city_x"] + into[0] * self._car_stop_offset,
-                diamond["city_y"] + into[1] * self._car_stop_offset,
+            if old_dir in (ccw, cw):
+                route_name = "exit_ccw" if self._car_is_ccw(old_dir) else "exit_cw"
+                diverge = self._car_diverge_xy(exit_i, old_dir)
+                path = [
+                    (diverge[0], diverge[1], grade),
+                    *self._car_route_points(route_name, exit_i),
+                ]
+                self._car_begin_path(path, kind="exit_city")
+                return
+            # Already on the deck: descend the city arterial.
+            city_end = diamond["ramps"]["city_end"]
+            city_ix = diamond["ramps"]["city_ix"]
+            bridge_top = diamond.get("bridge_top", grade)
+            self._car_begin_path(
+                [
+                    (city_ix[0], city_ix[1], bridge_top),
+                    (city_end[0], city_end[1], grade),
+                ],
+                kind="exit_city",
             )
             return
 
-        reversing = old_dir[0] * new_dir[0] + old_dir[1] * new_dir[1] < 0
-        joining = old_dir not in (ccw, cw) or reversing
-        self._car_set_highway_lane(new_dir, pick=joining, snap=joining)
-        nxt = self._car_next_highway_exit(exit_i, new_dir)
+        if new_dir in (ccw, cw):
+            joining = old_dir not in (ccw, cw)
+            reversing = old_dir[0] * new_dir[0] + old_dir[1] * new_dir[1] < 0
+            if joining:
+                # From the bridge deck onto an on-ramp, then merge.
+                self._car_clear_signals()
+                route_name = "enter_ccw" if new_dir == ccw else "enter_cw"
+                # enter_* routes start at city_end; deck wait is already at city_ix.
+                path = self._car_route_points(route_name, exit_i)
+                if len(path) >= 2:
+                    path = path[1:]  # drop city_end; start from city_ix
+                self._car_begin_path(path, kind=route_name)
+                return
 
-        if cross == 0 and reversing:
+            self._car_dir = new_dir
+            self._car_set_highway_lane(new_dir, pick=reversing, snap=reversing)
+            nxt = self._car_next_highway_exit(exit_i, new_dir)
             self._car_pending_exit = nxt
             self._car_ring_phase = "to_corner"
-            self._car_after_cross = self._car_corner_approach(exit_i, new_dir)
-            self._car_start_u_turn(new_dir)
-            return
-
-        # Continue around the ring: first drive to the corner, then turn.
-        self._car_pending_exit = nxt
-        self._car_ring_phase = "to_corner"
-        corner = self._car_corner_approach(exit_i, new_dir)
-        if dot > 0 and not joining:
+            corner = self._car_corner_approach(exit_i, new_dir)
+            if cross == 0 and reversing:
+                self._car_after_cross = corner
+                self._car_start_u_turn(new_dir)
+                return
+            # Continue past the interchange along the lane toward the corner.
             self._car_clear_signals()
             self._car_state = "crossing"
             self._car_target = self._car_highway_leave(exit_i, new_dir)
             self._car_after_cross = corner
             return
-        if joining and cross != 0:
-            self._car_after_cross = corner
-            self._car_start_arc(old_dir, new_dir, cx, cy)
-            return
+
+        # Facing back toward the city from the deck.
+        city_end = diamond["ramps"]["city_end"]
+        city_ix = diamond["ramps"]["city_ix"]
+        bridge_top = diamond.get("bridge_top", grade)
         self._car_clear_signals()
-        self._car_state = "drive"
-        self._car_target = corner
-        self._car_after_cross = corner
+        self._car_begin_path(
+            [
+                (city_ix[0], city_ix[1], bridge_top),
+                (city_end[0], city_end[1], grade),
+            ],
+            kind="exit_city",
+        )
 
     def _place_car(self) -> None:
         self.car.setPos(self._car_pos[0], self._car_pos[1], self._car_z)
@@ -913,7 +1086,10 @@ class CarController:
 
     def _car_finish_frame(self) -> None:
         """One neighbor/collision scan + scene graph sync per tick."""
-        self._car_refresh_neighbors(resolve=True)
+        # Ramp paths are grade-separated; resolving against ground cars shoves
+        # climbers off the waypoint polyline, so only scan leaders there.
+        resolve = self._car_state != "path"
+        self._car_refresh_neighbors(resolve=resolve)
         # Collisions can nudge sideways; re-assert the right-hand highway lane.
         self._car_hold_highway_lane()
         self._place_car()
@@ -921,6 +1097,58 @@ class CarController:
     def _car_task(self, task):
         dt = min(self.clock.getDt(), 0.05)
         # Targeting uses last tick's neighbor cache; we rescan once at the end.
+
+        if self._car_state == "path":
+            if not self._car_path or self._car_path_i >= len(self._car_path):
+                self._car_finish_path()
+                self._car_finish_frame()
+                return task.cont
+            # Only yield to another ramp car clearly ahead on this path; ignore
+            # at-grade traffic under the overpass so climbs are not pinned.
+            leader = self._nb_leader
+            if (
+                leader is not None
+                and leader._car_state == "path"
+                and leader._car_exit_i == self._car_exit_i
+                and self._nb_leader_along is not None
+                and self._nb_leader_along < _CAR_FOLLOW - 0.05
+            ):
+                self._car_speed = max(0.0, self._car_speed - self._car_accel * dt)
+                self._car_finish_frame()
+                return task.cont
+            tx, ty, tz = self._car_path[self._car_path_i]
+            dx = tx - self._car_pos[0]
+            dy = ty - self._car_pos[1]
+            dist = math.hypot(dx, dy)
+            if dist <= max(self._car_speed * dt, 0.08):
+                self._car_pos[0] = tx
+                self._car_pos[1] = ty
+                self._car_set_surface_z(tz)
+                self._car_path_i += 1
+                if self._car_path_i >= len(self._car_path):
+                    self._car_finish_path()
+                else:
+                    nxt = self._car_path[self._car_path_i]
+                    self._car_target = (nxt[0], nxt[1])
+                    self._car_path_from_z = tz
+                    self._car_path_seg_len = max(
+                        math.hypot(nxt[0] - tx, nxt[1] - ty), 0.05,
+                    )
+                self._car_finish_frame()
+                return task.cont
+            self._car_advance_speed(dt, dist)
+            step = min(self._car_speed * dt, dist)
+            if dist > 1e-6:
+                self._car_pos[0] += dx / dist * step
+                self._car_pos[1] += dy / dist * step
+                self._car_heading = math.degrees(math.atan2(dy, dx))
+            remain = math.hypot(tx - self._car_pos[0], ty - self._car_pos[1])
+            frac = 1.0 - min(1.0, remain / self._car_path_seg_len)
+            self._car_set_surface_z(
+                self._car_path_from_z + (tz - self._car_path_from_z) * frac
+            )
+            self._car_finish_frame()
+            return task.cont
 
         if self._car_state == "wait":
             # Hold equal-spaced slots; creep forward when the queue advances.

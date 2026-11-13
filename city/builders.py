@@ -30,9 +30,7 @@ from city.mesh import (
     box_instance,
     factory_template,
     make_annulus_sector,
-    make_cylinder,
     make_pyramid,
-    make_sphere,
 )
 from city.plan import CityPlan
 
@@ -219,27 +217,6 @@ class SceneBuilders:
                     (road_width, road_width, road_size[2]),
                     road_material(),
                 )
-
-    def _add_sphere(self, x: float, y: float, material: Material) -> None:
-        sphere = self.city.attachNewNode(make_sphere())
-        sphere.setPos(x, y, 0)
-        sphere.setMaterial(material, 1)
-
-    def _add_link(
-        self,
-        x0: float,
-        y0: float,
-        x1: float,
-        y1: float,
-        material: Material,
-        radius: float = 0.08,
-    ) -> None:
-        """Cylinder from one sphere centre to the next, meeting each at its middle."""
-        length = math.hypot(x1 - x0, y1 - y0)
-        link = self.city.attachNewNode(make_cylinder(radius, length))
-        link.setPos(x0, y0, 0)
-        link.lookAt(x1, y1, 0)
-        link.setMaterial(material, 1)
 
     def _add_stack(
         self,

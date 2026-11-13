@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from panda3d.core import Material
 
-_SPHERE_MATERIAL: Material | None = None
 _BLOCK_MATERIALS: dict[float, Material] = {}
 _ROAD_MATERIAL: Material | None = None
 _LAWN_MATERIAL: Material | None = None
@@ -17,18 +16,6 @@ _SQUARE_MATERIALS: dict[float, Material] = {}
 _BROWN_MATERIALS: dict[float, Material] = {}
 _SIGNAL_MATERIALS: dict[str, Material] = {}
 _CAR_MATERIALS: dict[str | tuple[str, tuple[float, float, float]], Material] = {}
-
-
-def sphere_material() -> Material:
-    global _SPHERE_MATERIAL
-    if _SPHERE_MATERIAL is None:
-        material = Material()
-        material.setAmbient((0.12, 0.22, 0.32, 1))
-        material.setDiffuse((0.22, 0.48, 0.72, 1))
-        material.setSpecular((0.55, 0.6, 0.65, 1))
-        material.setShininess(48)
-        _SPHERE_MATERIAL = material
-    return _SPHERE_MATERIAL
 
 
 # One cool grey. ``1`` is the original tower; the band is wide enough to tell
@@ -339,7 +326,7 @@ def car_material(
     cached = _CAR_MATERIALS.get(key)
     if cached is not None:
         return cached
-    # Default body matches the landmark spheres; lamps emit so they read under sun.
+    # Default body is a cool blue; lamps emit so they read under sun.
     if name == "body":
         diffuse = colour or (0.22, 0.48, 0.72)
         ambient = tuple(channel * 0.45 for channel in diffuse)

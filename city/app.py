@@ -18,9 +18,8 @@ from city.materials import (
     lawn_material,
     mark_material,
     road_material,
-    sphere_material,
 )
-from city.mesh import box_instance, make_rhombus_slab
+from city.mesh import box_instance, make_ramp_slab, make_rhombus_slab
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
 
@@ -38,19 +37,6 @@ class CityApp(ShowBase):
         self.city = self.render.attachNewNode("city")
         builders = SceneBuilders(self.city, plan, self.render)
         self._builders = builders
-
-        material = sphere_material()
-        for x, y in plan.sphere_positions:
-            builders._add_sphere(x + plan.group_shift, y, material)
-        for index, (x0, y0) in enumerate(plan.sphere_positions):
-            x1, y1 = plan.sphere_positions[(index + 1) % len(plan.sphere_positions)]
-            builders._add_link(
-                x0 + plan.group_shift,
-                y0,
-                x1 + plan.group_shift,
-                y1,
-                material,
-            )
 
         block_size = plan.block_size
         for lot in plan.iter_tower_lots():
@@ -152,12 +138,6 @@ class CityApp(ShowBase):
                     if not solid:
                         builders._add_signal_post(px, py, plan.road_top, block_size)
 
-        # Lone house east of the sphere group (same offset math as before).
-        cube_size = (2.0, 2.0, 2.0)
-        pyramid_size = (3.0, 3.0, 1.5)
-        stack_right = plan.block_center_x + block_size[0] / 2
-        cube_center_x = stack_right + plan.house_gap + cube_size[0] / 2 + plan.group_shift
-        builders._add_house(cube_center_x, 0.0)
         builders._add_lights()
 
         self.city.flattenStrong()
@@ -339,8 +319,8 @@ class CityApp(ShowBase):
         fence_z = road_top + plan.fence_h / 2
         barrier_mat = block_material(0.75)
         fence_mat = block_material(0.55)
-        # Wide enough for flared diamond merge arms at each curb.
-        opening_half = max(plan.road_width * 0.75, highway_width * 0.4)
+        # Wide enough for long diamond ramp throats at each curb.
+        opening_half = hwy["opening_half"]
         diamonds = hwy["diamonds"]
         ns_openings = sorted({d["hy"] for d in diamonds if d["axis"] == "ns"})
         ew_openings = sorted({d["hx"] for d in diamonds if d["axis"] == "ew"})
@@ -559,8 +539,8 @@ class CityApp(ShowBase):
         lawn_mat = lawn_material()
         pier_mat = block_material(0.62)
         # Deck clears the median barrier with clear headroom for the belt below.
-        bridge_clearance = plan.barrier_h + 2.8
-        bridge_z = road_z + bridge_clearance
+        bridge_clearance = hwy["bridge_clearance"]
+        bridge_z = hwy["bridge_z"]
         bridge_mark_z = bridge_z + road_thickness / 2 + 0.02
 
         def add_slip_segment(
@@ -598,39 +578,7 @@ class CityApp(ShowBase):
                 mark.setH(heading)
                 mark.setMaterial(slip_paint, 1)
 
-        def add_chevron_lawn(
-            apex: tuple[float, float],
-            merge_a: tuple[float, float],
-            merge_b: tuple[float, float],
-        ) -> None:
-            """Grass wedge inside one half of the diamond."""
-            cx = (apex[0] + merge_a[0] + merge_b[0]) / 3.0
-            cy = (apex[1] + merge_a[1] + merge_b[1]) / 3.0
-            scale = 0.72
-            inner = (
-                (cx + (apex[0] - cx) * scale, cy + (apex[1] - cy) * scale),
-                (cx + (merge_a[0] - cx) * scale, cy + (merge_a[1] - cy) * scale),
-                (cx + (merge_b[0] - cx) * scale, cy + (merge_b[1] - cy) * scale),
-            )
-            # Ground pad under the half so tips don't float on sky.
-            xs = (apex[0], merge_a[0], merge_b[0])
-            ys = (apex[1], merge_a[1], merge_b[1])
-            pad = plan.road_width * 0.45
-            builders._add_block(
-                (min(xs) + max(xs)) / 2,
-                (min(ys) + max(ys)) / 2,
-                road_z - 0.02,
-                (max(xs) - min(xs) + pad, max(ys) - min(ys) + pad, road_thickness * 0.85),
-                lawn_mat,
-                parent=self.highway,
-            )
-            island = self.highway.attachNewNode(
-                make_rhombus_slab(inner, road_thickness * 0.9)
-            )
-            island.setPos(0.0, 0.0, road_z - 0.01)
-            island.setMaterial(lawn_mat, 1)
-
-        def add_stepped_approach(
+        def add_slant_ramp(
             x0: float,
             y0: float,
             z0: float,
@@ -638,35 +586,80 @@ class CityApp(ShowBase):
             y1: float,
             z1: float,
             width: float,
-            steps: int = 5,
+            *,
+            rails: bool = True,
+            rail_start_inset: float = 0.0,
+            rail_end_inset: float = 0.0,
         ) -> None:
-            """Blocky stair ramp from ground up to the bridge abutment."""
+            """Sloped ramp with vertical end caps that butt to a flat deck.
+
+            Travel runs along local +Y (heading only — no pitch on the node).
+            ``rail_start_inset`` / ``rail_end_inset`` shorten side barriers at the
+            ``(x0,y0)`` / ``(x1,y1)`` ends so they clear merges and the deck joint.
+            """
             dx = x1 - x0
             dy = y1 - y0
-            if math.hypot(dx, dy) < 0.05:
+            dz = z1 - z0
+            length_xy = math.hypot(dx, dy)
+            if length_xy < 0.05:
                 return
-            # Climb on the early treads; keep the last two flat as a landing.
-            climb_steps = max(1, steps - 2)
-            for index in range(steps):
-                t0 = index / steps
-                t1 = (index + 1) / steps
-                xa = x0 + dx * t0
-                ya = y0 + dy * t0
-                xb = x0 + dx * t1
-                yb = y0 + dy * t1
-                if index < climb_steps:
-                    z = z0 + (z1 - z0) * ((index + 1) / climb_steps)
-                else:
-                    z = z1
-                add_slip_segment(
-                    xa,
-                    ya,
-                    xb,
-                    yb,
-                    width,
-                    z=z,
-                    mark_z_pos=z + road_thickness / 2 + 0.02,
+            hyp = math.hypot(length_xy, dz)
+            heading = math.degrees(math.atan2(dy, dx))
+            pitch = math.degrees(math.atan2(dz, length_xy))
+            pad = self.highway.attachNewNode(
+                make_ramp_slab(length_xy, width, road_thickness, dz)
+            )
+            pad.setPos((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)
+            pad.setH(heading - 90.0)
+            pad.setMaterial(road_mat, 1)
+            if rails:
+                # Vertical barrier posts along the edges. Skip any post whose top
+                # would reach bridge deck height so nothing pokes through.
+                rail_h = max(0.8, plan.barrier_h * 0.85)
+                rail_w = max(0.28, plan.barrier_w * 1.1)
+                start_i = max(0.0, min(rail_start_inset, length_xy * 0.3))
+                end_i = max(0.0, min(rail_end_inset, length_xy * 0.75))
+                usable = length_xy - start_i - end_i
+                z_lo = min(z0, z1)
+                z_hi = max(z0, z1)
+                # Only barrier the lower climb so posts never sit on the deck.
+                z_cut = z_lo + 0.72 * (z_hi - z_lo)
+                if usable > 0.5:
+                    seg_len = min(1.8, max(1.0, usable / 6))
+                    count = max(1, int(usable / seg_len))
+                    px, py = -dy / length_xy, dx / length_xy
+                    for side in (-1.0, 1.0):
+                        ox = px * side * (width / 2 - rail_w / 2)
+                        oy = py * side * (width / 2 - rail_w / 2)
+                        for index in range(count):
+                            t = (start_i + (index + 0.5) * (usable / count)) / length_xy
+                            z_road = z0 + dz * t
+                            if z_road > z_cut:
+                                continue
+                            rail = box_instance(
+                                self.highway, rail_w, seg_len * 0.92, rail_h,
+                            )
+                            rail.setPos(
+                                x0 + dx * t + ox,
+                                y0 + dy * t + oy,
+                                z_road + road_thickness / 2 + rail_h / 2,
+                            )
+                            rail.setH(heading - 90.0)
+                            rail.setMaterial(barrier_mat, 1)
+            mark_len = 1.6
+            mark_w = 0.35
+            count = max(1, int((hyp + 1.0) / 3.2))
+            for index in range(count):
+                t = (index + 0.5) / count
+                mark = box_instance(self.highway, mark_w, mark_len, mark_h)
+                mark.setPos(
+                    x0 + dx * t,
+                    y0 + dy * t,
+                    z0 + dz * t + road_thickness / 2 + 0.02,
                 )
+                mark.setH(heading - 90.0)
+                mark.setP(pitch)
+                mark.setMaterial(slip_paint, 1)
 
         def add_bridge_span(
             x0: float,
@@ -676,7 +669,7 @@ class CityApp(ShowBase):
             width: float,
             pier_points: tuple[tuple[float, float], ...] = (),
         ) -> None:
-            """Elevated deck over the highway; piers sit on the median only."""
+            """Elevated arterial deck over the highway; pier on the median."""
             dx = x1 - x0
             dy = y1 - y0
             length = math.hypot(dx, dy)
@@ -685,155 +678,292 @@ class CityApp(ShowBase):
             cx = (x0 + x1) / 2
             cy = (y0 + y1) / 2
             heading = math.degrees(math.atan2(dy, dx))
-            deck = box_instance(self.highway, length, width, road_thickness)
+            # Same slab thickness as the approach ramps so the deck reads continuous.
+            deck_h = road_thickness
+            deck = box_instance(self.highway, length, width, deck_h)
             deck.setPos(cx, cy, bridge_z)
             deck.setH(heading)
             deck.setMaterial(road_mat, 1)
-            rail_h = 0.55
-            rail_w = 0.22
-            for side in (-1.0, 1.0):
-                rail = box_instance(self.highway, length, rail_w, rail_h)
-                ox = -math.sin(math.radians(heading)) * side * (width / 2 - rail_w / 2)
-                oy = math.cos(math.radians(heading)) * side * (width / 2 - rail_w / 2)
-                rail.setPos(cx + ox, cy + oy, bridge_z + road_thickness / 2 + rail_h / 2)
-                rail.setH(heading)
-                rail.setMaterial(pier_mat, 1)
+            # Side barriers along both curb edges, matching ramp rail style.
+            rail_h = max(0.8, plan.barrier_h * 0.85)
+            rail_w = max(0.28, plan.barrier_w * 1.1)
+            end_inset = min(width * 0.35, length * 0.08)
+            usable = length - 2.0 * end_inset
+            if usable > 0.5:
+                seg_len = min(2.2, max(1.2, usable / 8))
+                rail_count = max(1, int(usable / seg_len))
+                nx, ny = -dy / length, dx / length
+                deck_top = bridge_z + deck_h / 2
+                for side in (-1.0, 1.0):
+                    ox = nx * side * (width / 2 - rail_w / 2)
+                    oy = ny * side * (width / 2 - rail_w / 2)
+                    for index in range(rail_count):
+                        t = (end_inset + (index + 0.5) * (usable / rail_count)) / length
+                        rail = box_instance(
+                            self.highway, seg_len * 0.92, rail_w, rail_h,
+                        )
+                        rail.setPos(
+                            x0 + dx * t + ox,
+                            y0 + dy * t + oy,
+                            deck_top + rail_h / 2,
+                        )
+                        rail.setH(heading)
+                        rail.setMaterial(barrier_mat, 1)
             mark_len = 1.6
             mark_w = 0.35
             count = max(1, int((length + 1.0) / 3.2))
             for index in range(count):
                 t = (index + 0.5) / count
                 mark = box_instance(self.highway, mark_len, mark_w, mark_h)
-                mark.setPos(x0 + dx * t, y0 + dy * t, bridge_mark_z)
+                mark.setPos(x0 + dx * t, y0 + dy * t, bridge_z + deck_h / 2 + 0.02)
                 mark.setH(heading)
                 mark.setMaterial(slip_paint, 1)
-            pier_w = min(width * 0.55, plan.barrier_w * 3.0)
-            pier_h = bridge_clearance - road_thickness / 2
+            pier_w = min(width * 0.7, plan.barrier_w * 4.0)
+            # Keep the column and its cap entirely under the deck underside.
+            deck_bottom = bridge_z - deck_h / 2
+            cap_h = 0.35
+            pier_h = max(0.5, deck_bottom - cap_h - road_z)
             for px, py in pier_points:
                 pier = box_instance(self.highway, pier_w, pier_w, pier_h)
                 pier.setPos(px, py, road_z + pier_h / 2)
                 pier.setMaterial(pier_mat, 1)
+                # Cap sits flush under the deck — does not pierce the roadway.
+                cap = box_instance(self.highway, pier_w * 1.35, pier_w * 1.35, cap_h)
+                cap.setPos(px, py, deck_bottom - cap_h / 2)
+                cap.setMaterial(pier_mat, 1)
 
-        def add_diamond(diamond: dict) -> None:
-            """Opposite-side chevrons ``<||>`` joined by an elevated bridge.
+        def add_lawn_footprint(
+            xs: tuple[float, ...],
+            ys: tuple[float, ...],
+            pad: float = 1.0,
+        ) -> None:
+            """Ground lawn under an interchange so sky doesn't show through."""
+            builders._add_block(
+                (min(xs) + max(xs)) / 2,
+                (min(ys) + max(ys)) / 2,
+                road_z - 0.03,
+                (
+                    max(xs) - min(xs) + pad,
+                    max(ys) - min(ys) + pad,
+                    road_thickness * 0.8,
+                ),
+                lawn_mat,
+                parent=self.highway,
+            )
 
-            Ground-level slip arms form the ``<`` / ``>``; elevated tip pads sit
-            on piers and are linked by the bridge deck over the highway.
+        def add_diamond_lawn(
+            apex: tuple[float, float],
+            merge_a: tuple[float, float],
+            merge_b: tuple[float, float],
+        ) -> None:
+            """Grass wedge between a ramp pair (classic diamond gore)."""
+            cx = (apex[0] + merge_a[0] + merge_b[0]) / 3.0
+            cy = (apex[1] + merge_a[1] + merge_b[1]) / 3.0
+            scale = 0.78
+            inner = (
+                (cx + (apex[0] - cx) * scale, cy + (apex[1] - cy) * scale),
+                (cx + (merge_a[0] - cx) * scale, cy + (merge_a[1] - cy) * scale),
+                (cx + (merge_b[0] - cx) * scale, cy + (merge_b[1] - cy) * scale),
+            )
+            add_lawn_footprint(
+                (apex[0], merge_a[0], merge_b[0]),
+                (apex[1], merge_a[1], merge_b[1]),
+                pad=plan.road_width * 0.6,
+            )
+            island = self.highway.attachNewNode(
+                make_rhombus_slab(inner, road_thickness * 0.9)
+            )
+            island.setPos(0.0, 0.0, road_z - 0.01)
+            island.setMaterial(lawn_mat, 1)
+
+        def add_diamond_interchange(diamond: dict) -> None:
+            """Classic diamond: elevated cross street + four diagonal ramps.
+
+            Each ramp runs a short parallel merge along the curb, then climbs
+            diagonally into the bridge ends (no abutment pads). Endpoints come
+            from ``CityPlan._annotate_diamond_ramps`` so cars share the same path.
             """
             hx = diamond["hx"]
             hy = diamond["hy"]
             rw = plan.road_width
             side = diamond["side"]
-            merge = rw * 0.35
-            throat = max(opening_half * 0.95, highway_width * 0.42)
-            outer_reach = max(diamond["slip_len"], highway_width * 0.9)
-            pier_h = bridge_clearance - road_thickness / 2
+            ramps = diamond["ramps"]
+            along = diamond["along"]
+            slip_w = diamond["slip_w"]
+            deck_clear = diamond["deck_clear"]
+            city_end = ramps["city_end"]
+            city_ix = ramps["city_ix"]
+            outer_ix = ramps["outer_ix"]
+            outer_end = ramps["outer_end"]
 
-            def add_half(
+            def add_ramp_pair(
                 apex: tuple[float, float],
-                merge_a: tuple[float, float],
-                merge_b: tuple[float, float],
+                start_a: tuple[float, float],
+                peel_a: tuple[float, float],
+                start_b: tuple[float, float],
+                peel_b: tuple[float, float],
             ) -> None:
-                add_chevron_lawn(apex, merge_a, merge_b)
-                # Ground-level diamond arms.
-                add_slip_segment(apex[0], apex[1], merge_a[0], merge_a[1], rw)
-                add_slip_segment(apex[0], apex[1], merge_b[0], merge_b[1], rw)
-                # Pier + elevated tip pad above the chevron point.
-                pier = box_instance(self.highway, rw * 0.7, rw * 0.7, pier_h)
-                pier.setPos(apex[0], apex[1], road_z + pier_h / 2)
-                pier.setMaterial(pier_mat, 1)
-                builders._add_block(
-                    apex[0],
-                    apex[1],
-                    bridge_z,
-                    (rw * 1.2, rw * 1.2, road_thickness),
-                    road_mat,
-                    parent=self.highway,
+                add_diamond_lawn(apex, start_a, start_b)
+                # Grade merges hugging the curb, then pitched climbs into the deck.
+                add_slip_segment(
+                    start_a[0], start_a[1], peel_a[0], peel_a[1], slip_w,
+                )
+                add_slip_segment(
+                    start_b[0], start_b[1], peel_b[0], peel_b[1], slip_w,
+                )
+                # Stop at the abutment — vertical ramp ends meet the deck edge.
+                add_slant_ramp(
+                    peel_a[0], peel_a[1], road_z,
+                    apex[0], apex[1], bridge_z, slip_w,
+                    rail_start_inset=rw * 0.3,
+                    rail_end_inset=deck_clear,
+                )
+                add_slant_ramp(
+                    peel_b[0], peel_b[1], road_z,
+                    apex[0], apex[1], bridge_z, slip_w,
+                    rail_start_inset=rw * 0.3,
+                    rail_end_inset=deck_clear,
                 )
 
             if side == "west":
-                city_x = diamond["city_x"]
-                city_apex = ((city_x + belt_west_inner) / 2, hy)
-                outer_apex = (belt_west_outer - outer_reach, hy)
-                inner_n = (belt_west_inner - merge, hy + throat)
-                inner_s = (belt_west_inner - merge, hy - throat)
-                outer_n = (belt_west_outer + merge, hy + throat)
-                outer_s = (belt_west_outer + merge, hy - throat)
-                add_half(city_apex, inner_n, inner_s)
-                add_half(outer_apex, outer_n, outer_s)
-                add_stepped_approach(
-                    city_x, hy, road_z,
-                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
+                add_lawn_footprint(
+                    (city_end[0], outer_end[0]),
+                    (hy - along, hy + along),
+                    pad=rw * 1.2,
+                )
+                add_slant_ramp(
+                    city_end[0], city_end[1], road_z,
+                    city_ix[0], city_ix[1], bridge_z, rw,
+                    rail_start_inset=rw * 0.3,
+                    rail_end_inset=deck_clear,
+                )
+                add_ramp_pair(
+                    city_ix,
+                    ramps["inner_n0"], ramps["inner_n1"],
+                    ramps["inner_s0"], ramps["inner_s1"],
+                )
+                add_ramp_pair(
+                    outer_ix,
+                    ramps["outer_n0"], ramps["outer_n1"],
+                    ramps["outer_s0"], ramps["outer_s1"],
                 )
                 add_bridge_span(
-                    city_apex[0], city_apex[1],
-                    outer_apex[0], outer_apex[1],
-                    rw,
+                    city_ix[0], city_ix[1],
+                    outer_ix[0], outer_ix[1],
+                    rw * 1.05,
                     pier_points=((highway_mid_x, hy),),
                 )
+                add_slant_ramp(
+                    outer_ix[0], outer_ix[1], bridge_z,
+                    outer_end[0], outer_end[1], road_z, rw,
+                    rail_start_inset=deck_clear,
+                    rail_end_inset=rw * 0.3,
+                )
             elif side == "east":
-                city_x = diamond["city_x"]
-                city_apex = ((city_x + belt_east_inner) / 2, hy)
-                outer_apex = (belt_east_outer + outer_reach, hy)
-                inner_n = (belt_east_inner + merge, hy + throat)
-                inner_s = (belt_east_inner + merge, hy - throat)
-                outer_n = (belt_east_outer - merge, hy + throat)
-                outer_s = (belt_east_outer - merge, hy - throat)
-                add_half(city_apex, inner_n, inner_s)
-                add_half(outer_apex, outer_n, outer_s)
-                add_stepped_approach(
-                    city_x, hy, road_z,
-                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
+                add_lawn_footprint(
+                    (city_end[0], outer_end[0]),
+                    (hy - along, hy + along),
+                    pad=rw * 1.2,
+                )
+                add_slant_ramp(
+                    city_end[0], city_end[1], road_z,
+                    city_ix[0], city_ix[1], bridge_z, rw,
+                    rail_start_inset=rw * 0.3,
+                    rail_end_inset=deck_clear,
+                )
+                add_ramp_pair(
+                    city_ix,
+                    ramps["inner_n0"], ramps["inner_n1"],
+                    ramps["inner_s0"], ramps["inner_s1"],
+                )
+                add_ramp_pair(
+                    outer_ix,
+                    ramps["outer_n0"], ramps["outer_n1"],
+                    ramps["outer_s0"], ramps["outer_s1"],
                 )
                 add_bridge_span(
-                    city_apex[0], city_apex[1],
-                    outer_apex[0], outer_apex[1],
-                    rw,
+                    city_ix[0], city_ix[1],
+                    outer_ix[0], outer_ix[1],
+                    rw * 1.05,
                     pier_points=((east_mid_x, hy),),
                 )
+                add_slant_ramp(
+                    outer_ix[0], outer_ix[1], bridge_z,
+                    outer_end[0], outer_end[1], road_z, rw,
+                    rail_start_inset=deck_clear,
+                    rail_end_inset=rw * 0.3,
+                )
             elif side == "south":
-                city_y = diamond["city_y"]
-                city_apex = (hx, (city_y + belt_south_inner) / 2)
-                outer_apex = (hx, belt_south_outer - outer_reach)
-                inner_w = (hx - throat, belt_south_inner - merge)
-                inner_e = (hx + throat, belt_south_inner - merge)
-                outer_w = (hx - throat, belt_south_outer + merge)
-                outer_e = (hx + throat, belt_south_outer + merge)
-                add_half(city_apex, inner_w, inner_e)
-                add_half(outer_apex, outer_w, outer_e)
-                add_stepped_approach(
-                    hx, city_y, road_z,
-                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
+                add_lawn_footprint(
+                    (hx - along, hx + along),
+                    (city_end[1], outer_end[1]),
+                    pad=rw * 1.2,
+                )
+                add_slant_ramp(
+                    city_end[0], city_end[1], road_z,
+                    city_ix[0], city_ix[1], bridge_z, rw,
+                    rail_start_inset=rw * 0.3,
+                    rail_end_inset=deck_clear,
+                )
+                add_ramp_pair(
+                    city_ix,
+                    ramps["inner_w0"], ramps["inner_w1"],
+                    ramps["inner_e0"], ramps["inner_e1"],
+                )
+                add_ramp_pair(
+                    outer_ix,
+                    ramps["outer_w0"], ramps["outer_w1"],
+                    ramps["outer_e0"], ramps["outer_e1"],
                 )
                 add_bridge_span(
-                    city_apex[0], city_apex[1],
-                    outer_apex[0], outer_apex[1],
-                    rw,
+                    city_ix[0], city_ix[1],
+                    outer_ix[0], outer_ix[1],
+                    rw * 1.05,
                     pier_points=((hx, south_mid_y),),
                 )
+                add_slant_ramp(
+                    outer_ix[0], outer_ix[1], bridge_z,
+                    outer_end[0], outer_end[1], road_z, rw,
+                    rail_start_inset=deck_clear,
+                    rail_end_inset=rw * 0.3,
+                )
             else:  # north
-                city_y = diamond["city_y"]
-                city_apex = (hx, (city_y + belt_north_inner) / 2)
-                outer_apex = (hx, belt_north_outer + outer_reach)
-                inner_w = (hx - throat, belt_north_inner + merge)
-                inner_e = (hx + throat, belt_north_inner + merge)
-                outer_w = (hx - throat, belt_north_outer - merge)
-                outer_e = (hx + throat, belt_north_outer - merge)
-                add_half(city_apex, inner_w, inner_e)
-                add_half(outer_apex, outer_w, outer_e)
-                add_stepped_approach(
-                    hx, city_y, road_z,
-                    city_apex[0], city_apex[1], bridge_z, rw, steps=5,
+                add_lawn_footprint(
+                    (hx - along, hx + along),
+                    (city_end[1], outer_end[1]),
+                    pad=rw * 1.2,
+                )
+                add_slant_ramp(
+                    city_end[0], city_end[1], road_z,
+                    city_ix[0], city_ix[1], bridge_z, rw,
+                    rail_start_inset=rw * 0.3,
+                    rail_end_inset=deck_clear,
+                )
+                add_ramp_pair(
+                    city_ix,
+                    ramps["inner_w0"], ramps["inner_w1"],
+                    ramps["inner_e0"], ramps["inner_e1"],
+                )
+                add_ramp_pair(
+                    outer_ix,
+                    ramps["outer_w0"], ramps["outer_w1"],
+                    ramps["outer_e0"], ramps["outer_e1"],
                 )
                 add_bridge_span(
-                    city_apex[0], city_apex[1],
-                    outer_apex[0], outer_apex[1],
-                    rw,
+                    city_ix[0], city_ix[1],
+                    outer_ix[0], outer_ix[1],
+                    rw * 1.05,
                     pier_points=((hx, north_mid_y),),
+                )
+                add_slant_ramp(
+                    outer_ix[0], outer_ix[1], bridge_z,
+                    outer_end[0], outer_end[1], road_z, rw,
+                    rail_start_inset=deck_clear,
+                    rail_end_inset=rw * 0.3,
                 )
 
         for diamond in diamonds:
-            add_diamond(diamond)
+            add_diamond_interchange(diamond)
         self.highway.flattenStrong()
 
         self._cars: list[CarController] = []
@@ -980,7 +1110,7 @@ class CityApp(ShowBase):
         # One fleet task instead of N car tasks — less scheduler overhead.
         self.taskMgr.add(self._fleet_task, "car-fleet")
 
-        bounds = plan.framing_bounds(cube_center_x, pyramid_size[0] / 2)
+        bounds = plan.framing_bounds()
         left = bounds["left"]
         right = bounds["right"]
         frame_south = bounds["city_south"]

@@ -34,10 +34,3 @@ highway:
   barrier_w: 0.5
   barrier_h: 1.0
   exit_row: 4
-
-landmarks:
-  sphere_side: 2.5
-  sphere_radius: 1.0
-  block_gap: 5.0
-  landmark_east_gap: 30.0
-  house_gap: 5.0

@@ -24,77 +24,6 @@ from city.materials import (
     stack_material,
 )
 
-def make_sphere(radius: float = 1.0, rings: int = 32, segments: int = 48) -> GeomNode:
-    """UV sphere. Normals point outward so a single light shades the surface."""
-    fmt = GeomVertexFormat.getV3n3()
-    vdata = GeomVertexData("sphere", fmt, Geom.UHStatic)
-    vertex = GeomVertexWriter(vdata, "vertex")
-    normal = GeomVertexWriter(vdata, "normal")
-
-    for ring in range(rings + 1):
-        phi = math.pi * ring / rings
-        sin_phi = math.sin(phi)
-        cos_phi = math.cos(phi)
-        for seg in range(segments + 1):
-            theta = 2.0 * math.pi * seg / segments
-            x = sin_phi * math.cos(theta)
-            y = sin_phi * math.sin(theta)
-            z = cos_phi
-            vertex.addData3(radius * x, radius * y, radius * z)
-            normal.addData3(x, y, z)
-
-    tris = GeomTriangles(Geom.UHStatic)
-    stride = segments + 1
-    for ring in range(rings):
-        for seg in range(segments):
-            i0 = ring * stride + seg
-            i1 = i0 + 1
-            i2 = i0 + stride
-            i3 = i2 + 1
-            tris.addVertices(i0, i2, i1)
-            tris.addVertices(i1, i2, i3)
-    tris.closePrimitive()
-
-    geom = Geom(vdata)
-    geom.addPrimitive(tris)
-    node = GeomNode("sphere")
-    node.addGeom(geom)
-    return node
-
-
-def make_cylinder(radius: float, length: float, segments: int = 24) -> GeomNode:
-    """Open cylinder along +Y, from the origin out to ``length``."""
-    fmt = GeomVertexFormat.getV3n3()
-    vdata = GeomVertexData("cylinder", fmt, Geom.UHStatic)
-    vertex = GeomVertexWriter(vdata, "vertex")
-    normal = GeomVertexWriter(vdata, "normal")
-
-    for y in (0.0, length):
-        for seg in range(segments + 1):
-            theta = 2.0 * math.pi * seg / segments
-            nx = math.cos(theta)
-            nz = math.sin(theta)
-            vertex.addData3(radius * nx, y, radius * nz)
-            normal.addData3(nx, 0.0, nz)
-
-    tris = GeomTriangles(Geom.UHStatic)
-    stride = segments + 1
-    for seg in range(segments):
-        i0 = seg
-        i1 = i0 + 1
-        i2 = i0 + stride
-        i3 = i2 + 1
-        tris.addVertices(i0, i2, i1)
-        tris.addVertices(i1, i2, i3)
-    tris.closePrimitive()
-
-    geom = Geom(vdata)
-    geom.addPrimitive(tris)
-    node = GeomNode("cylinder")
-    node.addGeom(geom)
-    return node
-
-
 def make_annulus_sector(
     inner_radius: float,
     outer_radius: float,
@@ -208,6 +137,77 @@ def make_annulus_sector(
     geom = Geom(vdata)
     geom.addPrimitive(tris)
     node = GeomNode("annulus_sector")
+    node.addGeom(geom)
+    return node
+
+
+def make_ramp_slab(
+    length: float,
+    width: float,
+    thickness: float,
+    dz: float,
+) -> GeomNode:
+    """Road slab along +Y with vertical ends and a constant vertical thickness.
+
+    Centres on the origin. At ``y = -length/2`` the slab is centred at
+    ``z = -dz/2``; at ``y = +length/2`` it is centred at ``z = +dz/2``. Vertical
+    end caps let the high end butt cleanly against a flat bridge deck.
+    """
+    if length <= 0.0 or width <= 0.0 or thickness <= 0.0:
+        raise ValueError("ramp slab dimensions must be positive")
+    hw = width / 2.0
+    hl = length / 2.0
+    ht = thickness / 2.0
+    z0 = -dz / 2.0
+    z1 = dz / 2.0
+    # Corner order: start-left, start-right, end-right, end-left.
+    top = (
+        (-hw, -hl, z0 + ht),
+        (hw, -hl, z0 + ht),
+        (hw, hl, z1 + ht),
+        (-hw, hl, z1 + ht),
+    )
+    bot = (
+        (-hw, -hl, z0 - ht),
+        (hw, -hl, z0 - ht),
+        (hw, hl, z1 - ht),
+        (-hw, hl, z1 - ht),
+    )
+    hyp = math.hypot(length, dz) or 1.0
+    top_n = (0.0, -dz / hyp, length / hyp)
+    bot_n = (0.0, dz / hyp, -length / hyp)
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("ramp_slab", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    def add_face(
+        corners: tuple[tuple[float, float, float], ...],
+        nrm: tuple[float, float, float],
+    ) -> None:
+        base = vertex.getWriteRow()
+        for corner in corners:
+            vertex.addData3(*corner)
+            normal.addData3(*nrm)
+        tris.addVertices(base, base + 1, base + 2)
+        tris.addVertices(base, base + 2, base + 3)
+
+    # Top (CCW from above) and bottom (outward = downward).
+    add_face(top, top_n)
+    add_face((bot[0], bot[3], bot[2], bot[1]), bot_n)
+    # Start / end caps (vertical).
+    add_face((bot[0], bot[1], top[1], top[0]), (0.0, -1.0, 0.0))
+    add_face((bot[2], bot[3], top[3], top[2]), (0.0, 1.0, 0.0))
+    # Left / right walls.
+    add_face((bot[0], top[0], top[3], bot[3]), (-1.0, 0.0, 0.0))
+    add_face((bot[1], bot[2], top[2], top[1]), (1.0, 0.0, 0.0))
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("ramp_slab")
     node.addGeom(geom)
     return node
 

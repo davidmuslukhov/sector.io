@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-sphere.png
 .conda/
 .venv/
 .direnv/
