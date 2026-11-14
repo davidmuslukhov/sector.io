@@ -208,12 +208,17 @@ class CityPlan:
         opening_half = max(rw * 0.9, highway_width * 0.85)
         along = max(highway_width * 1.55, opening_half * 1.15, rw * 4.5)
         merge = rw * 0.3
-        abut = rw * 0.55
+        # Keep abutments close to the belt edge so the city arterial has room to
+        # climb — short stubs make every slab crash into the same point.
+        abut = rw * 0.18
         parallel = max(rw * 1.6, along * 0.28)
         peel = along - parallel
         curb = rw / 2
-        slip_w = rw * 0.9
+        # Narrower than the arterial so two slips + deck don't share one volume.
+        slip_w = rw * 0.62
         deck_clear = rw * 0.55
+        # Slips land on the pitched arterial before the bridge corner.
+        join_frac = 0.42
         return {
             "opening_half": opening_half,
             "along": along,
@@ -224,6 +229,7 @@ class CityPlan:
             "curb": curb,
             "slip_w": slip_w,
             "deck_clear": deck_clear,
+            "join_frac": join_frac,
             "bridge_clearance": self.barrier_h + 2.8,
         }
 
@@ -250,13 +256,60 @@ class CityPlan:
         merge = m["merge"]
         abut = m["abut"]
         curb = m["curb"]
+        join_frac = m["join_frac"]
+        slip_w = m["slip_w"]
         bridge_z = road_z + m["bridge_clearance"]
         grade_top = road_z + road_thickness / 2
         bridge_top = bridge_z + road_thickness / 2
+        # Slab-centre / surface Z where slips meet the pitched arterial.
+        city_join_z = bridge_z + (road_z - bridge_z) * join_frac
+        outer_join_z = city_join_z
+        city_join_top = bridge_top + (grade_top - bridge_top) * join_frac
+        outer_join_top = city_join_top
         hx = diamond["hx"]
         hy = diamond["hy"]
         side = diamond["side"]
         rw = self.road_width
+        lat = slip_w * 0.52
+
+        def lerp2(
+            a: tuple[float, float], b: tuple[float, float], t: float,
+        ) -> tuple[float, float]:
+            return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+        def attach_ew_joins(
+            ramps: dict,
+            city_ix: tuple[float, float],
+            city_end: tuple[float, float],
+            outer_ix: tuple[float, float],
+            outer_end: tuple[float, float],
+        ) -> None:
+            """Arterial along X — lateral joins north/south of the throat."""
+            city_throat = lerp2(city_ix, city_end, join_frac)
+            outer_throat = lerp2(outer_ix, outer_end, join_frac)
+            ramps["city_throat"] = city_throat
+            ramps["city_join_n"] = (city_throat[0], city_throat[1] + lat)
+            ramps["city_join_s"] = (city_throat[0], city_throat[1] - lat)
+            ramps["outer_throat"] = outer_throat
+            ramps["outer_join_n"] = (outer_throat[0], outer_throat[1] + lat)
+            ramps["outer_join_s"] = (outer_throat[0], outer_throat[1] - lat)
+
+        def attach_ns_joins(
+            ramps: dict,
+            city_ix: tuple[float, float],
+            city_end: tuple[float, float],
+            outer_ix: tuple[float, float],
+            outer_end: tuple[float, float],
+        ) -> None:
+            """Arterial along Y — lateral joins west/east of the throat."""
+            city_throat = lerp2(city_ix, city_end, join_frac)
+            outer_throat = lerp2(outer_ix, outer_end, join_frac)
+            ramps["city_throat"] = city_throat
+            ramps["city_join_w"] = (city_throat[0] - lat, city_throat[1])
+            ramps["city_join_e"] = (city_throat[0] + lat, city_throat[1])
+            ramps["outer_throat"] = outer_throat
+            ramps["outer_join_w"] = (outer_throat[0] - lat, outer_throat[1])
+            ramps["outer_join_e"] = (outer_throat[0] + lat, outer_throat[1])
 
         if side == "west":
             city_end = (diamond["city_x"] - curb, hy)
@@ -287,22 +340,28 @@ class CityPlan:
                 "merge_ccw": (hx, hy + along),
                 "merge_cw": (hx, hy - along),
             }
+            attach_ew_joins(ramps, city_ix, city_end, outer_ix, outer_end)
             # CCW = northbound on the inner curb; CW = southbound on the outer.
+            # City-bound right lane is south — exit_ccw merges via city_join_s.
             exit_ccw = [
                 (*ramps["inner_s0"], grade_top),
                 (*ramps["inner_s1"], grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_join_s"], city_join_top),
+                (*ramps["city_throat"], city_join_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_throat"], city_join_top),
+                (*ramps["city_join_n"], city_join_top),
                 (*ramps["inner_n1"], grade_top),
                 (*ramps["inner_n0"], grade_top),
             ]
             exit_cw = [
                 (*ramps["outer_n0"], grade_top),
                 (*ramps["outer_n1"], grade_top),
+                (*ramps["outer_join_n"], outer_join_top),
+                (*ramps["outer_throat"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
                 (*city_end, grade_top),
@@ -311,6 +370,8 @@ class CityPlan:
                 (*city_end, grade_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_join_s"], outer_join_top),
                 (*ramps["outer_s1"], grade_top),
                 (*ramps["outer_s0"], grade_top),
             ]
@@ -342,22 +403,28 @@ class CityPlan:
                 "merge_ccw": (hx, hy - along),
                 "merge_cw": (hx, hy + along),
             }
+            attach_ew_joins(ramps, city_ix, city_end, outer_ix, outer_end)
             # CCW = southbound on the inner curb; CW = northbound on the outer.
+            # City-bound right lane is north — exit_ccw merges via city_join_n.
             exit_ccw = [
                 (*ramps["inner_n0"], grade_top),
                 (*ramps["inner_n1"], grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_join_n"], city_join_top),
+                (*ramps["city_throat"], city_join_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_throat"], city_join_top),
+                (*ramps["city_join_s"], city_join_top),
                 (*ramps["inner_s1"], grade_top),
                 (*ramps["inner_s0"], grade_top),
             ]
             exit_cw = [
                 (*ramps["outer_s0"], grade_top),
                 (*ramps["outer_s1"], grade_top),
+                (*ramps["outer_join_s"], outer_join_top),
+                (*ramps["outer_throat"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
                 (*city_end, grade_top),
@@ -366,6 +433,8 @@ class CityPlan:
                 (*city_end, grade_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_join_n"], outer_join_top),
                 (*ramps["outer_n1"], grade_top),
                 (*ramps["outer_n0"], grade_top),
             ]
@@ -397,22 +466,28 @@ class CityPlan:
                 "merge_ccw": (hx - along, hy),
                 "merge_cw": (hx + along, hy),
             }
+            attach_ns_joins(ramps, city_ix, city_end, outer_ix, outer_end)
             # CCW = westbound on the inner curb; CW = eastbound on the outer.
+            # City-bound right lane is east — exit_ccw merges via city_join_e.
             exit_ccw = [
                 (*ramps["inner_e0"], grade_top),
                 (*ramps["inner_e1"], grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_join_e"], city_join_top),
+                (*ramps["city_throat"], city_join_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_throat"], city_join_top),
+                (*ramps["city_join_w"], city_join_top),
                 (*ramps["inner_w1"], grade_top),
                 (*ramps["inner_w0"], grade_top),
             ]
             exit_cw = [
                 (*ramps["outer_w0"], grade_top),
                 (*ramps["outer_w1"], grade_top),
+                (*ramps["outer_join_w"], outer_join_top),
+                (*ramps["outer_throat"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
                 (*city_end, grade_top),
@@ -421,6 +496,8 @@ class CityPlan:
                 (*city_end, grade_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_join_e"], outer_join_top),
                 (*ramps["outer_e1"], grade_top),
                 (*ramps["outer_e0"], grade_top),
             ]
@@ -452,22 +529,28 @@ class CityPlan:
                 "merge_ccw": (hx + along, hy),
                 "merge_cw": (hx - along, hy),
             }
+            attach_ns_joins(ramps, city_ix, city_end, outer_ix, outer_end)
             # CCW = eastbound on the inner curb; CW = westbound on the outer.
+            # City-bound right lane is west — exit_ccw merges via city_join_w.
             exit_ccw = [
                 (*ramps["inner_w0"], grade_top),
                 (*ramps["inner_w1"], grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_join_w"], city_join_top),
+                (*ramps["city_throat"], city_join_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
-                (*city_ix, bridge_top),
+                (*ramps["city_throat"], city_join_top),
+                (*ramps["city_join_e"], city_join_top),
                 (*ramps["inner_e1"], grade_top),
                 (*ramps["inner_e0"], grade_top),
             ]
             exit_cw = [
                 (*ramps["outer_e0"], grade_top),
                 (*ramps["outer_e1"], grade_top),
+                (*ramps["outer_join_e"], outer_join_top),
+                (*ramps["outer_throat"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
                 (*city_end, grade_top),
@@ -476,6 +559,8 @@ class CityPlan:
                 (*city_end, grade_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_join_w"], outer_join_top),
                 (*ramps["outer_w1"], grade_top),
                 (*ramps["outer_w0"], grade_top),
             ]
@@ -490,13 +575,18 @@ class CityPlan:
         diamond["grade_top"] = grade_top
         diamond["bridge_top"] = bridge_top
         diamond["bridge_z"] = bridge_z
+        diamond["city_join_z"] = city_join_z
+        diamond["outer_join_z"] = outer_join_z
+        diamond["city_join_top"] = city_join_top
+        diamond["outer_join_top"] = outer_join_top
         diamond["along"] = along
         diamond["peel"] = peel
         diamond["merge"] = merge
         diamond["abut"] = abut
         diamond["curb"] = curb
-        diamond["slip_w"] = m["slip_w"]
+        diamond["slip_w"] = slip_w
         diamond["deck_clear"] = m["deck_clear"]
+        diamond["join_frac"] = join_frac
         diamond["outer_reach"] = outer_reach
 
     def highway_geometry(self) -> dict[str, float | list[float]]:
@@ -569,7 +659,6 @@ class CityPlan:
         # One diamond per side, snapped to the city grid so cars can use them.
         # Ordered CCW from west: west → north → east → south.
         west_exit_y = self.south_road_full0 + self.exit_row * self.stride_y
-        east_exit_y = west_exit_y
         mid_col = self.cols // 2
         south_exit_x = self.west_road_full0 + mid_col * self.stride_x
         north_exit_x = south_exit_x
@@ -613,7 +702,7 @@ class CityPlan:
                 "side": "east",
                 "axis": "ns",
                 "hx": east_mid_x,
-                "hy": east_exit_y,
+                "hy": west_exit_y,
                 "city_v": self.cols,
                 "city_h": self.exit_row,
                 "city_origin_y": self.south_road_full0,
@@ -621,7 +710,7 @@ class CityPlan:
                 "ccw_dir": (0, -1),
                 "cw_dir": (0, 1),
                 "city_x": self.west_road_full0 + self.cols * self.stride_x,
-                "city_y": east_exit_y,
+                "city_y": west_exit_y,
                 "slip_len": slip_len,
             },
             {
@@ -682,7 +771,6 @@ class CityPlan:
             "highway_mid_y": highway_mid_y,
             "road_thickness": road_thickness,
             "road_z": road_z,
-            "exit_ys": [west_exit_y, east_exit_y],
             "diamonds": diamonds,
             "west_lane_xs": west_lane_xs,
             "east_lane_xs": east_lane_xs,

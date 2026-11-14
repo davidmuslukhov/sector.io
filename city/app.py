@@ -779,9 +779,9 @@ class CityApp(ShowBase):
         def add_diamond_interchange(diamond: dict) -> None:
             """Classic diamond: elevated cross street + four diagonal ramps.
 
-            Each ramp runs a short parallel merge along the curb, then climbs
-            diagonally into the bridge ends (no abutment pads). Endpoints come
-            from ``CityPlan._annotate_diamond_ramps`` so cars share the same path.
+            Slips climb to lateral join points on the pitched arterial (not the
+            bridge corner), so three full-width slabs never share one abutment.
+            Endpoints come from ``CityPlan._annotate_diamond_ramps``.
             """
             hx = diamond["hx"]
             hy = diamond["hy"]
@@ -791,38 +791,52 @@ class CityApp(ShowBase):
             along = diamond["along"]
             slip_w = diamond["slip_w"]
             deck_clear = diamond["deck_clear"]
+            city_join_z = diamond["city_join_z"]
+            outer_join_z = diamond["outer_join_z"]
             city_end = ramps["city_end"]
             city_ix = ramps["city_ix"]
             outer_ix = ramps["outer_ix"]
             outer_end = ramps["outer_end"]
+            city_throat = ramps["city_throat"]
+            outer_throat = ramps["outer_throat"]
 
             def add_ramp_pair(
-                apex: tuple[float, float],
+                throat: tuple[float, float],
+                join_a: tuple[float, float],
+                join_b: tuple[float, float],
+                z_join: float,
                 start_a: tuple[float, float],
                 peel_a: tuple[float, float],
                 start_b: tuple[float, float],
                 peel_b: tuple[float, float],
             ) -> None:
-                add_diamond_lawn(apex, start_a, start_b)
-                # Grade merges hugging the curb, then pitched climbs into the deck.
+                add_diamond_lawn(throat, start_a, start_b)
+                # Grade merges hugging the curb, then pitched climbs to the joins.
                 add_slip_segment(
                     start_a[0], start_a[1], peel_a[0], peel_a[1], slip_w,
                 )
                 add_slip_segment(
                     start_b[0], start_b[1], peel_b[0], peel_b[1], slip_w,
                 )
-                # Stop at the abutment — vertical ramp ends meet the deck edge.
                 add_slant_ramp(
                     peel_a[0], peel_a[1], road_z,
-                    apex[0], apex[1], bridge_z, slip_w,
+                    join_a[0], join_a[1], z_join, slip_w,
                     rail_start_inset=rw * 0.3,
-                    rail_end_inset=deck_clear,
+                    rail_end_inset=rw * 0.35,
                 )
                 add_slant_ramp(
                     peel_b[0], peel_b[1], road_z,
-                    apex[0], apex[1], bridge_z, slip_w,
+                    join_b[0], join_b[1], z_join, slip_w,
                     rail_start_inset=rw * 0.3,
-                    rail_end_inset=deck_clear,
+                    rail_end_inset=rw * 0.35,
+                )
+                # Short elevated aprons from each join onto the arterial throat.
+                apron_w = min(slip_w * 0.85, rw * 0.7)
+                add_slip_segment(
+                    join_a[0], join_a[1], throat[0], throat[1], apron_w, z=z_join,
+                )
+                add_slip_segment(
+                    join_b[0], join_b[1], throat[0], throat[1], apron_w, z=z_join,
                 )
 
             if side == "west":
@@ -838,12 +852,14 @@ class CityApp(ShowBase):
                     rail_end_inset=deck_clear,
                 )
                 add_ramp_pair(
-                    city_ix,
+                    city_throat,
+                    ramps["city_join_n"], ramps["city_join_s"], city_join_z,
                     ramps["inner_n0"], ramps["inner_n1"],
                     ramps["inner_s0"], ramps["inner_s1"],
                 )
                 add_ramp_pair(
-                    outer_ix,
+                    outer_throat,
+                    ramps["outer_join_n"], ramps["outer_join_s"], outer_join_z,
                     ramps["outer_n0"], ramps["outer_n1"],
                     ramps["outer_s0"], ramps["outer_s1"],
                 )
@@ -872,12 +888,14 @@ class CityApp(ShowBase):
                     rail_end_inset=deck_clear,
                 )
                 add_ramp_pair(
-                    city_ix,
+                    city_throat,
+                    ramps["city_join_n"], ramps["city_join_s"], city_join_z,
                     ramps["inner_n0"], ramps["inner_n1"],
                     ramps["inner_s0"], ramps["inner_s1"],
                 )
                 add_ramp_pair(
-                    outer_ix,
+                    outer_throat,
+                    ramps["outer_join_n"], ramps["outer_join_s"], outer_join_z,
                     ramps["outer_n0"], ramps["outer_n1"],
                     ramps["outer_s0"], ramps["outer_s1"],
                 )
@@ -906,12 +924,14 @@ class CityApp(ShowBase):
                     rail_end_inset=deck_clear,
                 )
                 add_ramp_pair(
-                    city_ix,
+                    city_throat,
+                    ramps["city_join_w"], ramps["city_join_e"], city_join_z,
                     ramps["inner_w0"], ramps["inner_w1"],
                     ramps["inner_e0"], ramps["inner_e1"],
                 )
                 add_ramp_pair(
-                    outer_ix,
+                    outer_throat,
+                    ramps["outer_join_w"], ramps["outer_join_e"], outer_join_z,
                     ramps["outer_w0"], ramps["outer_w1"],
                     ramps["outer_e0"], ramps["outer_e1"],
                 )
@@ -940,12 +960,14 @@ class CityApp(ShowBase):
                     rail_end_inset=deck_clear,
                 )
                 add_ramp_pair(
-                    city_ix,
+                    city_throat,
+                    ramps["city_join_w"], ramps["city_join_e"], city_join_z,
                     ramps["inner_w0"], ramps["inner_w1"],
                     ramps["inner_e0"], ramps["inner_e1"],
                 )
                 add_ramp_pair(
-                    outer_ix,
+                    outer_throat,
+                    ramps["outer_join_w"], ramps["outer_join_e"], outer_join_z,
                     ramps["outer_w0"], ramps["outer_w1"],
                     ramps["outer_e0"], ramps["outer_e1"],
                 )
@@ -1067,7 +1089,6 @@ class CityApp(ShowBase):
             car._car_east_lane_xs = east_lane_xs
             car._car_south_lane_ys = south_lane_ys
             car._car_north_lane_ys = north_lane_ys
-            car._car_highway_lane_xs = west_lane_xs  # legacy alias
             car._car_ns_y0 = ns_y0
             car._car_ns_y1 = ns_y1
             car._car_ew_x0 = ew_x0
@@ -1076,9 +1097,6 @@ class CityApp(ShowBase):
             car._car_corner_ne = corner_ne
             car._car_corner_se = corner_se
             car._car_corner_sw = corner_sw
-            car._car_south_road0 = plan.south_road_full0
-            car._car_north_shift = plan.north_shift
-            car._car_exit_row = plan.exit_row
             car._car_on_highway = spawn["on_highway"]
             car._car_exit_i = spawn["exit_i"]
             car._car_highway_lane = spawn["highway_lane"]
@@ -1088,18 +1106,30 @@ class CityApp(ShowBase):
             )
             if spawn["on_highway"]:
                 car._car_set_highway_lane(car._car_dir, pick=False, snap=True)
-                approach = car._car_highway_stop(car._car_exit_i, car._car_dir)
+                # Start already committed past the diamond — cruise toward the corner.
+                nxt = car._car_next_highway_exit(car._car_exit_i, car._car_dir)
+                car._car_pending_exit = nxt
+                car._car_ring_phase = "to_corner"
+                approach = car._car_corner_approach(car._car_exit_i, car._car_dir)
+                # Space spawns back along the leg from the corner, not at a stop bar.
+                merge = car._car_merge_xy(car._car_exit_i, car._car_dir)
+                dx, dy = spawn["start_dir"]
+                along = 8.0 + spawn["highway_lane"] * follow_gap
+                pos = (merge[0] + dx * along, merge[1] + dy * along)
             else:
                 approach = car._car_stop_xy(*car._car_to, car._car_dir)
-            dx, dy = spawn["start_dir"]
-            queue = spawn["queue"]
-            pos = (
-                approach[0] - dx * follow_gap * queue,
-                approach[1] - dy * follow_gap * queue,
-            )
+                dx, dy = spawn["start_dir"]
+                queue = spawn["queue"]
+                pos = (
+                    approach[0] - dx * follow_gap * queue,
+                    approach[1] - dy * follow_gap * queue,
+                )
             car._car_pos = list(pos)
             car._car_target = approach
+            car._car_after_cross = approach
             car._car_state = "drive"
+            if spawn["on_highway"]:
+                car._car_plan_for_exit(nxt)
             car._signals = self._signals
             car._place_car()
         self._car = self._cars[0]
