@@ -6,6 +6,8 @@ import math
 import random
 from collections import defaultdict
 
+from panda3d.core import LVector3
+
 from city.materials import car_material
 from city.mesh import car_template
 
@@ -21,6 +23,8 @@ _CAR_TOUCH = 2.25
 _CAR_LANE_TOL = 1.6
 # Spatial hash for collision candidates; larger than touch so one-frame drift stays covered.
 _CAR_CELL = 4.0
+# Max cars already on one diamond exit (ramp + gateway) before highway skips the off-ramp.
+_EXIT_STREAM_CAP = 3
 
 # Rebuilt once per fleet tick so each car avoids a full O(n) scan.
 _FLEET_LANES: dict[tuple, list] = {}
@@ -239,7 +243,10 @@ class CarController:
         the middle/left lanes and slide over fluidly without stopping.
         ``_exit_i`` is the diverge being planned for (does not move ``_car_exit_i``).
         """
-        self._car_exit_intent = random.random() < 0.28
+        # Peek congestion on the target exit without requiring we have arrived.
+        target_i = self._car_exit_i if _exit_i is None else _exit_i
+        ramp_full = self._car_exit_stream_count(target_i) >= _EXIT_STREAM_CAP
+        self._car_exit_intent = (not ramp_full) and random.random() < 0.28
         if self._car_exit_intent:
             self._car_lane_goal = 0
         elif self._car_highway_lane >= 1:
@@ -432,6 +439,82 @@ class CarController:
     def _car_clear_grade_pitch(self) -> None:
         self._car_grade_pitch = 0.0
 
+    def _car_arterial_pose(
+        self,
+        x: float,
+        y: float,
+        exit_i: int | None = None,
+    ) -> tuple[float, float] | None:
+        """``(surface_z, grade_pitch_deg)`` if ``(x, y)`` sits on a diamond arterial.
+
+        Exit-queue slots are laid back from the city stop along ``into_city``, which
+        lands cars on the pitched city↔bridge slab at flat grade height. Sampling
+        the arterial keeps those wait/drive cars on the road instead of buried in it.
+        """
+        if not self._car_diamonds:
+            return None
+        diamond = self._car_diamond(exit_i)
+        ramps = diamond["ramps"]
+        # Pitched climb is exit_foot→city_ix (original exit length). The flat
+        # city_end→exit_foot margin stays at grade with no nose pitch.
+        grade = diamond.get("grade_top", self._car_grade_z)
+        foot = ramps.get("exit_foot", ramps["city_end"])
+        city_end = ramps["city_end"]
+        x1, y1 = ramps["city_ix"]
+        # Flat connector over city_margin.
+        fx, fy = foot[0] - city_end[0], foot[1] - city_end[1]
+        flat_len = math.hypot(fx, fy)
+        if flat_len > 0.5:
+            fux, fuy = fx / flat_len, fy / flat_len
+            flat_along = (x - city_end[0]) * fux + (y - city_end[1]) * fuy
+            flat_lat = abs((x - city_end[0]) * -fuy + (y - city_end[1]) * fux)
+            if (
+                -0.75 <= flat_along <= flat_len + 0.35
+                and flat_lat <= self._car_lane_offset * 2.8 + 0.75
+                and flat_along < flat_len - 0.05
+            ):
+                return grade, 0.0
+        x0, y0 = foot
+        ax, ay = x1 - x0, y1 - y0
+        length = math.hypot(ax, ay)
+        if length < 0.05:
+            return None
+        ux, uy = ax / length, ay / length
+        along = (x - x0) * ux + (y - y0) * uy
+        if along < -0.75 or along > length + 0.75:
+            return None
+        lateral = abs((x - x0) * -uy + (y - y0) * ux)
+        if lateral > self._car_lane_offset * 2.8 + 0.75:
+            return None
+        t = max(0.0, min(1.0, along / length))
+        bridge = diamond.get("bridge_top", grade)
+        surface_z = grade + (bridge - grade) * t
+        # Pitch for travel toward the bridge (climbing); flip if heading city-ward.
+        toward_bridge = math.degrees(math.atan2(-(bridge - grade), length))
+        rad = math.radians(self._car_heading)
+        if math.cos(rad) * ux + math.sin(rad) * uy < 0.0:
+            toward_bridge = -toward_bridge
+        return surface_z, toward_bridge
+
+    def _car_apply_arterial_pose(self) -> None:
+        """Snap wait/drive cars on the arterial to the pitched slab."""
+        # Path followers already lerp Z/pitch from waypoints.
+        if self._car_state == "path":
+            return
+        pose = self._car_arterial_pose(self._car_pos[0], self._car_pos[1])
+        if pose is None:
+            # Left the slab — drop any stale grade tilt from a prior sample.
+            if self._car_state in ("wait", "drive", "crossing") and abs(
+                self._car_grade_pitch
+            ) > 0.05:
+                # Only clear when we are back near grade height.
+                if abs(self._car_surface_z - self._car_grade_z) < 0.35:
+                    self._car_clear_grade_pitch()
+            return
+        surface_z, pitch = pose
+        self._car_set_surface_z(surface_z)
+        self._car_grade_pitch = pitch
+
     def _car_smooth_path_corners(
         self,
         points: list[tuple[float, float, float]],
@@ -566,10 +649,10 @@ class CarController:
                     cleaned[-1] = pt
                     continue
             cleaned.append(pt)
-        # Smooth flat highway↔bridge corners; densify pitched runs for descent.
+        # Smooth flat highway↔bridge corners. Grade Z is lerped per segment, so
+        # densifying pitched runs only creates micro-waypoints that stutter.
         if kind in ("exit_city", "enter_ccw", "enter_cw", "enter_deck"):
             cleaned = self._car_smooth_path_corners(cleaned)
-            cleaned = self._car_densify_grade_segments(cleaned)
         if not cleaned:
             self._car_finish_path(kind)
             return
@@ -1059,11 +1142,15 @@ class CarController:
                 self._car_exit_intent
                 and self._car_highway_lane == 0
                 and not self._car_lane_changing
+                and self._car_exit_stream_count() < _EXIT_STREAM_CAP
             ):
                 return into
             return (dx, dy)
-        # Bridge deck after climbing from the city.
-        return random.choice([ccw, cw, into])
+        # Bridge deck after climbing from the city — skip a jammed off-ramp.
+        options = [ccw, cw]
+        if self._car_exit_stream_count() < _EXIT_STREAM_CAP:
+            options.append(into)
+        return random.choice(options)
 
     @staticmethod
     def _car_signal_side(
@@ -1128,16 +1215,40 @@ class CarController:
         self._car_update_signals(0.0)
 
     def _car_has_traffic_light(self) -> bool:
-        """Interior city crosses get signals; edges and the highway do not."""
-        if self._car_on_highway or self._signals is None:
+        """Interior city crosses and diamond ramp/city gateways are signalized."""
+        if self._signals is None:
             return False
+        # Off-ramp into the city is governed by the gateway through the stop.
+        if self._car_path_kind == "exit_city":
+            return True
+        if self._car_on_highway:
+            return False
+        if self._car_gateway_exit_i() is not None:
+            return True
         v, h = self._car_to
         return 1 <= v < self._car_cols and 1 <= h < self._car_rows
+
+    def _car_gateway_requires_green(self, new_dir: tuple[int, int]) -> bool:
+        """Highway ↔ city movements at a diamond exit need a full green.
+
+        No right-on-red onto or off the ramp — that traffic crosses the
+        signalized gateway and must wait like through traffic.
+        """
+        if self._car_is_exit_stream() or self._car_path_kind == "exit_city":
+            return True
+        gateway = self._car_gateway_exit_i()
+        if gateway is None:
+            return False
+        into = tuple(self._car_diamonds[gateway]["into_city"])
+        toward_hwy = (-into[0], -into[1])
+        return tuple(new_dir) == toward_hwy
 
     def _car_may_proceed(self, new_dir: tuple[int, int]) -> bool:
         """True once the stop is legal for ``new_dir`` given the light (if any)."""
         if not self._car_has_traffic_light():
             return True
+        if self._car_gateway_requires_green(new_dir):
+            return self._signals.approach_colour(self._car_dir) == "green"
         return self._signals.may_proceed(self._car_dir, new_dir)
 
     def _car_travel_dir(self) -> tuple[float, float]:
@@ -1248,6 +1359,19 @@ class CarController:
         into = tuple(diamond["into_city"])
         diverge = self._car_diverge_xy(self._car_exit_i, self._car_dir)
         dist = math.hypot(diverge[0] - self._car_pos[0], diverge[1] - self._car_pos[1])
+        # Abort a planned exit when the off-ramp is already stacked.
+        if (
+            self._car_exit_intent
+            and self._car_exit_stream_count() >= _EXIT_STREAM_CAP
+        ):
+            self._car_exit_intent = False
+            self._car_pending_dir = None
+            if self._car_signal == "right":
+                self._car_signal = None
+                self._car_apply_signals(None, True)
+            if dist <= self._car_highway_decide_dist:
+                self._car_highway_continue((dx, dy))
+                return True
         # Keep pushing toward the right lane if we still intend to exit.
         if self._car_exit_intent and (
             self._car_highway_lane != 0 or self._car_lane_changing
@@ -1300,12 +1424,27 @@ class CarController:
             return False
         return tuple(self._car_dir) == tuple(diamond["into_city"])
 
+    def _car_is_enter_stream(self) -> bool:
+        """True on city→deck climb, deck wait, or peel onto an on-ramp."""
+        if self._car_path_kind in ("enter_deck", "enter_ccw", "enter_cw"):
+            return True
+        return bool(self._car_on_highway and self._car_ring_phase == "deck")
+
+    def _car_exit_stream_count(self, exit_i: int | None = None) -> int:
+        """How many cars are already on this diamond's exit ramp / gateway."""
+        idx = self._car_exit_i if exit_i is None else exit_i
+        key = ("x", int(idx))
+        return len(_FLEET_LANES.get(key, ()))
+
     def _car_lane_key(self) -> tuple:
         """Same travel lane / twin city corridor for leader search."""
         # One shared bucket for the whole exit stream so ramp cars keep yielding
         # to leaders that have already handed off onto the city stop.
         if self._car_is_exit_stream():
             return ("x", int(self._car_exit_i))
+        # Climb + on-ramp peel share a corridor so a deck handoff still leads.
+        if self._car_is_enter_stream():
+            return ("r", int(self._car_exit_i))
         dx, dy = self._car_dir if (self._car_dir[0] or self._car_dir[1]) else self._car_travel_dir()
         if self._car_on_highway:
             lane = self._car_highway_lane
@@ -1439,10 +1578,22 @@ class CarController:
         self._nb_queue_index = queue_index
         self._nb_dir = (dx, dy)
         self._nb_stop = stop
-        self._nb_slot = (
+        slot = (
             stop[0] - dx * follow * queue_index,
             stop[1] - dy * follow * queue_index,
         )
+        # Exit stream: never park a queue slot past the ramp foot onto the bridge
+        # climb — those poses were at grade_top with pitch 0 and sank into the slab.
+        if self._car_is_exit_stream() and self._car_diamonds:
+            diamond = self._car_diamond()
+            into = tuple(diamond["into_city"])
+            end = diamond["ramps"]["city_end"]
+            lx, ly = self._car_lane_shift(into)
+            foot = (end[0] + lx, end[1] + ly)
+            # Toward the highway from the foot is onto the pitched arterial.
+            if (slot[0] - foot[0]) * into[0] + (slot[1] - foot[1]) * into[1] < -0.15:
+                slot = foot
+        self._nb_slot = slot
         if leader is None:
             self._nb_hold = None
             self._nb_leader_along = None
@@ -1510,11 +1661,14 @@ class CarController:
             self._car_signal = None
             self._car_apply_signals(None, True)
             return
-        self._car_wait = (
-            self._car_min_stop
-            if self._car_has_traffic_light()
-            else self._car_unsignalized_wait
-        )
+        # Highway exits already spaced on the ramp — don't hold the gateway 3s
+        # or the arterial packs bumper-to-bumper behind a single drain slot.
+        if self._car_is_exit_stream():
+            self._car_wait = self._car_min_stop
+        elif self._car_has_traffic_light():
+            self._car_wait = self._car_min_stop
+        else:
+            self._car_wait = self._car_unsignalized_wait
         self._car_pending_dir = self._car_choose_turn()
         self._car_signal = self._car_signal_side(self._car_dir, self._car_pending_dir)
         self._car_blink_t = 0.0
@@ -1586,22 +1740,27 @@ class CarController:
                 self._car_enter_highway_from_city(gateway)
                 # Keep the approach blinker through the climb onto the deck.
                 self._car_arm_turn_signal(old_dir, new_dir)
-                # Leave the city node, then climb the arterial onto the bridge deck.
+                # Leave the city node, roll the flat margin, then climb the
+                # original-length exit onto the deck. Never backtrack toward city.
                 grade = diamond.get("grade_top", self._car_grade_z)
                 city_end = diamond["ramps"]["city_end"]
+                foot = diamond["ramps"].get("exit_foot", city_end)
                 city_ix = diamond["ramps"]["city_ix"]
                 bridge_top = diamond.get("bridge_top", grade)
                 leave = self._car_exit_xy(v, h, new_dir)
-                end_xy = self._car_right_lane_xy(city_end[0], city_end[1], new_dir)
+                foot_xy = self._car_right_lane_xy(foot[0], foot[1], new_dir)
                 ix_xy = self._car_right_lane_xy(city_ix[0], city_ix[1], new_dir)
-                self._car_begin_path(
-                    [
-                        (leave[0], leave[1], grade),
-                        (end_xy[0], end_xy[1], grade),
-                        (ix_xy[0], ix_xy[1], bridge_top),
-                    ],
-                    kind="enter_deck",
+                points: list[tuple[float, float, float]] = [
+                    (leave[0], leave[1], grade),
+                ]
+                along_foot = (
+                    (foot_xy[0] - leave[0]) * new_dir[0]
+                    + (foot_xy[1] - leave[1]) * new_dir[1]
                 )
+                if along_foot > 0.5:
+                    points.append((foot_xy[0], foot_xy[1], grade))
+                points.append((ix_xy[0], ix_xy[1], bridge_top))
+                self._car_begin_path(points, kind="enter_deck")
                 return
 
         cx, cy = self._car_intersection_xy(v, h)
@@ -1664,6 +1823,7 @@ class CarController:
                 ]
                 path = self._car_shift_arterial_path(path, into, exit_i)
                 path = self._car_terminate_exit_at_city_stop(path, exit_i, into)
+                self._car_dir = into
                 self._car_begin_path(path, kind="exit_city")
                 return
             # Already on the deck facing the wrong way: U-turn, then descend
@@ -1739,6 +1899,7 @@ class CarController:
         ix_xy = self._car_right_lane_xy(city_ix[0], city_ix[1], into)
         end_xy = self._car_right_lane_xy(city_end[0], city_end[1], into)
         stop = self._car_stop_xy(diamond["city_v"], diamond["city_h"], into)
+        self._car_dir = into
         self._car_begin_path(
             [
                 (ix_xy[0], ix_xy[1], bridge_top),
@@ -1749,11 +1910,28 @@ class CarController:
         )
 
     def _place_car(self) -> None:
-        self.car.setPos(self._car_pos[0], self._car_pos[1], self._car_z)
-        self.car.setH(self._car_heading + self._car_lane_heading_bias)
-        # +X-forward body: Panda pitch is around X (roll), so grade uses roll.
-        self.car.setP(0.0)
-        self.car.setR(self._car_grade_pitch)
+        """Sync the scene-graph pose: heading, ramp grade, and surface contact.
+
+        +X-forward body: Panda roll (about Y) is nose pitch. On a grade the body
+        centre is offset along the road normal so the underside sits on the slab
+        instead of floating/clipping from a pure world-Z lift.
+        """
+        heading = self._car_heading + self._car_lane_heading_bias
+        pitch = self._car_grade_pitch
+        self.car.setHpr(heading, 0.0, pitch)
+        half = self._car_body_half_z
+        if abs(pitch) < 0.05:
+            self._car_z = self._car_surface_z + half
+            self.car.setPos(self._car_pos[0], self._car_pos[1], self._car_z)
+            return
+        # Local +Z after HPR is the road normal; park the body centre on that ray.
+        up = self.car.getQuat().xform(LVector3(0.0, 0.0, 1.0))
+        self._car_z = self._car_surface_z + up[2] * half
+        self.car.setPos(
+            self._car_pos[0] + up[0] * half,
+            self._car_pos[1] + up[1] * half,
+            self._car_z,
+        )
 
     def _car_advance_speed(self, dt: float, dist: float | None = None) -> None:
         if dist is not None and dist < self._car_decel_dist:
@@ -1775,6 +1953,95 @@ class CarController:
             return True
         return along >= _CAR_FOLLOW - 0.05
 
+    def _car_path_blocked_ahead(self) -> bool:
+        """True when another car is too close ahead on the same grade slab.
+
+        Same-direction traffic uses normal follow spacing. Opposing arterial
+        cars only trigger an emergency stop on body overlap — otherwise both
+        would yield head-on and deadlock on the bridge. City-grid cars at the
+        ramp foot share Z with climbers but must not pin them forever.
+        """
+        dx, dy = self._car_travel_dir()
+        sx, sy = self._car_pos[0], self._car_pos[1]
+        my_z = self._car_surface_z
+        follow = _CAR_FOLLOW - 0.05
+        lane_tol = _CAR_LANE_TOL * 1.15
+        touch_sq = (_CAR_TOUCH - 0.05) * (_CAR_TOUCH - 0.05)
+        on_ramp_path = self._car_path_kind is not None
+        for other in self._car_cell_mates():
+            if other is self:
+                continue
+            # Grade-separated: underpass traffic must not pin bridge climbers.
+            if abs(other._car_surface_z - my_z) > 1.2:
+                continue
+            # Ramp corridors only care about other ramp/highway traffic.
+            if on_ramp_path:
+                other_ramp = (
+                    other._car_state == "path"
+                    or other._car_is_enter_stream()
+                    or other._car_is_exit_stream()
+                    or other._car_on_highway
+                )
+                if not other_ramp:
+                    continue
+            ox = other._car_pos[0] - sx
+            oy = other._car_pos[1] - sy
+            dist_sq = ox * ox + oy * oy
+            if dist_sq < 1e-8:
+                return True
+            along = ox * dx + oy * dy
+            lateral = abs(ox * -dy + oy * dx)
+            odx, ody = other._car_travel_dir()
+            same_way = dx * odx + dy * ody > 0.25
+            if same_way:
+                if 0.05 < along < follow and lateral <= lane_tol:
+                    return True
+                if dist_sq < touch_sq and along > -_CAR_LENGTH * 0.35:
+                    return True
+            elif dist_sq < touch_sq:
+                # Opposing / crossing: only stop when bodies already overlap.
+                return True
+        return False
+
+    def _car_merge_lane_clear(self, direction: tuple[int, int]) -> bool:
+        """True when the right-hand highway lane has room to accept a merge."""
+        # Peek the merge lane bucket without flipping ``_car_dir`` mid-path.
+        hx, hy = self._car_highway_lane_xy(0, direction)
+        side = self._car_diamond()["side"] if self._car_diamonds else "?"
+        dx, dy = int(direction[0]), int(direction[1])
+        key = ("h", side, 0, dx, dy)
+        sx, sy = self._car_pos[0], self._car_pos[1]
+        # Aim from the merge station so gore pose vs lane traffic compares cleanly.
+        mx, my = hx, hy
+        if self._car_diamonds:
+            ramps = self._car_diamond()["ramps"]
+            diamond = self._car_diamond()
+            ccw = tuple(direction) == tuple(diamond["ccw_dir"])
+            mkey = "merge_ccw" if ccw else "merge_cw"
+            if diamond["axis"] == "ns":
+                mx, my = hx, ramps[mkey][1]
+            else:
+                mx, my = ramps[mkey][0], hy
+        for other in _FLEET_LANES.get(key, ()):
+            if other is self:
+                continue
+            along = (other._car_pos[0] - mx) * dx + (other._car_pos[1] - my) * dy
+            if -_CAR_FOLLOW * 0.9 < along < _CAR_FOLLOW * 1.4:
+                return False
+        # Also refuse if we are still nose-to-tail with someone at our gore pose.
+        for other in self._car_cell_mates():
+            if other is self or not other._car_on_highway:
+                continue
+            if other._car_state == "path":
+                continue
+            along = (other._car_pos[0] - sx) * dx + (other._car_pos[1] - sy) * dy
+            lateral = abs(
+                (other._car_pos[0] - sx) * -dy + (other._car_pos[1] - sy) * dx
+            )
+            if lateral <= _CAR_LANE_TOL and -_CAR_FOLLOW * 0.85 < along < _CAR_FOLLOW * 1.25:
+                return False
+        return True
+
     def _car_finish_frame(self) -> None:
         """One neighbor/collision scan + scene graph sync per tick."""
         # Ramp paths are grade-separated; resolving against ground cars shoves
@@ -1791,6 +2058,8 @@ class CarController:
         # Collision resolution may zero speed; lane changes must keep rolling.
         if self._car_lane_changing:
             self._car_speed = max(self._car_speed, self._car_cruise * 0.65)
+        # Exit-queue slots sit on the pitched arterial at flat grade — restick.
+        self._car_apply_arterial_pose()
         self._place_car()
 
     def _car_task(self, task):
@@ -1805,9 +2074,9 @@ class CarController:
                 self._car_finish_path()
                 self._car_finish_frame()
                 return task.cont
-            # Exit streams yield to any same-bucket leader (still on the ramp or
-            # already queued at the city stop). Other ramp kinds only yield to
-            # live path leaders so underpass traffic does not pin climbs.
+            # Exit/enter streams yield to same-bucket leaders. Also brake for any
+            # nearby car ahead on the slab (opposing arterial traffic, deck peel)
+            # without lateral collision shoves that walk climbers off the path.
             leader = self._nb_leader
             yield_to_leader = False
             if (
@@ -1817,26 +2086,39 @@ class CarController:
             ):
                 if self._car_path_kind == "exit_city":
                     yield_to_leader = True
+                elif self._car_is_enter_stream():
+                    yield_to_leader = True
                 elif (
                     leader._car_state == "path"
                     and leader._car_exit_i == self._car_exit_i
                 ):
                     yield_to_leader = True
-            if yield_to_leader:
+            if yield_to_leader or self._car_path_blocked_ahead():
                 self._car_speed = max(0.0, self._car_speed - self._car_accel * dt)
                 if self._car_signal is not None:
                     self._car_update_signals(dt)
                 self._car_finish_frame()
                 return task.cont
-            tx, ty, tz = self._car_path[self._car_path_i]
-            dx = tx - self._car_pos[0]
-            dy = ty - self._car_pos[1]
-            dist = math.hypot(dx, dy)
-            last_exit_wp = (
-                self._car_path_kind == "exit_city"
-                and self._car_path_i >= len(self._car_path) - 1
-            )
-            if dist <= max(self._car_speed * dt, 0.08):
+
+            def path_remain() -> float:
+                """XY length from the car through the end of the polyline."""
+                if self._car_path_i >= len(self._car_path):
+                    return 0.0
+                tx, ty, _tz = self._car_path[self._car_path_i]
+                total = math.hypot(tx - self._car_pos[0], ty - self._car_pos[1])
+                for j in range(self._car_path_i, len(self._car_path) - 1):
+                    ax, ay, _az = self._car_path[j]
+                    bx, by, _bz = self._car_path[j + 1]
+                    total += math.hypot(bx - ax, by - ay)
+                return total
+
+            def arrive_waypoint(tx: float, ty: float, tz: float) -> bool:
+                """Land on a waypoint. Return False if held (exit/merge)."""
+                last_wp = self._car_path_i >= len(self._car_path) - 1
+                last_exit_wp = self._car_path_kind == "exit_city" and last_wp
+                last_merge_wp = (
+                    self._car_path_kind in ("enter_ccw", "enter_cw") and last_wp
+                )
                 # Don't snap onto the shared city stop while a leader still owns it.
                 if (
                     last_exit_wp
@@ -1844,52 +2126,87 @@ class CarController:
                     and self._nb_leader_along < _CAR_FOLLOW - 0.05
                 ):
                     self._car_speed = 0.0
-                    if self._car_signal is not None:
-                        self._car_update_signals(dt)
-                    self._car_finish_frame()
-                    return task.cont
+                    return False
+                # Highway exit: hold the city stop on red (no rolling the light).
+                if last_exit_wp and self._signals is not None:
+                    into = tuple(self._car_diamond()["into_city"])
+                    if self._signals.approach_colour(into) != "green":
+                        self._car_pos[0], self._car_pos[1] = tx, ty
+                        self._car_set_surface_z(tz)
+                        self._car_heading = math.degrees(
+                            math.atan2(into[1], into[0])
+                        )
+                        self._car_speed = 0.0
+                        return False
+                # Hold the merge gore until the highway right lane has a gap.
+                if last_merge_wp:
+                    merge_dir = (
+                        tuple(self._car_diamond()["ccw_dir"])
+                        if self._car_path_kind == "enter_ccw"
+                        else tuple(self._car_diamond()["cw_dir"])
+                    )
+                    if not self._car_merge_lane_clear(merge_dir):
+                        self._car_pos[0], self._car_pos[1] = tx, ty
+                        self._car_set_surface_z(tz)
+                        self._car_speed = 0.0
+                        return False
                 self._car_pos[0] = tx
                 self._car_pos[1] = ty
                 self._car_set_surface_z(tz)
                 self._car_path_i += 1
                 if self._car_path_i >= len(self._car_path):
                     self._car_finish_path()
-                else:
-                    nxt = self._car_path[self._car_path_i]
-                    self._car_target = (nxt[0], nxt[1])
-                    self._car_path_from_z = tz
-                    self._car_path_seg_len = max(
-                        math.hypot(nxt[0] - tx, nxt[1] - ty), 0.05,
-                    )
-                    self._car_set_grade_pitch(
-                        nxt[2] - tz, self._car_path_seg_len,
-                    )
-                if self._car_signal is not None:
-                    self._car_update_signals(dt)
-                self._car_finish_frame()
-                return task.cont
-            # Decel into the bumper gap when an exit leader is ahead.
-            limit = dist
+                    return True
+                nxt = self._car_path[self._car_path_i]
+                self._car_target = (nxt[0], nxt[1])
+                self._car_path_from_z = tz
+                self._car_path_seg_len = max(
+                    math.hypot(nxt[0] - tx, nxt[1] - ty), 0.05,
+                )
+                self._car_set_grade_pitch(nxt[2] - tz, self._car_path_seg_len)
+                return True
+
+            # Decel against remaining path length — never against intermediate
+            # waypoints, or densified/filleted ramps stutter every metre.
+            limit = path_remain()
             if (
                 self._car_path_kind == "exit_city"
                 and self._nb_leader_along is not None
             ):
                 limit = min(limit, max(0.0, self._nb_leader_along - _CAR_GAP))
             self._car_advance_speed(dt, limit)
-            step = min(self._car_speed * dt, dist)
-            if dist > 1e-6:
-                self._car_pos[0] += dx / dist * step
-                self._car_pos[1] += dy / dist * step
-                self._car_heading = math.degrees(math.atan2(dy, dx))
-            remain = math.hypot(tx - self._car_pos[0], ty - self._car_pos[1])
-            frac = 1.0 - min(1.0, remain / self._car_path_seg_len)
-            # Stay glued to the pitched slab; nose follows the grade.
-            self._car_set_surface_z(
-                self._car_path_from_z + (tz - self._car_path_from_z) * frac
-            )
-            self._car_set_grade_pitch(
-                tz - self._car_path_from_z, self._car_path_seg_len,
-            )
+            budget = self._car_speed * dt
+            # Spend the whole step across as many waypoints as needed so arriving
+            # at a corner doesn't burn the rest of the frame.
+            while (
+                budget > 1e-6
+                and self._car_state == "path"
+                and self._car_path
+                and self._car_path_i < len(self._car_path)
+            ):
+                tx, ty, tz = self._car_path[self._car_path_i]
+                dx = tx - self._car_pos[0]
+                dy = ty - self._car_pos[1]
+                dist = math.hypot(dx, dy)
+                if dist <= max(budget, 0.04):
+                    if not arrive_waypoint(tx, ty, tz):
+                        break
+                    budget -= dist
+                    continue
+                step = min(budget, dist)
+                if dist > 1e-6:
+                    self._car_pos[0] += dx / dist * step
+                    self._car_pos[1] += dy / dist * step
+                    self._car_heading = math.degrees(math.atan2(dy, dx))
+                remain = math.hypot(tx - self._car_pos[0], ty - self._car_pos[1])
+                frac = 1.0 - min(1.0, remain / self._car_path_seg_len)
+                self._car_set_surface_z(
+                    self._car_path_from_z + (tz - self._car_path_from_z) * frac
+                )
+                self._car_set_grade_pitch(
+                    tz - self._car_path_from_z, self._car_path_seg_len,
+                )
+                budget = 0.0
             if self._car_signal is not None:
                 self._car_update_signals(dt)
             self._car_finish_frame()
