@@ -19,7 +19,12 @@ from city.materials import (
     mark_material,
     road_material,
 )
-from city.mesh import box_instance, make_ramp_slab, make_rhombus_slab
+from city.mesh import (
+    box_instance,
+    make_pitched_slab,
+    make_ramp_slab,
+    make_rhombus_slab,
+)
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
 
@@ -559,7 +564,133 @@ class CityApp(ShowBase):
         # Deck clears the median barrier with clear headroom for the belt below.
         bridge_clearance = hwy["bridge_clearance"]
         bridge_z = hwy["bridge_z"]
-        bridge_mark_z = bridge_z + road_thickness / 2 + 0.02
+        # Ramp / bridge dashes: same cadence as city roads, slightly narrower.
+        ramp_dash_len = 2.0
+        ramp_dash_w = 0.32
+        ramp_dash_gap = 1.0
+        ramp_dash_inset = 0.85
+
+        def paint_centerline_dashes(
+            x0: float,
+            y0: float,
+            z0: float,
+            x1: float,
+            y1: float,
+            z1: float,
+            *,
+            end_inset: float | None = None,
+            surface_z: bool = False,
+        ) -> None:
+            """Evenly spaced centerline dashes along a flat or pitched run.
+
+            ``z0``/``z1`` are slab centres unless ``surface_z`` (polyline tops).
+            Skips runs too short for a full dash so joints don't get a cramped
+            leftover mark stacked on the next slab.
+            """
+            dx = x1 - x0
+            dy = y1 - y0
+            dz = z1 - z0
+            length_xy = math.hypot(dx, dy)
+            if length_xy < 0.05:
+                return
+            hyp = math.hypot(length_xy, dz)
+            inset = ramp_dash_inset if end_inset is None else max(0.0, end_inset)
+            usable = hyp - 2.0 * inset
+            if usable < ramp_dash_len * 0.9:
+                return
+            step = ramp_dash_len + ramp_dash_gap
+            count = int((usable + ramp_dash_gap) / step)
+            if count < 1:
+                return
+            span = count * ramp_dash_len + (count - 1) * ramp_dash_gap
+            start_s = inset + (usable - span) * 0.5
+            heading = math.degrees(math.atan2(dy, dx))
+            pitch = math.degrees(math.atan2(dz, length_xy))
+            lift = 0.02 if surface_z else road_thickness / 2 + 0.02
+            for index in range(count):
+                s = start_s + index * step + ramp_dash_len * 0.5
+                t = s / hyp
+                mark = box_instance(
+                    self.highway, ramp_dash_w, ramp_dash_len, mark_h,
+                )
+                mark.setPos(
+                    x0 + dx * t,
+                    y0 + dy * t,
+                    z0 + dz * t + lift,
+                )
+                # Length along local +Y so setP pitches the dash onto the slab.
+                mark.setH(heading - 90.0)
+                mark.setP(pitch)
+                mark.setMaterial(slip_paint, 1)
+
+        def add_polyline_centerline_marks(
+            centerline: list[tuple[float, float, float]],
+            *,
+            end_inset: float | None = None,
+        ) -> None:
+            """One dash pattern across an arterial polyline (no joint stacks)."""
+            if len(centerline) < 2:
+                return
+            inset = ramp_dash_inset if end_inset is None else max(0.0, end_inset)
+            # Flatten to arc-length stations on the surface polyline.
+            n = len(centerline)
+            dist = [0.0] * n
+            for i in range(1, n):
+                dist[i] = dist[i - 1] + math.hypot(
+                    centerline[i][0] - centerline[i - 1][0],
+                    centerline[i][1] - centerline[i - 1][1],
+                    centerline[i][2] - centerline[i - 1][2],
+                )
+            total = dist[-1]
+            usable = total - 2.0 * inset
+            if usable < ramp_dash_len * 0.9:
+                return
+            step = ramp_dash_len + ramp_dash_gap
+            count = int((usable + ramp_dash_gap) / step)
+            if count < 1:
+                return
+            span = count * ramp_dash_len + (count - 1) * ramp_dash_gap
+            start_s = inset + (usable - span) * 0.5
+
+            def sample(station: float) -> tuple[
+                tuple[float, float, float], tuple[float, float, float],
+            ]:
+                """Point + unit tangent (xyz) at arc length ``station``."""
+                s = max(0.0, min(total, station))
+                for i in range(1, n):
+                    if dist[i] + 1e-9 < s:
+                        continue
+                    span_i = dist[i] - dist[i - 1]
+                    ax, ay, az = centerline[i - 1]
+                    bx, by, bz = centerline[i]
+                    if span_i < 1e-9:
+                        return (ax, ay, az), (1.0, 0.0, 0.0)
+                    t = (s - dist[i - 1]) / span_i
+                    dx, dy, dz = bx - ax, by - ay, bz - az
+                    inv = 1.0 / span_i
+                    return (
+                        (ax + dx * t, ay + dy * t, az + dz * t),
+                        (dx * inv, dy * inv, dz * inv),
+                    )
+                ax, ay, az = centerline[-1]
+                bx, by, bz = centerline[-2]
+                dx, dy, dz = ax - bx, ay - by, az - bz
+                length = math.hypot(dx, dy, dz) or 1.0
+                return (ax, ay, az), (dx / length, dy / length, dz / length)
+
+            for index in range(count):
+                s = start_s + index * step + ramp_dash_len * 0.5
+                (px, py, pz), (tx, ty, tz) = sample(s)
+                length_xy = math.hypot(tx, ty) or 1.0
+                heading = math.degrees(math.atan2(ty, tx))
+                pitch = math.degrees(math.atan2(tz, length_xy))
+                mark = box_instance(
+                    self.highway, ramp_dash_w, ramp_dash_len, mark_h,
+                )
+                mark.setPos(px, py, pz + 0.02)
+                mark.setH(heading - 90.0)
+                mark.setP(pitch)
+                mark.setMaterial(slip_paint, 1)
 
         def add_slip_segment(
             x0: float,
@@ -568,9 +699,10 @@ class CityApp(ShowBase):
             y1: float,
             width: float,
             z: float = road_z,
-            mark_z_pos: float | None = None,
+            *,
+            marks: bool = True,
         ) -> None:
-            """Angled asphalt slab with a few centerline dashes."""
+            """Angled asphalt slab; optional centerline dashes."""
             dx = x1 - x0
             dy = y1 - y0
             length = math.hypot(dx, dy)
@@ -583,18 +715,8 @@ class CityApp(ShowBase):
             pad.setPos(cx, cy, z)
             pad.setH(heading)
             pad.setMaterial(road_mat, 1)
-            mz = bridge_mark_z if mark_z_pos is None and abs(z - bridge_z) < 1e-6 else (
-                mark_z if mark_z_pos is None else mark_z_pos
-            )
-            mark_len = 1.6
-            mark_w = 0.35
-            count = max(1, int((length + 1.0) / 3.2))
-            for index in range(count):
-                t = (index + 0.5) / count
-                mark = box_instance(self.highway, mark_len, mark_w, mark_h)
-                mark.setPos(x0 + dx * t, y0 + dy * t, mz)
-                mark.setH(heading)
-                mark.setMaterial(slip_paint, 1)
+            if marks:
+                paint_centerline_dashes(x0, y0, z, x1, y1, z)
 
         def add_slant_ramp(
             x0: float,
@@ -606,10 +728,12 @@ class CityApp(ShowBase):
             width: float,
             *,
             rails: bool = True,
+            marks: bool = True,
             rail_start_inset: float = 0.0,
             rail_end_inset: float = 0.0,
             rail_gap_t: float | None = None,
             rail_gap_half: float = 0.0,
+            end_miter_along: tuple[float, float] | None = None,
         ) -> None:
             """Sloped ramp with vertical end caps that butt to a flat deck.
 
@@ -618,6 +742,8 @@ class CityApp(ShowBase):
             ``(x0,y0)`` / ``(x1,y1)`` ends so they clear merges and the deck joint.
             ``rail_gap_t`` (0..1 along the slab) opens both curb rails so a
             diamond slip can meet the arterial without a barrier across the mouth.
+            ``end_miter_along`` cuts the ``(x1,y1)`` end parallel to that XY
+            direction so a slip can T-junction into an arterial curb.
             """
             dx = x1 - x0
             dy = y1 - y0
@@ -625,14 +751,20 @@ class CityApp(ShowBase):
             length_xy = math.hypot(dx, dy)
             if length_xy < 0.05:
                 return
-            hyp = math.hypot(length_xy, dz)
             heading = math.degrees(math.atan2(dy, dx))
-            pitch = math.degrees(math.atan2(dz, length_xy))
-            pad = self.highway.attachNewNode(
-                make_ramp_slab(length_xy, width, road_thickness, dz)
-            )
-            pad.setPos((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)
-            pad.setH(heading - 90.0)
+            if end_miter_along is not None:
+                pad = self.highway.attachNewNode(
+                    make_pitched_slab(
+                        x0, y0, z0, x1, y1, z1, width, road_thickness,
+                        end1_along=end_miter_along,
+                    )
+                )
+            else:
+                pad = self.highway.attachNewNode(
+                    make_ramp_slab(length_xy, width, road_thickness, dz)
+                )
+                pad.setPos((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)
+                pad.setH(heading - 90.0)
             pad.setMaterial(road_mat, 1)
             if rails:
                 # One continuous curb wall per run (split only for slip mouths).
@@ -677,20 +809,16 @@ class CityApp(ShowBase):
                                 rail_w=rail_w,
                                 rail_h=rail_h,
                             )
-            mark_len = 1.6
-            mark_w = 0.35
-            count = max(1, int((hyp + 1.0) / 3.2))
-            for index in range(count):
-                t = (index + 0.5) / count
-                mark = box_instance(self.highway, mark_w, mark_len, mark_h)
-                mark.setPos(
-                    x0 + dx * t,
-                    y0 + dy * t,
-                    z0 + dz * t + road_thickness / 2 + 0.02,
+            if marks:
+                # Keep dashes clear of the arterial T and the grade merge.
+                paint_centerline_dashes(
+                    x0, y0, z0, x1, y1, z1,
+                    end_inset=max(
+                        ramp_dash_inset,
+                        rail_start_inset * 0.5,
+                        rail_end_inset * 0.45,
+                    ),
                 )
-                mark.setH(heading - 90.0)
-                mark.setP(pitch)
-                mark.setMaterial(slip_paint, 1)
 
         def add_border_run(
             x0: float,
@@ -835,7 +963,11 @@ class CityApp(ShowBase):
             width: float,
             pier_points: tuple[tuple[float, float], ...] = (),
         ) -> None:
-            """Elevated arterial deck over the highway; pier on the median."""
+            """Elevated arterial deck over the highway; pier on the median.
+
+            Centerline paint comes from ``add_polyline_centerline_marks`` so the
+            deck does not restack dashes on top of the terrace pads.
+            """
             dx = x1 - x0
             dy = y1 - y0
             length = math.hypot(dx, dy)
@@ -850,16 +982,6 @@ class CityApp(ShowBase):
             deck.setPos(cx, cy, bridge_z)
             deck.setH(heading)
             deck.setMaterial(road_mat, 1)
-            # Rails come from the unified arterial border polyline.
-            mark_len = 1.6
-            mark_w = 0.35
-            count = max(1, int((length + 1.0) / 3.2))
-            for index in range(count):
-                t = (index + 0.5) / count
-                mark = box_instance(self.highway, mark_len, mark_w, mark_h)
-                mark.setPos(x0 + dx * t, y0 + dy * t, bridge_z + deck_h / 2 + 0.02)
-                mark.setH(heading)
-                mark.setMaterial(slip_paint, 1)
             pier_w = min(width * 0.7, plan.barrier_w * 4.0)
             # Keep the column and its cap entirely under the deck underside.
             deck_bottom = bridge_z - deck_h / 2
@@ -921,9 +1043,9 @@ class CityApp(ShowBase):
         def add_diamond_interchange(diamond: dict) -> None:
             """Classic diamond: elevated cross street + four diagonal ramps.
 
-            Slips climb to lateral join points on the pitched arterial (not the
-            bridge corner), so three full-width slabs never share one abutment.
-            Endpoints come from ``CityPlan._annotate_diamond_ramps``.
+            Arterial profile is climb → flat join terrace (\\___/) → bridge so
+            slips T-junction onto a level pad at deck height. Endpoints from
+            ``CityPlan._annotate_diamond_ramps``.
             """
             hx = diamond["hx"]
             hy = diamond["hy"]
@@ -945,8 +1067,17 @@ class CityApp(ShowBase):
             outer_end = ramps["outer_end"]
             city_throat = ramps["city_throat"]
             outer_throat = ramps["outer_throat"]
+            city_flat_lo = ramps.get("city_flat_lo", city_throat)
+            city_flat_hi = ramps.get("city_flat_hi", city_ix)
+            outer_flat_lo = ramps.get("outer_flat_lo", outer_throat)
+            outer_flat_hi = ramps.get("outer_flat_hi", outer_ix)
             # Open the unified arterial border at each slip mouth.
             join_gap_half = max(slip_w * 0.95, rw * 0.7)
+            # Arterial tangent — slip ends miter flush into this curb line.
+            if side in ("west", "east"):
+                arterial_along = (1.0, 0.0)
+            else:
+                arterial_along = (0.0, 1.0)
 
             def add_ramp_pair(
                 throat: tuple[float, float],
@@ -959,40 +1090,75 @@ class CityApp(ShowBase):
                 peel_b: tuple[float, float],
             ) -> None:
                 add_diamond_lawn(throat, start_a, start_b)
-                # Grade merges hugging the curb, then pitched climbs to the joins.
+                # Grade merges hugging the curb, then pitched climbs into the curb.
                 add_slip_segment(
                     start_a[0], start_a[1], peel_a[0], peel_a[1], slip_w,
                 )
                 add_slip_segment(
                     start_b[0], start_b[1], peel_b[0], peel_b[1], slip_w,
                 )
+                # T-junction into the flat terrace curb (\___/). Centreline ends
+                # just inside the asphalt; end face mitered to the arterial.
+                curb_out = rw * 0.5 - 0.12
+
+                def curb_landing(join: tuple[float, float]) -> tuple[float, float]:
+                    tx, ty = throat
+                    dx = join[0] - tx
+                    dy = join[1] - ty
+                    dist = math.hypot(dx, dy)
+                    if dist < 1e-6:
+                        return join
+                    return (tx + dx / dist * curb_out, ty + dy / dist * curb_out)
+
+                land_a = curb_landing(join_a)
+                land_b = curb_landing(join_b)
                 # Stop slip rails short of the arterial so mouths stay clear.
                 add_slant_ramp(
                     peel_a[0], peel_a[1], road_z,
-                    join_a[0], join_a[1], z_join, slip_w,
+                    land_a[0], land_a[1], z_join, slip_w,
                     rail_start_inset=rw * 0.15,
-                    rail_end_inset=max(rw * 0.55, slip_w * 0.7),
+                    rail_end_inset=max(rw * 0.4, slip_w * 0.5),
+                    end_miter_along=arterial_along,
                 )
                 add_slant_ramp(
                     peel_b[0], peel_b[1], road_z,
-                    join_b[0], join_b[1], z_join, slip_w,
+                    land_b[0], land_b[1], z_join, slip_w,
                     rail_start_inset=rw * 0.15,
-                    rail_end_inset=max(rw * 0.55, slip_w * 0.7),
+                    rail_end_inset=max(rw * 0.4, slip_w * 0.5),
+                    end_miter_along=arterial_along,
                 )
-                # Short elevated aprons from each join onto the arterial throat.
+                # Short flat aprons on the terrace — same Z as the deck pad.
+                # No dashes: too short, and they'd collide with arterial paint.
                 apron_w = min(slip_w * 0.85, rw * 0.7)
                 add_slip_segment(
-                    join_a[0], join_a[1], throat[0], throat[1], apron_w, z=z_join,
+                    land_a[0], land_a[1], throat[0], throat[1], apron_w,
+                    z=z_join, marks=False,
                 )
                 add_slip_segment(
-                    join_b[0], join_b[1], throat[0], throat[1], apron_w, z=z_join,
+                    land_b[0], land_b[1], throat[0], throat[1], apron_w,
+                    z=z_join, marks=False,
                 )
 
             def add_arterial_corridor(
                 pier: tuple[float, float],
             ) -> None:
-                """Road slabs without rails, then one shared curb polyline."""
-                # Flat grade covers city_margin; climb keeps original exit length.
+                """Climb → flat join terrace (\\___/) → bridge → terrace → descend."""
+
+                def _overlap_joint(
+                    joint: tuple[float, float],
+                    into_flat: tuple[float, float],
+                    inset: float = 0.45,
+                ) -> tuple[float, float]:
+                    """Nudge a climb/descend end into the flat so end caps stay buried."""
+                    dx = into_flat[0] - joint[0]
+                    dy = into_flat[1] - joint[1]
+                    dist = math.hypot(dx, dy) or 1.0
+                    t = min(inset / dist, 0.2)
+                    return (joint[0] + dx * t, joint[1] + dy * t)
+
+                # City side: flat through the gateway, then climb to the deck
+                # terrace. Overlap the climb/flat joint so end caps stay buried.
+                # Asphalt only here — dashes painted once on the full polyline.
                 if math.hypot(
                     exit_foot[0] - city_end[0], exit_foot[1] - city_end[1],
                 ) > 0.5:
@@ -1000,54 +1166,99 @@ class CityApp(ShowBase):
                         city_end[0], city_end[1],
                         exit_foot[0], exit_foot[1],
                         rw,
+                        marks=False,
                     )
+                city_joint = _overlap_joint(city_flat_lo, city_ix)
                 add_slant_ramp(
                     exit_foot[0], exit_foot[1], road_z,
-                    city_ix[0], city_ix[1], bridge_z, rw,
+                    city_joint[0], city_joint[1], bridge_z, rw,
                     rails=False,
+                    marks=False,
                 )
+                if math.hypot(
+                    city_ix[0] - city_flat_lo[0], city_ix[1] - city_flat_lo[1],
+                ) > 0.5:
+                    add_slip_segment(
+                        city_flat_lo[0], city_flat_lo[1],
+                        city_ix[0], city_ix[1],
+                        rw, z=bridge_z, marks=False,
+                    )
                 add_bridge_span(
                     city_ix[0], city_ix[1],
                     outer_ix[0], outer_ix[1],
                     rw,
                     pier_points=(pier,),
                 )
+                # Outer side: level pad past the slip mouth, then descend.
+                if math.hypot(
+                    outer_flat_lo[0] - outer_ix[0], outer_flat_lo[1] - outer_ix[1],
+                ) > 0.5:
+                    add_slip_segment(
+                        outer_ix[0], outer_ix[1],
+                        outer_flat_lo[0], outer_flat_lo[1],
+                        rw, z=bridge_z, marks=False,
+                    )
+                outer_joint = _overlap_joint(outer_flat_lo, outer_ix)
                 add_slant_ramp(
-                    outer_ix[0], outer_ix[1], bridge_z,
+                    outer_joint[0], outer_joint[1], bridge_z,
                     outer_end[0], outer_end[1], road_z, rw,
                     rails=False,
+                    marks=False,
                 )
-                centerline = [
+                raw_centerline = [
                     (city_end[0], city_end[1], grade_top),
                     (exit_foot[0], exit_foot[1], grade_top),
+                    (city_flat_lo[0], city_flat_lo[1], city_join_top),
                     (city_throat[0], city_throat[1], city_join_top),
+                    (city_flat_hi[0], city_flat_hi[1], city_join_top),
                     (city_ix[0], city_ix[1], bridge_top),
                     (outer_ix[0], outer_ix[1], bridge_top),
+                    (outer_flat_hi[0], outer_flat_hi[1], outer_join_top),
                     (outer_throat[0], outer_throat[1], outer_join_top),
+                    (outer_flat_lo[0], outer_flat_lo[1], outer_join_top),
                     (outer_end[0], outer_end[1], grade_top),
                 ]
-                # Arc-length stations of the two slip mouths along that polyline.
-                d_city = math.hypot(
-                    city_throat[0] - city_end[0], city_throat[1] - city_end[1],
-                )
-                d_outer = (
-                    d_city
-                    + math.hypot(
-                        city_ix[0] - city_throat[0], city_ix[1] - city_throat[1],
+                # Drop near-zero spans (foot may equal city_end) so border walls
+                # don't get a zero-length run and stand up as a vertical slab.
+                centerline: list[tuple[float, float, float]] = [raw_centerline[0]]
+                throat_stations: list[float] = []
+                dist = 0.0
+                for pt in raw_centerline[1:]:
+                    step = math.hypot(
+                        pt[0] - centerline[-1][0], pt[1] - centerline[-1][1],
                     )
-                    + math.hypot(
-                        outer_ix[0] - city_ix[0], outer_ix[1] - city_ix[1],
-                    )
-                    + math.hypot(
-                        outer_throat[0] - outer_ix[0], outer_throat[1] - outer_ix[1],
-                    )
-                )
+                    if step < 0.35:
+                        # Keep the later point's Z if we collapse a duplicate XY.
+                        centerline[-1] = (pt[0], pt[1], pt[2])
+                        continue
+                    dist += step
+                    centerline.append(pt)
+                    if (
+                        abs(pt[0] - city_throat[0]) < 1e-6
+                        and abs(pt[1] - city_throat[1]) < 1e-6
+                    ):
+                        throat_stations.append(dist)
+                    if (
+                        abs(pt[0] - outer_throat[0]) < 1e-6
+                        and abs(pt[1] - outer_throat[1]) < 1e-6
+                    ):
+                        throat_stations.append(dist)
+                if len(throat_stations) < 2:
+                    # Fallback: approximate mouths from terrace midpoints.
+                    throat_stations = [
+                        dist * 0.25,
+                        dist * 0.75,
+                    ]
                 add_polyline_borders(
                     centerline,
                     rw,
-                    gap_stations=(d_city, d_outer),
+                    gap_stations=tuple(throat_stations[:2]),
                     gap_half=join_gap_half,
                     end_inset=rw * 0.12,
+                )
+                add_polyline_centerline_marks(
+                    centerline,
+                    end_inset=max(ramp_dash_inset, rw * 0.2),
                 )
 
             if side == "west":

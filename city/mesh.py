@@ -212,6 +212,120 @@ def make_ramp_slab(
     return node
 
 
+def make_pitched_slab(
+    x0: float,
+    y0: float,
+    z0: float,
+    x1: float,
+    y1: float,
+    z1: float,
+    width: float,
+    thickness: float,
+    *,
+    end0_along: tuple[float, float] | None = None,
+    end1_along: tuple[float, float] | None = None,
+) -> GeomNode:
+    """World-space road slab along a centreline with vertical thickness.
+
+    ``z0`` / ``z1`` are slab-centre heights. Optional ``end*_along`` sets that
+    end's edge direction in XY (miter); default is square to the centreline.
+    Place the node at the origin — corners are already in world coordinates.
+    """
+    if width <= 0.0 or thickness <= 0.0:
+        raise ValueError("pitched slab dimensions must be positive")
+    dx = x1 - x0
+    dy = y1 - y0
+    length = math.hypot(dx, dy)
+    if length < 1e-6:
+        raise ValueError("pitched slab centreline must have length")
+    ux, uy = dx / length, dy / length
+    nx, ny = -uy, ux
+    hw = width / 2.0
+    ht = thickness / 2.0
+
+    def unit(vec: tuple[float, float]) -> tuple[float, float]:
+        vx, vy = vec
+        mag = math.hypot(vx, vy) or 1.0
+        return (vx / mag, vy / mag)
+
+    def rail_hit(
+        side: float,
+        end_x: float,
+        end_y: float,
+        along: tuple[float, float] | None,
+    ) -> tuple[float, float]:
+        ox = x0 + side * hw * nx
+        oy = y0 + side * hw * ny
+        if along is None:
+            return (end_x + side * hw * nx, end_y + side * hw * ny)
+        ex, ey = unit(along)
+        cross = ux * ey - uy * ex
+        if abs(cross) < 1e-8:
+            return (end_x + side * hw * nx, end_y + side * hw * ny)
+        t = ((end_x - ox) * ey - (end_y - oy) * ex) / cross
+        return (ox + t * ux, oy + t * uy)
+
+    def corner_z(cx: float, cy: float) -> float:
+        along = (cx - x0) * ux + (cy - y0) * uy
+        t = max(0.0, min(1.0, along / length))
+        return (z0 + (z1 - z0) * t) + ht
+
+    # CCW from above: start-left, start-right, end-right, end-left.
+    sl = rail_hit(1.0, x0, y0, end0_along)
+    sr = rail_hit(-1.0, x0, y0, end0_along)
+    er = rail_hit(-1.0, x1, y1, end1_along)
+    el = rail_hit(1.0, x1, y1, end1_along)
+    top = (
+        (sl[0], sl[1], corner_z(*sl)),
+        (sr[0], sr[1], corner_z(*sr)),
+        (er[0], er[1], corner_z(*er)),
+        (el[0], el[1], corner_z(*el)),
+    )
+    bot = tuple((x, y, z - thickness) for x, y, z in top)
+    top_n = face_normal(top[0], top[1], top[2])
+    bot_n = (-top_n[0], -top_n[1], -top_n[2])
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("pitched_slab", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    def add_face(
+        corners: tuple[tuple[float, float, float], ...],
+        nrm: tuple[float, float, float],
+    ) -> None:
+        base = vertex.getWriteRow()
+        for corner in corners:
+            vertex.addData3(*corner)
+            normal.addData3(*nrm)
+        tris.addVertices(base, base + 1, base + 2)
+        tris.addVertices(base, base + 2, base + 3)
+
+    add_face(top, top_n)
+    add_face((bot[0], bot[3], bot[2], bot[1]), bot_n)
+
+    def add_wall(
+        a: tuple[float, float, float],
+        b: tuple[float, float, float],
+        c: tuple[float, float, float],
+        d: tuple[float, float, float],
+    ) -> None:
+        add_face((a, b, c, d), face_normal(a, b, c))
+
+    add_wall(bot[0], bot[1], top[1], top[0])
+    add_wall(bot[1], bot[2], top[2], top[1])
+    add_wall(bot[2], bot[3], top[3], top[2])
+    add_wall(bot[3], bot[0], top[0], top[3])
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("pitched_slab")
+    node.addGeom(geom)
+    return node
+
+
 def make_rhombus_slab(
     vertices: tuple[tuple[float, float], ...],
     thickness: float,

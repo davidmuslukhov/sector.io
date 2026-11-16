@@ -217,8 +217,12 @@ class CityPlan:
         # Narrower than the arterial so two slips + deck don't share one volume.
         slip_w = rw * 0.62
         deck_clear = rw * 0.55
-        # Slips land on the pitched arterial before the bridge corner.
-        join_frac = 0.42
+        # Slips land on a flat terrace (\___/): climb, level pad, then bridge.
+        join_frac = 0.30
+        # Half-length hint for the level join pad (slip mouth width).
+        terrace_half = max(rw * 1.15, slip_w * 1.55)
+        # Flat grade run from the city gateway before the climb starts.
+        approach_flat = max(rw * 2.4, slip_w * 3.2)
         return {
             "opening_half": opening_half,
             "along": along,
@@ -230,6 +234,8 @@ class CityPlan:
             "slip_w": slip_w,
             "deck_clear": deck_clear,
             "join_frac": join_frac,
+            "terrace_half": terrace_half,
+            "approach_flat": approach_flat,
             "bridge_clearance": self.barrier_h + 2.8,
         }
 
@@ -252,10 +258,9 @@ class CityPlan:
     ) -> None:
         """Attach ramp endpoints and enter/exit waypoint routes to ``diamond``.
 
-        ``city_margin`` is the extra belt clearance beyond the original exit
-        footprint. Exit climb / slip joins use ``exit_foot`` (margin toward the
-        highway from ``city_end``) so diamond dimensions stay unchanged; the
-        margin itself is a flat grade connector to the city street.
+        ``city_margin`` keeps belt keepouts clear of city fabric. City approach
+        stays flat through the gateway, then climbs to a deck-height join terrace
+        (\\___/) for the slip mouths.
         """
         m = self.diamond_ramp_metrics(highway_width)
         along = m["along"]
@@ -264,21 +269,25 @@ class CityPlan:
         abut = m["abut"]
         curb = m["curb"]
         join_frac = m["join_frac"]
+        terrace_half = m["terrace_half"]
+        approach_flat = m["approach_flat"]
         slip_w = m["slip_w"]
         bridge_z = road_z + m["bridge_clearance"]
         grade_top = road_z + road_thickness / 2
         bridge_top = bridge_z + road_thickness / 2
-        # Slab-centre / surface Z where slips meet the pitched arterial.
-        city_join_z = bridge_z + (road_z - bridge_z) * join_frac
-        outer_join_z = city_join_z
-        city_join_top = bridge_top + (grade_top - bridge_top) * join_frac
-        outer_join_top = city_join_top
+        # Flat terrace at deck height so slips T-junction onto the same level
+        # pad as the bridge (\__________/), not mid-slope.
+        city_join_z = bridge_z
+        outer_join_z = bridge_z
+        city_join_top = bridge_top
+        outer_join_top = bridge_top
         hx = diamond["hx"]
         hy = diamond["hy"]
         side = diamond["side"]
         rw = self.road_width
         lat = slip_w * 0.52
         margin = max(0.0, float(city_margin))
+        rise = abs(bridge_z - road_z)
 
         def lerp2(
             a: tuple[float, float], b: tuple[float, float], t: float,
@@ -288,45 +297,96 @@ class CityPlan:
         def exit_foot(
             city_end: tuple[float, float], toward_hwy: tuple[float, float],
         ) -> tuple[float, float]:
-            """Climb starts here — original exit length from the belt abutment."""
+            """Climb starts after a flat grade approach from the city curb.
+
+            Keeps the gateway intersection on level road; climb/terrace still
+            fit between the foot and the belt abutment.
+            """
+            flat = max(approach_flat, min(margin, rw * 4.0) if margin > 0.5 else approach_flat)
             return (
-                city_end[0] + toward_hwy[0] * margin,
-                city_end[1] + toward_hwy[1] * margin,
+                city_end[0] + toward_hwy[0] * flat,
+                city_end[1] + toward_hwy[1] * flat,
+            )
+
+        def terrace_ends(
+            bridge_pt: tuple[float, float],
+            grade_pt: tuple[float, float],
+        ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+            """Throat + flat pad ends on climb ``bridge_pt`` → ``grade_pt``.
+
+            Returns ``(flat_hi, throat, flat_lo)`` where hi is bridge-ward and lo
+            is grade-ward. Profile is climb then level (\\___/): keep enough run
+            for a ~25–35% grade, and a flat long enough for the slip mouth.
+            """
+            climb = math.hypot(
+                grade_pt[0] - bridge_pt[0], grade_pt[1] - bridge_pt[1],
+            )
+            climb = max(climb, 0.1)
+            # Prefer a drivable climb; leftover length becomes the join terrace.
+            min_climb = min(climb * 0.62, max(rise / 0.28, rw * 2.4))
+            flat_need = max(rw * 1.35, slip_w * 1.9, terrace_half * 0.85)
+            flat_len = max(climb - min_climb, min(flat_need, climb * 0.45))
+            if flat_len + min_climb > climb:
+                flat_len = max(0.0, climb - min_climb)
+            if flat_len < rw * 0.9:
+                # Short arterial: shrink climb before giving up the slip pad.
+                flat_len = min(max(rw * 1.1, slip_w * 1.5), climb * 0.48)
+                min_climb = climb - flat_len
+            t_lo = flat_len / climb
+            # Throat sits mid-flat, clear of the climb kink and the abutment.
+            t_throat = min(max(join_frac * t_lo, t_lo * 0.42), t_lo * 0.62)
+            t_hi = max(0.03, min(t_throat * 0.45, t_throat - 0.04))
+            return (
+                lerp2(bridge_pt, grade_pt, t_hi),
+                lerp2(bridge_pt, grade_pt, t_throat),
+                lerp2(bridge_pt, grade_pt, t_lo),
             )
 
         def attach_ew_joins(
             ramps: dict,
             city_ix: tuple[float, float],
-            city_end: tuple[float, float],
+            foot: tuple[float, float],
             outer_ix: tuple[float, float],
             outer_end: tuple[float, float],
         ) -> None:
             """Arterial along X — lateral joins north/south of the throat."""
-            city_throat = lerp2(city_ix, city_end, join_frac)
-            outer_throat = lerp2(outer_ix, outer_end, join_frac)
+            city_flat_hi, city_throat, city_flat_lo = terrace_ends(city_ix, foot)
+            outer_flat_hi, outer_throat, outer_flat_lo = terrace_ends(
+                outer_ix, outer_end,
+            )
             ramps["city_throat"] = city_throat
             ramps["city_join_n"] = (city_throat[0], city_throat[1] + lat)
             ramps["city_join_s"] = (city_throat[0], city_throat[1] - lat)
+            ramps["city_flat_lo"] = city_flat_lo
+            ramps["city_flat_hi"] = city_flat_hi
             ramps["outer_throat"] = outer_throat
             ramps["outer_join_n"] = (outer_throat[0], outer_throat[1] + lat)
             ramps["outer_join_s"] = (outer_throat[0], outer_throat[1] - lat)
+            ramps["outer_flat_lo"] = outer_flat_lo
+            ramps["outer_flat_hi"] = outer_flat_hi
 
         def attach_ns_joins(
             ramps: dict,
             city_ix: tuple[float, float],
-            city_end: tuple[float, float],
+            foot: tuple[float, float],
             outer_ix: tuple[float, float],
             outer_end: tuple[float, float],
         ) -> None:
             """Arterial along Y — lateral joins west/east of the throat."""
-            city_throat = lerp2(city_ix, city_end, join_frac)
-            outer_throat = lerp2(outer_ix, outer_end, join_frac)
+            city_flat_hi, city_throat, city_flat_lo = terrace_ends(city_ix, foot)
+            outer_flat_hi, outer_throat, outer_flat_lo = terrace_ends(
+                outer_ix, outer_end,
+            )
             ramps["city_throat"] = city_throat
             ramps["city_join_w"] = (city_throat[0] - lat, city_throat[1])
             ramps["city_join_e"] = (city_throat[0] + lat, city_throat[1])
+            ramps["city_flat_lo"] = city_flat_lo
+            ramps["city_flat_hi"] = city_flat_hi
             ramps["outer_throat"] = outer_throat
             ramps["outer_join_w"] = (outer_throat[0] - lat, outer_throat[1])
             ramps["outer_join_e"] = (outer_throat[0] + lat, outer_throat[1])
+            ramps["outer_flat_lo"] = outer_flat_lo
+            ramps["outer_flat_hi"] = outer_flat_hi
 
         if side == "west":
             city_end = (diamond["city_x"] - curb, hy)
@@ -370,12 +430,14 @@ class CityPlan:
                 (*ramps["inner_s1"], grade_top),
                 (*ramps["city_join_s"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
                 (*ramps["city_join_n"], city_join_top),
                 (*ramps["inner_n1"], grade_top),
@@ -386,16 +448,22 @@ class CityPlan:
                 (*ramps["outer_n1"], grade_top),
                 (*ramps["outer_join_n"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
+                (*ramps["city_flat_hi"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_cw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
+                (*ramps["city_flat_hi"], city_join_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
                 (*ramps["outer_join_s"], outer_join_top),
                 (*ramps["outer_s1"], grade_top),
@@ -441,12 +509,14 @@ class CityPlan:
                 (*ramps["inner_n1"], grade_top),
                 (*ramps["city_join_n"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
                 (*ramps["city_join_s"], city_join_top),
                 (*ramps["inner_s1"], grade_top),
@@ -457,16 +527,22 @@ class CityPlan:
                 (*ramps["outer_s1"], grade_top),
                 (*ramps["outer_join_s"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
+                (*ramps["city_flat_hi"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_cw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
+                (*ramps["city_flat_hi"], city_join_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
                 (*ramps["outer_join_n"], outer_join_top),
                 (*ramps["outer_n1"], grade_top),
@@ -512,12 +588,14 @@ class CityPlan:
                 (*ramps["inner_e1"], grade_top),
                 (*ramps["city_join_e"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
                 (*ramps["city_join_w"], city_join_top),
                 (*ramps["inner_w1"], grade_top),
@@ -528,16 +606,22 @@ class CityPlan:
                 (*ramps["outer_w1"], grade_top),
                 (*ramps["outer_join_w"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
+                (*ramps["city_flat_hi"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_cw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
+                (*ramps["city_flat_hi"], city_join_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
                 (*ramps["outer_join_e"], outer_join_top),
                 (*ramps["outer_e1"], grade_top),
@@ -583,12 +667,14 @@ class CityPlan:
                 (*ramps["inner_w1"], grade_top),
                 (*ramps["city_join_w"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_ccw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*ramps["city_throat"], city_join_top),
                 (*ramps["city_join_e"], city_join_top),
                 (*ramps["inner_e1"], grade_top),
@@ -599,16 +685,22 @@ class CityPlan:
                 (*ramps["outer_e1"], grade_top),
                 (*ramps["outer_join_e"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*outer_ix, bridge_top),
                 (*city_ix, bridge_top),
+                (*ramps["city_flat_hi"], city_join_top),
+                (*ramps["city_flat_lo"], city_join_top),
                 (*foot, grade_top),
                 (*city_end, grade_top),
             ]
             enter_cw = [
                 (*city_end, grade_top),
                 (*foot, grade_top),
+                (*ramps["city_flat_lo"], city_join_top),
+                (*ramps["city_flat_hi"], city_join_top),
                 (*city_ix, bridge_top),
                 (*outer_ix, bridge_top),
+                (*ramps["outer_flat_hi"], outer_join_top),
                 (*ramps["outer_throat"], outer_join_top),
                 (*ramps["outer_join_w"], outer_join_top),
                 (*ramps["outer_w1"], grade_top),
@@ -637,6 +729,8 @@ class CityPlan:
         diamond["slip_w"] = slip_w
         diamond["deck_clear"] = m["deck_clear"]
         diamond["join_frac"] = join_frac
+        diamond["terrace_half"] = terrace_half
+        diamond["approach_flat"] = approach_flat
         diamond["outer_reach"] = outer_reach
 
     def highway_geometry(self) -> dict[str, float | list[float]]:
