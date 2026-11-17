@@ -258,9 +258,9 @@ class CityPlan:
     ) -> None:
         """Attach ramp endpoints and enter/exit waypoint routes to ``diamond``.
 
-        ``city_margin`` keeps belt keepouts clear of city fabric. City approach
-        stays flat through the gateway, then climbs to a deck-height join terrace
-        (\\___/) for the slip mouths.
+        ``city_margin`` keeps belt keepouts clear of city fabric. Gateway→foot
+        is ordinary city approach; the elevated corridor climbs from the foot
+        to a deck-height join terrace (\\___/) for the slip mouths.
         """
         m = self.diamond_ramp_metrics(highway_width)
         along = m["along"]
@@ -285,7 +285,9 @@ class CityPlan:
         hy = diamond["hy"]
         side = diamond["side"]
         rw = self.road_width
-        lat = slip_w * 0.52
+        # Same inset as ``add_ramp_pair`` curb landings — climb ends on asphalt,
+        # not at a free lateral tip past the arterial curb.
+        curb_out = max(0.35, rw * 0.5 - 0.12)
         margin = max(0.0, float(city_margin))
         rise = abs(bridge_z - road_z)
 
@@ -342,6 +344,15 @@ class CityPlan:
                 lerp2(bridge_pt, grade_pt, t_lo),
             )
 
+        def curb_land(
+            throat: tuple[float, float], toward: tuple[float, float],
+        ) -> tuple[float, float]:
+            """Climb terminus on the arterial curb (matches mesh landings)."""
+            return (
+                throat[0] + toward[0] * curb_out,
+                throat[1] + toward[1] * curb_out,
+            )
+
         def attach_ew_joins(
             ramps: dict,
             city_ix: tuple[float, float],
@@ -349,19 +360,19 @@ class CityPlan:
             outer_ix: tuple[float, float],
             outer_end: tuple[float, float],
         ) -> None:
-            """Arterial along X — lateral joins north/south of the throat."""
+            """Arterial along X — curb-land joins north/south of the throat."""
             city_flat_hi, city_throat, city_flat_lo = terrace_ends(city_ix, foot)
             outer_flat_hi, outer_throat, outer_flat_lo = terrace_ends(
                 outer_ix, outer_end,
             )
             ramps["city_throat"] = city_throat
-            ramps["city_join_n"] = (city_throat[0], city_throat[1] + lat)
-            ramps["city_join_s"] = (city_throat[0], city_throat[1] - lat)
+            ramps["city_join_n"] = curb_land(city_throat, (0.0, 1.0))
+            ramps["city_join_s"] = curb_land(city_throat, (0.0, -1.0))
             ramps["city_flat_lo"] = city_flat_lo
             ramps["city_flat_hi"] = city_flat_hi
             ramps["outer_throat"] = outer_throat
-            ramps["outer_join_n"] = (outer_throat[0], outer_throat[1] + lat)
-            ramps["outer_join_s"] = (outer_throat[0], outer_throat[1] - lat)
+            ramps["outer_join_n"] = curb_land(outer_throat, (0.0, 1.0))
+            ramps["outer_join_s"] = curb_land(outer_throat, (0.0, -1.0))
             ramps["outer_flat_lo"] = outer_flat_lo
             ramps["outer_flat_hi"] = outer_flat_hi
 
@@ -372,19 +383,19 @@ class CityPlan:
             outer_ix: tuple[float, float],
             outer_end: tuple[float, float],
         ) -> None:
-            """Arterial along Y — lateral joins west/east of the throat."""
+            """Arterial along Y — curb-land joins west/east of the throat."""
             city_flat_hi, city_throat, city_flat_lo = terrace_ends(city_ix, foot)
             outer_flat_hi, outer_throat, outer_flat_lo = terrace_ends(
                 outer_ix, outer_end,
             )
             ramps["city_throat"] = city_throat
-            ramps["city_join_w"] = (city_throat[0] - lat, city_throat[1])
-            ramps["city_join_e"] = (city_throat[0] + lat, city_throat[1])
+            ramps["city_join_w"] = curb_land(city_throat, (-1.0, 0.0))
+            ramps["city_join_e"] = curb_land(city_throat, (1.0, 0.0))
             ramps["city_flat_lo"] = city_flat_lo
             ramps["city_flat_hi"] = city_flat_hi
             ramps["outer_throat"] = outer_throat
-            ramps["outer_join_w"] = (outer_throat[0] - lat, outer_throat[1])
-            ramps["outer_join_e"] = (outer_throat[0] + lat, outer_throat[1])
+            ramps["outer_join_w"] = curb_land(outer_throat, (-1.0, 0.0))
+            ramps["outer_join_e"] = curb_land(outer_throat, (1.0, 0.0))
             ramps["outer_flat_lo"] = outer_flat_lo
             ramps["outer_flat_hi"] = outer_flat_hi
 

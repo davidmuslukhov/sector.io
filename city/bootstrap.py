@@ -24,4 +24,9 @@ def configure() -> argparse.Namespace:
         loadPrcFileData("", "window-type offscreen")
         loadPrcFileData("", "audio-library-name null")
     loadPrcFileData("", "win-size 960 960")
+    # Sync-to-vblank can make a heavy frame feel like half FPS.
+    loadPrcFileData("", "sync-video 0")
+    # Skip MSAA — big GPU win; meshes still look the same.
+    loadPrcFileData("", "framebuffer-multisample 0")
+    loadPrcFileData("", "multisamples 0")
     return args

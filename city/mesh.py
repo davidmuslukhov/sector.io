@@ -16,8 +16,11 @@ from panda3d.core import (
 )
 
 from city.materials import (
+    bark_material,
     block_material,
     car_material,
+    foliage_material,
+    lamp_material,
     roof_material,
     square_lightness,
     square_material,
@@ -446,6 +449,116 @@ BOX_TEMPLATES: dict[tuple[float, float, float, bool, bool], NodePath] = {}
 FACTORY_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
 # Flattened blocky car mesh. Copied once per scene.
 CAR_TEMPLATE: NodePath | None = None
+TREE_TEMPLATE: NodePath | None = None
+LAMP_TEMPLATE: NodePath | None = None
+
+
+def make_sky_dome(
+    radius: float = 900.0,
+    *,
+    rings: int = 4,
+    sectors: int = 12,
+) -> GeomNode:
+    """Upper hemisphere with a zenith→horizon colour wash (no textures)."""
+    # Cool zenith, warmer wash at the horizon.
+    zenith = (0.35, 0.55, 0.85, 1.0)
+    horizon = (0.72, 0.8, 0.9, 1.0)
+    fmt = GeomVertexFormat.getV3c4()
+    vdata = GeomVertexData("sky", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    color = GeomVertexWriter(vdata, "color")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    def vert(theta: float, phi: float) -> int:
+        # theta: 0 at +Z zenith … π/2 at horizon. phi around Y-up cylinder.
+        st = math.sin(theta)
+        x = radius * st * math.cos(phi)
+        y = radius * st * math.sin(phi)
+        z = radius * math.cos(theta)
+        t = theta / (0.5 * math.pi)
+        row = vertex.getWriteRow()
+        vertex.addData3(x, y, z)
+        color.addData4(
+            zenith[0] + (horizon[0] - zenith[0]) * t,
+            zenith[1] + (horizon[1] - zenith[1]) * t,
+            zenith[2] + (horizon[2] - zenith[2]) * t,
+            1.0,
+        )
+        return row
+
+    rows: list[list[int]] = []
+    for ring in range(rings + 1):
+        theta = (0.5 * math.pi) * (ring / rings)
+        row_idx = [
+            vert(theta, (2.0 * math.pi) * (s / sectors))
+            for s in range(sectors)
+        ]
+        rows.append(row_idx)
+
+    for ring in range(rings):
+        for s in range(sectors):
+            s1 = (s + 1) % sectors
+            a = rows[ring][s]
+            b = rows[ring][s1]
+            c = rows[ring + 1][s1]
+            d = rows[ring + 1][s]
+            # Inward-facing so the camera inside sees the wash.
+            tris.addVertices(a, d, c)
+            tris.addVertices(a, c, b)
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("sky")
+    node.addGeom(geom)
+    return node
+
+
+def tree_template() -> NodePath:
+    """Simple street tree: trunk + stacked canopy. Flattened for copyTo."""
+    global TREE_TEMPLATE
+    if TREE_TEMPLATE is not None:
+        return TREE_TEMPLATE
+    root = NodePath("tree")
+    trunk = box_instance(root, 0.28, 0.28, 1.4)
+    trunk.setPos(0.0, 0.0, 0.7)
+    trunk.setMaterial(bark_material(), 1)
+    # Three staggered canopy slabs ≈ a rounded crown without a sphere mesh.
+    canopy = (
+        (1.6, 1.6, 0.7, 1.85),
+        (1.25, 1.25, 0.65, 2.35),
+        (0.85, 0.85, 0.55, 2.75),
+    )
+    leaf = foliage_material()
+    for sx, sy, sz, z in canopy:
+        crown = box_instance(root, sx, sy, sz)
+        crown.setPos(0.0, 0.0, z)
+        crown.setMaterial(leaf, 1)
+    root.flattenStrong()
+    TREE_TEMPLATE = root
+    return root
+
+
+def lamp_template() -> NodePath:
+    """Street lamp: slim pole, arm, and glowing head."""
+    global LAMP_TEMPLATE
+    if LAMP_TEMPLATE is not None:
+        return LAMP_TEMPLATE
+    root = NodePath("lamp")
+    pole_mat = lamp_material("pole")
+    head_mat = lamp_material("head")
+    pole = box_instance(root, 0.12, 0.12, 3.4)
+    pole.setPos(0.0, 0.0, 1.7)
+    pole.setMaterial(pole_mat, 1)
+    arm = box_instance(root, 0.9, 0.1, 0.1)
+    arm.setPos(0.35, 0.0, 3.35)
+    arm.setMaterial(pole_mat, 1)
+    head = box_instance(root, 0.35, 0.28, 0.18)
+    head.setPos(0.75, 0.0, 3.2)
+    head.setMaterial(head_mat, 1)
+    root.flattenStrong()
+    LAMP_TEMPLATE = root
+    return root
 
 
 def box_instance(
@@ -478,25 +591,35 @@ def factory_template(
         return cached
 
     root = NodePath("factory")
-    body = box_instance(root, sx, sy, height)
-    body.setPos(0.0, 0.0, bottom_z + height / 2)
+    # Stepped hall: lower wings + taller centre bay so it isn't one slab.
+    wing_h = height * 0.72
+    body = box_instance(root, sx, sy, wing_h)
+    body.setPos(0.0, 0.0, bottom_z + wing_h / 2)
     body.setMaterial(block_material(0.92), 1)
+    centre = box_instance(root, sx * 0.45, sy * 0.7, height)
+    centre.setPos(0.0, 0.0, bottom_z + height / 2)
+    centre.setMaterial(block_material(0.88), 1)
 
     # Cornice lip and dark roof deck on the factory hall.
     roof_z = bottom_z + height
-    cornice = box_instance(root, sx + 0.2, sy + 0.2, 0.2)
+    cornice = box_instance(root, sx * 0.5, sy * 0.75, 0.2)
     cornice.setPos(0.0, 0.0, roof_z + 0.08)
     cornice.setMaterial(block_material(0.78), 1)
-    deck = box_instance(root, sx - 0.3, sy - 0.3, 0.12)
+    deck = box_instance(root, sx * 0.42, sy * 0.62, 0.12)
     deck.setPos(0.0, 0.0, roof_z + 0.2)
     deck.setMaterial(roof_material(), 1)
+    # Lower wing roofs.
+    for sign in (-1.0, 1.0):
+        wing_roof = box_instance(root, sx * 0.28, sy + 0.15, 0.14)
+        wing_roof.setPos(sign * sx * 0.36, 0.0, bottom_z + wing_h + 0.05)
+        wing_roof.setMaterial(roof_material(), 1)
 
-    stack_size = (1.8, 1.8, 5.5)
+    stack_size = (1.5, 1.5, 5.0)
     stack_z = roof_z + 0.3 + stack_size[2] / 2
     sooty = stack_material()
-    for stack_x in (-sx / 4, 0.0, sx / 4):
+    for stack_x in (-sx / 5, sx / 5):
         stack = box_instance(root, *stack_size)
-        stack.setPos(stack_x, 0.0, stack_z)
+        stack.setPos(stack_x, sy * 0.15, stack_z)
         stack.setMaterial(sooty, 1)
 
     window_w = 0.85
@@ -540,10 +663,10 @@ def factory_template(
 
 
 def car_template() -> NodePath:
-    """Blocky blue car. Origin at the bounding-box centre; +X is forward.
+    """Sedan-ish car. Origin at the bounding-box centre; +X is forward.
 
-    Body parts are flattened; corner lamps stay named children so turn signals
-    can blink left or right without rebuilding the mesh.
+    Keeps the ~2×1 footprint used by traffic spacing. Body parts are flattened;
+    corner lamps stay named children so turn signals can blink independently.
     """
     global CAR_TEMPLATE
     if CAR_TEMPLATE is not None:
@@ -570,37 +693,56 @@ def car_template() -> NodePath:
         z: float,
         material: Material,
         name: str | None = None,
+        *,
+        pitch: float = 0.0,
     ) -> NodePath:
         box = box_instance(parent, sx, sy, sz)
         box.setPos(x, y, z)
+        if pitch:
+            box.setP(pitch)
         box.setMaterial(material, 1)
         if name is not None:
             box.setName(name)
         return box
 
-    # Lower hull and raised cabin keep the familiar 2×1×1 silhouette.
-    part(body_np, 1.7, 0.92, 0.42, 0.0, 0.0, -0.12, body)
-    part(body_np, 1.05, 0.84, 0.36, -0.05, 0.0, 0.27, body)
+    # Rocker / lower hull — slightly narrower than the shoulder line.
+    part(body_np, 1.82, 0.9, 0.28, 0.02, 0.0, -0.22, body)
+    # Shoulder / belt line, a touch wider for a less cubic read.
+    part(body_np, 1.7, 0.98, 0.22, 0.0, 0.0, -0.02, body)
+    # Cabin greenhouse, inset from the belt.
+    part(body_np, 0.88, 0.86, 0.32, -0.2, 0.0, 0.24, body)
+    # Trunk deck behind the cabin.
+    part(body_np, 0.42, 0.9, 0.14, -0.72, 0.0, 0.08, body)
+    # Sloped hood wedge toward the nose.
+    hood = body_np.attachNewNode(make_wedge(0.7, 0.92, 0.22))
+    hood.setPos(0.48, 0.0, 0.02)
+    hood.setMaterial(body, 1)
 
-    # Dark window panes inset on the cabin faces.
-    part(detail, 0.06, 0.72, 0.26, 0.505, 0.0, 0.28, glass)
-    part(detail, 0.06, 0.72, 0.26, -0.58, 0.0, 0.28, glass)
+    # Windshield / backlight as wedges so slopes don't spear through the roof.
+    windshield = detail.attachNewNode(make_wedge(0.32, 0.8, 0.3))
+    windshield.setPos(0.22, 0.0, 0.26)
+    windshield.setMaterial(glass, 1)
+    backlight = detail.attachNewNode(make_wedge(0.28, 0.8, 0.24))
+    backlight.setPos(-0.58, 0.0, 0.22)
+    backlight.setH(180.0)  # tall end toward the cabin
+    backlight.setMaterial(glass, 1)
     for side in (-1.0, 1.0):
-        part(detail, 0.7, 0.05, 0.24, -0.05, side * 0.445, 0.28, glass)
+        part(detail, 0.66, 0.04, 0.24, -0.18, side * 0.45, 0.24, glass)
+        # Soft wheel-arch cue carved into the rocker.
+        part(detail, 0.34, 0.06, 0.2, 0.52, side * 0.48, -0.22, trim)
+        part(detail, 0.34, 0.06, 0.2, -0.5, side * 0.48, -0.22, trim)
 
-    # Front and rear bumpers, plus a grille between the headlights.
-    part(detail, 0.18, 1.0, 0.22, 0.94, 0.0, -0.2, trim)
-    part(detail, 0.18, 1.0, 0.22, -0.94, 0.0, -0.2, trim)
-    part(detail, 0.08, 0.5, 0.16, 0.9, 0.0, -0.08, trim)
-
-    # Side mirrors and a thin roof light bar.
+    # Bumpers wrap slightly around the corners.
+    part(detail, 0.12, 0.96, 0.16, 0.98, 0.0, -0.24, trim)
+    part(detail, 0.12, 0.96, 0.16, -0.98, 0.0, -0.24, trim)
+    part(detail, 0.05, 0.48, 0.1, 0.94, 0.0, -0.1, trim)
     for side in (-1.0, 1.0):
-        part(detail, 0.14, 0.12, 0.1, 0.28, side * 0.52, 0.12, trim)
-    part(detail, 0.5, 0.2, 0.06, -0.05, 0.0, 0.48, trim)
+        part(detail, 0.12, 0.1, 0.08, 0.22, side * 0.52, 0.12, trim)
 
-    # Four blocky wheels under the corners.
-    for wx, wy in ((0.55, 0.42), (0.55, -0.42), (-0.55, 0.42), (-0.55, -0.42)):
-        part(detail, 0.38, 0.2, 0.38, wx, wy, -0.31, wheel)
+    # Tire + inset hub so wheels read as discs, not cubes.
+    for wx, wy in ((0.55, 0.46), (0.55, -0.46), (-0.52, 0.46), (-0.52, -0.46)):
+        part(detail, 0.34, 0.12, 0.34, wx, wy, -0.34, wheel)
+        part(detail, 0.2, 0.14, 0.2, wx, wy, -0.34, trim)
 
     body_np.flattenStrong()
     detail.flattenStrong()
@@ -608,16 +750,104 @@ def car_template() -> NodePath:
     # +Y is the car's left; -Y is right. Lamps stay unflattened for signalling.
     for side, label in ((1.0, "left"), (-1.0, "right")):
         part(
-            root, 0.1, 0.18, 0.14, 0.96, side * 0.34, -0.05, headlight,
+            root, 0.08, 0.16, 0.12, 0.98, side * 0.32, -0.08, headlight,
             f"headlight-{label}",
         )
         part(
-            root, 0.1, 0.18, 0.14, -0.96, side * 0.34, -0.05, taillight,
+            root, 0.08, 0.16, 0.1, -0.98, side * 0.32, -0.06, taillight,
             f"taillight-{label}",
         )
 
     CAR_TEMPLATE = root
     return root
+
+
+def make_wedge(sx: float, sy: float, sz: float) -> GeomNode:
+    """Hood-style wedge: full height at −X, tapers to the bottom edge at +X.
+
+    Origin-centred; +X is forward (toward the thin nose).
+    """
+    hx, hy, hz = sx / 2.0, sy / 2.0, sz / 2.0
+    # Bottom rectangle + tall top edge at the cabin (−X).
+    b0 = (-hx, -hy, -hz)
+    b1 = (hx, -hy, -hz)
+    b2 = (hx, hy, -hz)
+    b3 = (-hx, hy, -hz)
+    t0 = (-hx, -hy, hz)
+    t1 = (-hx, hy, hz)
+
+    faces: tuple[tuple[tuple[float, float, float], ...], ...] = (
+        (b0, b3, t1, t0),  # tall cabin end
+        (t0, t1, b2, b1),  # sloping top
+        (b0, t0, b1),  # −Y side
+        (b3, b2, t1),  # +Y side
+        (b0, b1, b2, b3),  # bottom
+    )
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("wedge", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    for face in faces:
+        n = face_normal(face[0], face[1], face[2])
+        start = vertex.getWriteRow()
+        for corner in face:
+            vertex.addData3(*corner)
+            normal.addData3(*n)
+        tris.addVertices(start, start + 1, start + 2)
+        if len(face) == 4:
+            tris.addVertices(start, start + 2, start + 3)
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("wedge")
+    node.addGeom(geom)
+    return node
+
+
+def make_gable_roof(sx: float, sy: float, height: float) -> GeomNode:
+    """Gable roof: ridge along X, eaves along ±Y. Base on z = 0, centred."""
+    hx, hy = sx / 2.0, sy / 2.0
+    e_fl = (-hx, -hy, 0.0)
+    e_fr = (hx, -hy, 0.0)
+    e_bl = (-hx, hy, 0.0)
+    e_br = (hx, hy, 0.0)
+    r_l = (-hx, 0.0, height)
+    r_r = (hx, 0.0, height)
+
+    faces: tuple[tuple[tuple[float, float, float], ...], ...] = (
+        (e_fl, e_fr, r_r, r_l),  # front slope (−Y)
+        (e_br, e_bl, r_l, r_r),  # back slope (+Y)
+        (e_fl, r_l, e_bl),  # −X gable
+        (e_fr, e_br, r_r),  # +X gable
+        (e_fl, e_bl, e_br, e_fr),  # underside
+    )
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("gable", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    for face in faces:
+        n = face_normal(face[0], face[1], face[2])
+        start = vertex.getWriteRow()
+        for corner in face:
+            vertex.addData3(*corner)
+            normal.addData3(*n)
+        tris.addVertices(start, start + 1, start + 2)
+        if len(face) == 4:
+            tris.addVertices(start, start + 2, start + 3)
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("gable")
+    node.addGeom(geom)
+    return node
 
 
 def make_pyramid(sx: float, sy: float, height: float) -> GeomNode:

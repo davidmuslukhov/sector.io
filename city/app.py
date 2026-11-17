@@ -34,8 +34,8 @@ class CityApp(ShowBase):
         super().__init__()
         self.screenshot_path = screenshot
         self.disableMouse()
-        # Soft daylight sky; fog in SceneBuilders matches this tint.
-        self.setBackgroundColor(0.62, 0.72, 0.84, 1)
+        # Horizon fallback if the sky dome isn't covering a pixel.
+        self.setBackgroundColor(0.7, 0.78, 0.88, 1)
 
         plan = default_city_plan()
         self.plan = plan
@@ -137,6 +137,12 @@ class CityApp(ShowBase):
                     face_x=ix,
                     face_y=iy,
                 )
+            # Zebra stripes on each approach, just outside the intersection box.
+            walk = half + 1.15
+            builders._add_crosswalk(ix, iy - walk, plan.road_top, along_x=True)
+            builders._add_crosswalk(ix, iy + walk, plan.road_top, along_x=True)
+            builders._add_crosswalk(ix - walk, iy, plan.road_top, along_x=False)
+            builders._add_crosswalk(ix + walk, iy, plan.road_top, along_x=False)
             # Housing corners have no wall for the span to meet, so drop a
             # vertical rod of the same thickness from each open corner.
             for px, py, solid in (
@@ -1097,9 +1103,9 @@ class CityApp(ShowBase):
                 add_slip_segment(
                     start_b[0], start_b[1], peel_b[0], peel_b[1], slip_w,
                 )
-                # T-junction into the flat terrace curb (\___/). Centreline ends
-                # just inside the asphalt; end face mitered to the arterial.
-                curb_out = rw * 0.5 - 0.12
+                # T-junction into the flat terrace curb (\___/). Plan join points
+                # are already curb landings; keep the project as a no-op safety.
+                curb_out = max(0.35, rw * 0.5 - 0.12)
 
                 def curb_landing(join: tuple[float, float]) -> tuple[float, float]:
                     tx, ty = throat
@@ -1156,9 +1162,8 @@ class CityApp(ShowBase):
                     t = min(inset / dist, 0.2)
                     return (joint[0] + dx * t, joint[1] + dy * t)
 
-                # City side: flat through the gateway, then climb to the deck
-                # terrace. Overlap the climb/flat joint so end caps stay buried.
-                # Asphalt only here — dashes painted once on the full polyline.
+                # Gateway→foot is ordinary city approach (no highway curb walls).
+                # Climb / terrace / bridge start at the foot.
                 if math.hypot(
                     exit_foot[0] - city_end[0], exit_foot[1] - city_end[1],
                 ) > 0.5:
@@ -1166,7 +1171,7 @@ class CityApp(ShowBase):
                         city_end[0], city_end[1],
                         exit_foot[0], exit_foot[1],
                         rw,
-                        marks=False,
+                        marks=True,
                     )
                 city_joint = _overlap_joint(city_flat_lo, city_ix)
                 add_slant_ramp(
@@ -1205,8 +1210,8 @@ class CityApp(ShowBase):
                     rails=False,
                     marks=False,
                 )
+                # Borders begin at the climb foot — gateway stub is city road.
                 raw_centerline = [
-                    (city_end[0], city_end[1], grade_top),
                     (exit_foot[0], exit_foot[1], grade_top),
                     (city_flat_lo[0], city_flat_lo[1], city_join_top),
                     (city_throat[0], city_throat[1], city_join_top),
@@ -1218,8 +1223,7 @@ class CityApp(ShowBase):
                     (outer_flat_lo[0], outer_flat_lo[1], outer_join_top),
                     (outer_end[0], outer_end[1], grade_top),
                 ]
-                # Drop near-zero spans (foot may equal city_end) so border walls
-                # don't get a zero-length run and stand up as a vertical slab.
+                # Drop near-zero spans so border walls don't stand up vertical.
                 centerline: list[tuple[float, float, float]] = [raw_centerline[0]]
                 throat_stations: list[float] = []
                 dist = 0.0
@@ -1342,7 +1346,23 @@ class CityApp(ShowBase):
             add_diamond_interchange(diamond)
         self.highway.flattenStrong()
 
+        # Soft ground under the whole metro so the beltway doesn't float in sky.
+        ground_pad = 48.0
+        ground = box_instance(
+            self.render,
+            (belt_east_outer - belt_west_outer) + ground_pad,
+            (belt_north_outer - belt_south_outer) + ground_pad,
+            0.16,
+        )
+        ground.setPos(
+            (belt_west_outer + belt_east_outer) / 2,
+            (belt_south_outer + belt_north_outer) / 2,
+            road_z - 0.12,
+        )
+        ground.setMaterial(lawn_mat, 1)
+
         self._cars: list[CarController] = []
+        self._fleet_root = self.render.attachNewNode("fleet")
         west_lane_xs = list(hwy["west_lane_xs"])
         east_lane_xs = list(hwy["east_lane_xs"])
         south_lane_ys = list(hwy["south_lane_ys"])
@@ -1367,11 +1387,11 @@ class CityApp(ShowBase):
             plan.south_road_full0 + plan.north_shift,
         )
         spawns: list[dict] = []
-        hwy_half = plan.highway_lanes // 2
-        # Highway: one car per lane/direction at each diamond (keeps FPS healthy).
+        # Two lanes each way (not all three) — denser packs cost more than they read.
+        hwy_lanes_used = max(2, plan.highway_lanes // 2 - 1)
         for exit_i, diamond in enumerate(diamonds):
             for start_dir in (tuple(diamond["ccw_dir"]), tuple(diamond["cw_dir"])):
-                for lane in range(hwy_half):
+                for lane in range(hwy_lanes_used):
                     spawns.append(
                         {
                             "start_v": diamond["city_v"],
@@ -1405,22 +1425,21 @@ class CityApp(ShowBase):
         for origin_y in city_origins:
             for v, h in city_nodes:
                 for di, start_dir in enumerate(city_dirs):
-                    if (v + h + di) % 2 != 0:
+                    # Sparse checkerboard: fewer city cars, same coverage.
+                    if (v + h + di) % 3 != 0:
                         continue
-                    queued = h == plan.exit_row and start_dir[1] == 0
-                    for queue in range(2 if queued else 1):
-                        spawns.append(
-                            {
-                                "start_v": v,
-                                "start_h": h,
-                                "start_dir": start_dir,
-                                "on_highway": False,
-                                "exit_i": 0,
-                                "origin_y": origin_y,
-                                "queue": queue,
-                                "highway_lane": 0,
-                            }
-                        )
+                    spawns.append(
+                        {
+                            "start_v": v,
+                            "start_h": h,
+                            "start_dir": start_dir,
+                            "on_highway": False,
+                            "exit_i": 0,
+                            "origin_y": origin_y,
+                            "queue": 0,
+                            "highway_lane": 0,
+                        }
+                    )
         for index, spawn in enumerate(spawns):
             colour = colours[index % len(colours)]
             car = CarController(self, self._cars)
@@ -1548,6 +1567,11 @@ class CityApp(ShowBase):
             self.taskMgr.add(self._fps_task, "fps-counter")
 
     def _fps_task(self, task):
+        # Text updates are relatively expensive; twice a second is enough.
+        slot = int(task.time * 2.0)
+        if slot == getattr(self, "_fps_slot", -1):
+            return task.cont
+        self._fps_slot = slot
         self.fps_text.setText(f"FPS: {self.clock.getAverageFrameRate():.0f}")
         return task.cont
 
@@ -1556,6 +1580,22 @@ class CityApp(ShowBase):
         CarController.build_fleet_index(self._cars)
         for car in self._cars:
             car._car_task(task)
+        # When zoomed in, hide cars far from the focus — same design, fewer draws.
+        if self.distance < 70.0:
+            lx, ly, _lz = self.look_at
+            hide_r2 = 95.0 * 95.0
+            for car in self._cars:
+                dx = car._car_pos[0] - lx
+                dy = car._car_pos[1] - ly
+                far = dx * dx + dy * dy > hide_r2
+                if far and not car.car.isHidden():
+                    car.car.hide()
+                elif not far and car.car.isHidden():
+                    car.car.show()
+        else:
+            for car in self._cars:
+                if car.car.isHidden():
+                    car.car.show()
         return task.cont
 
     def _car_look_at(self, car: CarController) -> list[float]:

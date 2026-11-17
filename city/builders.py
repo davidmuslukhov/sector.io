@@ -6,6 +6,7 @@ import math
 
 from panda3d.core import (
     AmbientLight,
+    ColorAttrib,
     DirectionalLight,
     Material,
     NodePath,
@@ -17,9 +18,11 @@ from city.materials import (
     brown_material,
     centerline_material,
     lawn_material,
+    mark_material,
     plinth_material,
     road_material,
     roof_material,
+    sidewalk_material,
     signal_lens_material,
     signal_material,
     square_lightness,
@@ -29,8 +32,11 @@ from city.materials import (
 from city.mesh import (
     box_instance,
     factory_template,
+    lamp_template,
     make_annulus_sector,
-    make_pyramid,
+    make_gable_roof,
+    make_sky_dome,
+    tree_template,
 )
 from city.plan import CityPlan
 
@@ -199,23 +205,47 @@ class SceneBuilders:
                     road_material(),
                 )
         if southern_road:
-            self._add_road(mid_x, south - road_width / 2, road_z, east - west, along_x=True)
-        self._add_road(mid_x, north + road_width / 2, road_z, east - west, along_x=True)
-        self._add_road(west - road_width / 2, mid_y, road_z, north - south, along_x=False)
+            self._add_road(
+                mid_x, south - road_width / 2, road_z, east - west, along_x=True,
+                sidewalk_inner=1.0,
+            )
+        self._add_road(
+            mid_x, north + road_width / 2, road_z, east - west, along_x=True,
+            sidewalk_inner=-1.0,
+        )
+        self._add_road(
+            west - road_width / 2, mid_y, road_z, north - south, along_x=False,
+            sidewalk_inner=1.0,
+        )
         if eastern_road:
-            self._add_road(east + road_width / 2, mid_y, road_z, north - south, along_x=False)
+            self._add_road(
+                east + road_width / 2, mid_y, road_z, north - south, along_x=False,
+                sidewalk_inner=-1.0,
+            )
         # The straight sections stop at the building faces. Each corner square
         # joins the two roads that meet there, so a side with no road has no corners.
         x_edges = ((west, -1.0), (east, 1.0)) if eastern_road else ((west, -1.0),)
         y_edges = ((south, -1.0), (north, 1.0)) if southern_road else ((north, 1.0),)
+        walk_w = 0.95
         for x_edge, x_sign in x_edges:
             for y_edge, y_sign in y_edges:
+                cx = x_edge + x_sign * road_width / 2
+                cy = y_edge + y_sign * road_width / 2
                 self._add_block(
-                    x_edge + x_sign * road_width / 2,
-                    y_edge + y_sign * road_width / 2,
+                    cx,
+                    cy,
                     road_z,
                     (road_width, road_width, road_size[2]),
                     road_material(),
+                )
+                # Corner walk pads sit on the lot-side quadrant of the asphalt.
+                road_top = road_z + road_size[2] / 2
+                self._add_block(
+                    cx - x_sign * (road_width / 2 - walk_w / 2),
+                    cy - y_sign * (road_width / 2 - walk_w / 2),
+                    road_top + 0.04,
+                    (walk_w, walk_w, 0.08),
+                    sidewalk_material(),
                 )
 
     def _add_stack(
@@ -228,10 +258,9 @@ class SceneBuilders:
         heading: float = 0.0,
         doors: tuple[str, ...] = ("-y",),
     ) -> None:
-        """Stack ``floors`` blocks. Each floor gets one row of windows on every face.
+        """Stack ``floors`` with setbacks, belt courses, and a roof crown.
 
-        Adds a stone plinth, dark roof cap, and a couple of rooftop units so the
-        silhouette reads more like a real tower without per-window extras.
+        Upper thirds step in so the silhouette isn't a single extruded box.
         """
         parent = None
         if heading:
@@ -241,62 +270,111 @@ class SceneBuilders:
             x, y = 0.0, 0.0
         sx, sy, sz = size
         # Slightly proud base so the ground floor meets the sidewalk.
-        plinth_h = 0.28
+        plinth_h = 0.32
         self._add_block(
             x,
             y,
             -sz / 2 + plinth_h / 2,
-            (sx + 0.35, sy + 0.35, plinth_h),
+            (sx + 0.45, sy + 0.45, plinth_h),
             plinth_material(),
             parent=parent,
         )
+        # Slim corner pilasters on the lowest massing step.
+        pilaster = block_material(0.78)
+        for px, py in (
+            (-sx / 2, -sy / 2),
+            (sx / 2, -sy / 2),
+            (-sx / 2, sy / 2),
+            (sx / 2, sy / 2),
+        ):
+            self._add_block(
+                x + px * 0.92,
+                y + py * 0.92,
+                (min(floors, 6) * sz) / 2 - sz / 2,
+                (0.22, 0.22, min(floors, 6) * sz),
+                pilaster,
+                parent=parent,
+            )
+
         for floor in range(floors):
+            # Step the plan in for mid and upper tiers.
+            if floor >= max(2, (floors * 3) // 4):
+                inset = 0.45
+            elif floor >= max(1, floors // 2):
+                inset = 0.22
+            else:
+                inset = 0.0
+            floor_size = (sx - 2.0 * inset, sy - 2.0 * inset, sz)
             floor_z = floor * sz
             self._add_block(
                 x,
                 y,
                 floor_z,
-                size,
+                floor_size,
                 material,
                 top=False,
                 bottom=floor == 0,
                 parent=parent,
             )
-            self._add_face_squares(x, y, floor_z, size, floor * 12, parent=parent, doors=doors)
+            self._add_face_squares(
+                x, y, floor_z, floor_size, floor * 12, parent=parent, doors=doors,
+            )
+            # Thin belt course every few floors — breaks the flat curtain wall.
+            if floor > 0 and floor % 3 == 0 and inset < 0.4:
+                self._add_block(
+                    x,
+                    y,
+                    floor_z - sz / 2 + 0.06,
+                    (floor_size[0] + 0.12, floor_size[1] + 0.12, 0.12),
+                    block_material(0.88),
+                    parent=parent,
+                )
 
+        top_inset = 0.45 if floors >= 4 else 0.0
+        top_sx = sx - 2.0 * top_inset
+        top_sy = sy - 2.0 * top_inset
         top_z = (floors - 1) * sz + sz / 2
-        # Slight cornice overhang, then a dark roof deck inset inside it.
+        # Cornice + mechanical crown, sized to the uppermost setback.
         self._add_block(
             x,
             y,
-            top_z + 0.05,
-            (sx + 0.18, sy + 0.18, 0.12),
+            top_z + 0.06,
+            (top_sx + 0.22, top_sy + 0.22, 0.14),
             block_material(0.82),
             parent=parent,
         )
         self._add_block(
             x,
             y,
-            top_z + 0.14,
-            (sx - 0.08, sy - 0.08, 0.1),
+            top_z + 0.18,
+            (top_sx - 0.1, top_sy - 0.1, 0.12),
             roof_material(),
             parent=parent,
         )
-        if floors >= 12:
+        if floors >= 10:
             unit = stack_material()
             self._add_block(
-                x - sx * 0.22,
-                y + sy * 0.18,
-                top_z + 0.5,
-                (0.7, 0.55, 0.7),
+                x - top_sx * 0.22,
+                y + top_sy * 0.18,
+                top_z + 0.55,
+                (0.65, 0.5, 0.75),
                 unit,
                 parent=parent,
             )
             self._add_block(
-                x + sx * 0.2,
-                y - sy * 0.15,
-                top_z + 0.42,
-                (0.55, 0.55, 0.5),
+                x + top_sx * 0.18,
+                y - top_sy * 0.12,
+                top_z + 0.48,
+                (0.5, 0.5, 0.55),
+                unit,
+                parent=parent,
+            )
+            # Slim antenna / mast so the crown isn't another box.
+            self._add_block(
+                x + top_sx * 0.05,
+                y + top_sy * 0.05,
+                top_z + 1.1,
+                (0.12, 0.12, 1.4),
                 unit,
                 parent=parent,
             )
@@ -525,8 +603,14 @@ class SceneBuilders:
         length: float,
         along_x: bool,
         parent=None,
+        *,
+        sidewalk_inner: float | None = None,
     ) -> None:
-        """Grey slab with center dashes. ``along_x`` runs the length east-west."""
+        """Asphalt slab with center dashes and optional inner curb/sidewalk.
+
+        ``sidewalk_inner`` is the signed offset from the road centre toward the
+        lot (+Y for an EW road, +X for an NS road). Omit for highway-only pads.
+        """
         width = self.plan.road_width
         thickness = 0.1
         size = (length, width, thickness) if along_x else (width, length, thickness)
@@ -534,6 +618,27 @@ class SceneBuilders:
         self._add_road_marks(
             x, y, z + thickness / 2, length, along_x, parent=parent
         )
+        if sidewalk_inner is None:
+            return
+        # Towers sit flush with the curb line, so the walk overlays the lot-side
+        # strip of asphalt instead of disappearing under the facade.
+        walk_w = 0.85
+        walk_h = 0.08
+        road_top = z + thickness / 2
+        sign = 1.0 if sidewalk_inner >= 0 else -1.0
+        edge = width / 2
+        if along_x:
+            walk_y = y + sign * (edge - walk_w / 2)
+            self._add_block(
+                x, walk_y, road_top + walk_h / 2,
+                (length, walk_w, walk_h), sidewalk_material(), parent=parent,
+            )
+        else:
+            walk_x = x + sign * (edge - walk_w / 2)
+            self._add_block(
+                walk_x, y, road_top + walk_h / 2,
+                (walk_w, length, walk_h), sidewalk_material(), parent=parent,
+            )
 
     def _add_road_marks(
         self,
@@ -593,18 +698,31 @@ class SceneBuilders:
         mid_x = (west + east) / 2
         mid_y = (south + north) / 2
         if southern_road:
-            self._add_road(mid_x, south - road_width / 2, road_z, east - west, along_x=True)
+            self._add_road(
+                mid_x, south - road_width / 2, road_z, east - west, along_x=True,
+                sidewalk_inner=1.0,
+            )
         if northern_road:
-            self._add_road(mid_x, north + road_width / 2, road_z, east - west, along_x=True)
-        self._add_road(west - road_width / 2, mid_y, road_z, north - south, along_x=False)
+            self._add_road(
+                mid_x, north + road_width / 2, road_z, east - west, along_x=True,
+                sidewalk_inner=-1.0,
+            )
+        self._add_road(
+            west - road_width / 2, mid_y, road_z, north - south, along_x=False,
+            sidewalk_inner=1.0,
+        )
         if eastern_road:
-            self._add_road(east + road_width / 2, mid_y, road_z, north - south, along_x=False)
+            self._add_road(
+                east + road_width / 2, mid_y, road_z, north - south, along_x=False,
+                sidewalk_inner=-1.0,
+            )
         x_edges = ((west, -1.0), (east, 1.0)) if eastern_road else ((west, -1.0),)
         y_edges: list[tuple[float, float]] = []
         if southern_road:
             y_edges.append((south, -1.0))
         if northern_road:
             y_edges.append((north, 1.0))
+        walk_w = 0.95
         for x_edge, x_sign in x_edges:
             for y_edge, y_sign in y_edges:
                 self._add_block(
@@ -614,70 +732,214 @@ class SceneBuilders:
                     (road_width, road_width, road_thickness),
                     road_material(),
                 )
+                road_top = road_z + road_thickness / 2
+                cx = x_edge + x_sign * road_width / 2
+                cy = y_edge + y_sign * road_width / 2
+                self._add_block(
+                    cx - x_sign * (road_width / 2 - walk_w / 2),
+                    cy - y_sign * (road_width / 2 - walk_w / 2),
+                    road_top + 0.04,
+                    (walk_w, walk_w, 0.08),
+                    sidewalk_material(),
+                )
+        # Yard sits a touch above the asphalt so grass meets the sidewalk lip.
         self._add_block(
             mid_x,
             mid_y,
-            road_z,
+            road_z + 0.04,
             (lot_width, lot_depth, road_thickness),
             lawn_material(),
         )
         house_pitch = 5.0
         for crow in range(houses_deep):
             for ccol in range(houses_across):
+                shade = 0.62 + 0.08 * ((crow * 3 + ccol * 5) % 5)
+                hx = mid_x + (ccol - (houses_across - 1) / 2) * house_pitch
+                hy = mid_y + (crow - (houses_deep - 1) / 2) * house_pitch
                 self._add_house(
-                    mid_x + (ccol - (houses_across - 1) / 2) * house_pitch,
-                    mid_y + (crow - (houses_deep - 1) / 2) * house_pitch,
+                    hx,
+                    hy,
+                    brick=shade,
+                    chimney=(crow + ccol) % 3 != 0,
                 )
+                # Yard tree beside every other house — softens the grid.
+                if (crow + ccol) % 2 == 0:
+                    tree = tree_template().copyTo(self.city)
+                    tree.setPos(hx + 1.6, hy + 1.1, road_z + 0.05)
+                    tree.setH((crow * 37 + ccol * 19) % 360)
+                    tree.setScale(0.85 + 0.12 * ((crow + ccol) % 3))
+        # Street lamps along the lot edges, spaced to avoid a forest of poles.
+        lamp_z = road_z + 0.05
+        if southern_road:
+            for t in (0.25, 0.75):
+                lamp = lamp_template().copyTo(self.city)
+                lamp.setPos(west + (east - west) * t, south - 0.35, lamp_z)
+                lamp.setH(90.0)
+        if northern_road:
+            for t in (0.25, 0.75):
+                lamp = lamp_template().copyTo(self.city)
+                lamp.setPos(west + (east - west) * t, north + 0.35, lamp_z)
+                lamp.setH(-90.0)
 
-    def _add_house(self, x: float, y: float) -> None:
-        """Brown 2x2 cube capped by a 3x3 slate pyramid, centred on ``(x, y)``."""
-        cube_size = (2.0, 2.0, 2.0)
-        pyramid_size = (3.0, 3.0, 1.5)
-        self._add_block(x, y, 0.0, cube_size, brown_material(0.7), top=False)
-        self._add_cube_squares(x, y, 0.0, cube_size)
-        pyramid = self.city.attachNewNode(make_pyramid(*pyramid_size))
-        pyramid.setPos(x, y, cube_size[2] / 2)
-        pyramid.setMaterial(roof_material(), 1)
+    def _add_house(
+        self,
+        x: float,
+        y: float,
+        *,
+        brick: float = 0.7,
+        chimney: bool = True,
+    ) -> None:
+        """Gabled brick house with porch and optional side garage on ``(x, y)``."""
+        # Rectangular plan reads less like a toy cube than 2×2×2.
+        body = (2.4, 1.85, 1.85)
+        sx, sy, sz = body
+        brick_mat = brown_material(brick)
+        # Concrete foundation lip under the brick mass.
+        self._add_block(
+            x, y, -sz / 2 + 0.08, (sx + 0.25, sy + 0.25, 0.18), sidewalk_material(),
+        )
+        self._add_block(x, y, 0.0, body, brick_mat, top=False)
+        self._add_house_openings(x, y, 0.0, body)
+        # Front porch slab + posts + shed roof.
+        porch_y = y - sy / 2 - 0.35
+        self._add_block(
+            x, porch_y, -sz / 2 + 0.1, (1.5, 0.7, 0.16), sidewalk_material(),
+        )
+        for side in (-0.55, 0.55):
+            self._add_block(
+                x + side, porch_y, -0.15, (0.12, 0.12, 1.35), brick_mat,
+            )
+        porch_roof = self.city.attachNewNode(make_gable_roof(1.7, 0.85, 0.35))
+        porch_roof.setPos(x, porch_y, sz / 2 - 0.15)
+        porch_roof.setMaterial(roof_material(), 1)
+        # Main gable roof with eave overhang.
+        roof = self.city.attachNewNode(make_gable_roof(sx + 0.35, sy + 0.45, 1.05))
+        roof.setPos(x, y, sz / 2)
+        roof.setMaterial(roof_material(), 1)
+        if chimney:
+            self._add_block(
+                x + sx * 0.28,
+                y + sy * 0.05,
+                sz / 2 + 0.85,
+                (0.32, 0.32, 0.95),
+                brown_material(brick * 0.85),
+            )
+        # Occasional one-car garage wing for lot variety.
+        if int((x * 3 + y * 5) * 10) % 5 == 0:
+            gx = x + sx / 2 + 0.55
+            self._add_block(
+                gx, y, -0.15, (1.1, 1.5, 1.4), brick_mat, top=False,
+            )
+            door = box_instance(self.city, 0.06, 1.1, 1.05)
+            door.setPos(gx, y - 0.78, -0.25)
+            door.setMaterial(brown_material(0.45), 1)
+            garage_roof = self.city.attachNewNode(make_gable_roof(1.3, 1.7, 0.55))
+            garage_roof.setPos(gx, y, 0.55)
+            garage_roof.setH(90.0)
+            garage_roof.setMaterial(roof_material(), 1)
 
-    def _add_cube_squares(
+    def _add_house_openings(
         self,
         x: float,
         y: float,
         z: float,
         size: tuple[float, float, float],
     ) -> None:
-        """One centered glass pane on each vertical face except the front (−Y)."""
+        """Door on −Y plus framed windows on the other faces."""
         sx, sy, sz = size
-        win_w = 0.7
-        win_h = 0.85
-        depth = 0.04
-        # Right, left, then back. The front face, toward the camera, has no square.
-        faces = (
-            (x + sx / 2 + depth / 2, y, z + 0.1, depth, win_w, 0),
-            (x - sx / 2 - depth / 2, y, z + 0.1, depth, win_w, 1),
-            (x, y + sy / 2 + depth / 2, z + 0.1, win_w, depth, 2),
-        )
-        for px, py, pz, panel_x, panel_y, level in faces:
-            panel = box_instance(self.city, panel_x, panel_y, win_h)
-            panel.setPos(px, py, pz)
-            panel.setMaterial(square_material(square_lightness(level)), 1)
+        depth = 0.05
+        frame = brown_material(0.45)
+        # Front door with a simple frame.
+        door_h = 1.15
+        door = box_instance(self.city, 0.55, depth, door_h)
+        door.setPos(x, y - sy / 2 - depth / 2, z - sz / 2 + door_h / 2)
+        door.setMaterial(brown_material(), 1)
+        frame_door = box_instance(self.city, 0.7, depth * 0.6, door_h + 0.12)
+        frame_door.setPos(x, y - sy / 2 - depth * 0.2, z - sz / 2 + door_h / 2)
+        frame_door.setMaterial(frame, 1)
 
-        # Lighter than the cube so the rectangle reads on the bare front face.
-        rectangle_height = 0.75
-        rectangle_bottom = z - sz / 2
-        rectangle = box_instance(self.city, 0.5, depth, rectangle_height)
-        rectangle.setPos(x, y - sy / 2 - depth / 2, rectangle_bottom + rectangle_height / 2)
-        rectangle.setMaterial(brown_material(), 1)
+        windows = (
+            (x + sx / 2 + depth / 2, y - 0.25, depth, 0.55, 0),
+            (x + sx / 2 + depth / 2, y + 0.35, depth, 0.55, 1),
+            (x - sx / 2 - depth / 2, y - 0.25, depth, 0.55, 2),
+            (x - sx / 2 - depth / 2, y + 0.35, depth, 0.55, 3),
+            (x, y + sy / 2 + depth / 2, 0.7, depth, 4),
+        )
+        win_h = 0.7
+        for px, py, panel_x, panel_y, level in windows:
+            # Frame is a slightly larger slab behind/around the glass.
+            if panel_x <= panel_y:
+                trim = box_instance(self.city, panel_x + 0.04, panel_y + 0.1, win_h + 0.1)
+            else:
+                trim = box_instance(self.city, panel_x + 0.1, panel_y + 0.04, win_h + 0.1)
+            trim.setPos(px, py, z + 0.12)
+            trim.setMaterial(frame, 1)
+            pane = box_instance(self.city, panel_x, panel_y, win_h)
+            pane.setPos(px, py, z + 0.12)
+            pane.setMaterial(square_material(square_lightness(level)), 1)
+
+    def _add_crosswalk(
+        self,
+        x: float,
+        y: float,
+        road_top: float,
+        *,
+        along_x: bool,
+        span: float | None = None,
+    ) -> None:
+        """Zebra stripes across one approach, just outside the intersection."""
+        road_w = self.plan.road_width
+        span = road_w * 0.85 if span is None else span
+        stripe_w = 0.5
+        stripe_len = 1.6
+        gap = 0.45
+        paint = mark_material()
+        # Four stripes reads as a crosswalk without packing the flatten budget.
+        count = 4
+        total = count * stripe_w + (count - 1) * gap
+        z = road_top + 0.03
+        for index in range(count):
+            offset = -total / 2 + stripe_w / 2 + index * (stripe_w + gap)
+            if along_x:
+                # Stripes run along Y (across an EW road).
+                mark = box_instance(self.city, stripe_w, stripe_len, 0.04)
+                mark.setPos(x + offset, y, z)
+            else:
+                mark = box_instance(self.city, stripe_len, stripe_w, 0.04)
+                mark.setPos(x, y + offset, z)
+            mark.setMaterial(paint, 1)
 
     def _add_lights(self) -> None:
         ambient = AmbientLight("ambient")
-        ambient.setColor((0.35, 0.38, 0.42, 1))
+        ambient.setColor((0.34, 0.37, 0.42, 1))
         ambient_np = self.render.attachNewNode(ambient)
         self.render.setLight(ambient_np)
 
+        # Warm late-morning key — no shadow map / shader-auto (those crushed FPS).
         sun = DirectionalLight("sun")
-        sun.setColor((1.05, 0.98, 0.88, 1))
+        sun.setColor((1.15, 1.05, 0.9, 1))
         sun_np = self.render.attachNewNode(sun)
-        sun_np.setHpr(40, -50, 0)
+        sun_np.setHpr(38, -48, 0)
         self.render.setLight(sun_np)
-        self.render.setShaderAuto()
+
+        # Soft bounce from the opposite sky so towers don't go pure black.
+        fill = DirectionalLight("fill")
+        fill.setColor((0.18, 0.22, 0.3, 1))
+        fill_np = self.render.attachNewNode(fill)
+        fill_np.setHpr(220, -25, 0)
+        self.render.setLight(fill_np)
+
+        # Gradient sky; depth-write off so it never fights the city.
+        sky = self.render.attachNewNode(make_sky_dome(rings=4, sectors=12))
+        sky.setBin("background", 0)
+        sky.setDepthWrite(False)
+        sky.setLightOff()
+        sky.setShaderOff()
+        sky.setAttrib(ColorAttrib.makeVertex())
+        bounds = self.plan.framing_bounds()
+        sky.setPos(
+            (bounds["left"] + bounds["right"]) / 2,
+            (bounds["city_south"] + bounds["city_north"]) / 2,
+            0.0,
+        )
+        # Fixed-function lighting: same materials, far cheaper than setShaderAuto.
