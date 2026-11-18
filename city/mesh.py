@@ -17,13 +17,11 @@ from panda3d.core import (
 
 from city.materials import (
     bark_material,
-    block_material,
     car_material,
+    factory_material,
     foliage_material,
     lamp_material,
     roof_material,
-    square_lightness,
-    square_material,
     stack_material,
 )
 
@@ -445,24 +443,39 @@ def make_box(
 
 # Shared box Geoms. Keyed by size and which caps are present.
 BOX_TEMPLATES: dict[tuple[float, float, float, bool, bool], NodePath] = {}
+# Chamfered floor slabs (cut corners). Keyed by size + chamfer.
+CHAMFER_BOX_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
+# Wheel cylinders (axis +Y). Keyed by radius, length, segments.
+CYLINDER_TEMPLATES: dict[tuple[float, float, int], NodePath] = {}
+# Vertical cylinders (axis +Z). Keyed by radius, height, segments.
+Z_CYLINDER_TEMPLATES: dict[tuple[float, float, int], NodePath] = {}
+# Cones / spires. Keyed by radius, height, segments.
+CONE_TEMPLATES: dict[tuple[float, float, int], NodePath] = {}
 # Flattened factory buildings. Keyed by plan, height, and bottom z.
 FACTORY_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
-# Flattened blocky car mesh. Copied once per scene.
+# Flattened car mesh. Copied once per scene.
 CAR_TEMPLATE: NodePath | None = None
 TREE_TEMPLATE: NodePath | None = None
 LAMP_TEMPLATE: NodePath | None = None
 
 
 def make_sky_dome(
-    radius: float = 900.0,
+    radius: float = 4000.0,
     *,
-    rings: int = 4,
-    sectors: int = 12,
+    rings: int = 8,
+    sectors: int = 24,
 ) -> GeomNode:
-    """Upper hemisphere with a zenith→horizon colour wash (no textures)."""
-    # Cool zenith, warmer wash at the horizon.
-    zenith = (0.35, 0.55, 0.85, 1.0)
-    horizon = (0.72, 0.8, 0.9, 1.0)
+    """Upper hemisphere with a zenith→horizon colour wash (no textures).
+
+    Horizon warms toward the sun azimuth so the dome reads as daylight, not a
+    flat fill. Cheap: vertex colours only, no textures or shaders.
+    """
+    # Deep cool zenith, pale warm haze at the horizon; sun side is brighter.
+    zenith = (0.22, 0.42, 0.78)
+    horizon_cool = (0.62, 0.72, 0.86)
+    horizon_warm = (0.92, 0.82, 0.68)
+    # Match the key light HPR (~38°) so the bright side faces the sun.
+    sun_phi = math.radians(38.0)
     fmt = GeomVertexFormat.getV3c4()
     vdata = GeomVertexData("sky", fmt, Geom.UHStatic)
     vertex = GeomVertexWriter(vdata, "vertex")
@@ -475,13 +488,25 @@ def make_sky_dome(
         x = radius * st * math.cos(phi)
         y = radius * st * math.sin(phi)
         z = radius * math.cos(theta)
+        # Ease toward the horizon so mid-sky stays richer blue.
         t = theta / (0.5 * math.pi)
+        t = t * t * (3.0 - 2.0 * t)
+        # 0..1 how aligned this azimuth is with the sun (cos falloff).
+        sun = 0.5 + 0.5 * math.cos(phi - sun_phi)
+        sun = sun * sun
+        hz = (
+            horizon_cool[0] + (horizon_warm[0] - horizon_cool[0]) * sun,
+            horizon_cool[1] + (horizon_warm[1] - horizon_cool[1]) * sun,
+            horizon_cool[2] + (horizon_warm[2] - horizon_cool[2]) * sun,
+        )
+        # Soft sun glow near the horizon on the warm side.
+        glow = sun * t * t * 0.18
         row = vertex.getWriteRow()
         vertex.addData3(x, y, z)
         color.addData4(
-            zenith[0] + (horizon[0] - zenith[0]) * t,
-            zenith[1] + (horizon[1] - zenith[1]) * t,
-            zenith[2] + (horizon[2] - zenith[2]) * t,
+            min(1.0, zenith[0] + (hz[0] - zenith[0]) * t + glow),
+            min(1.0, zenith[1] + (hz[1] - zenith[1]) * t + glow * 0.85),
+            min(1.0, zenith[2] + (hz[2] - zenith[2]) * t + glow * 0.45),
             1.0,
         )
         return row
@@ -514,28 +539,45 @@ def make_sky_dome(
     return node
 
 
-def tree_template() -> NodePath:
+# Flattened street-tree variants (foliage colour / crown shape).
+TREE_TEMPLATES: dict[int, NodePath] = {}
+
+
+def tree_template(variant: int = 0) -> NodePath:
     """Simple street tree: trunk + stacked canopy. Flattened for copyTo."""
-    global TREE_TEMPLATE
-    if TREE_TEMPLATE is not None:
-        return TREE_TEMPLATE
-    root = NodePath("tree")
-    trunk = box_instance(root, 0.28, 0.28, 1.4)
-    trunk.setPos(0.0, 0.0, 0.7)
+    key = variant % 3
+    cached = TREE_TEMPLATES.get(key)
+    if cached is not None:
+        return cached
+    root = NodePath(f"tree-{key}")
+    trunk = z_cylinder_instance(root, 0.12, 1.5, segments=6)
+    trunk.setPos(0.0, 0.0, 0.75)
     trunk.setMaterial(bark_material(), 1)
-    # Three staggered canopy slabs ≈ a rounded crown without a sphere mesh.
-    canopy = (
-        (1.6, 1.6, 0.7, 1.85),
-        (1.25, 1.25, 0.65, 2.35),
-        (0.85, 0.85, 0.55, 2.75),
-    )
-    leaf = foliage_material()
-    for sx, sy, sz, z in canopy:
-        crown = box_instance(root, sx, sy, sz)
-        crown.setPos(0.0, 0.0, z)
-        crown.setMaterial(leaf, 1)
+    leaf = foliage_material(key)
+    # Cone + disc canopy — reads as a tree, not stacked crates.
+    if key == 0:
+        disc = z_cylinder_instance(root, 0.85, 0.55, segments=10)
+        disc.setPos(0.0, 0.0, 1.85)
+        disc.setMaterial(leaf, 1)
+        cone = cone_instance(root, 0.95, 1.4, segments=10)
+        cone.setPos(0.0, 0.0, 2.05)
+        cone.setMaterial(leaf, 1)
+    elif key == 1:
+        disc = z_cylinder_instance(root, 0.7, 0.7, segments=10)
+        disc.setPos(0.0, 0.0, 2.0)
+        disc.setMaterial(leaf, 1)
+        disc2 = z_cylinder_instance(root, 0.5, 0.55, segments=8)
+        disc2.setPos(0.0, 0.0, 2.55)
+        disc2.setMaterial(leaf, 1)
+    else:
+        cone = cone_instance(root, 1.05, 1.8, segments=10)
+        cone.setPos(0.0, 0.0, 1.7)
+        cone.setMaterial(leaf, 1)
     root.flattenStrong()
-    TREE_TEMPLATE = root
+    TREE_TEMPLATES[key] = root
+    global TREE_TEMPLATE
+    if key == 0:
+        TREE_TEMPLATE = root
     return root
 
 
@@ -561,6 +603,341 @@ def lamp_template() -> NodePath:
     return root
 
 
+def offset_polyline(
+    points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    offset: float,
+) -> list[tuple[float, float]]:
+    """Shift a centreline left (positive) / right (negative) of travel."""
+    if len(points) < 2:
+        return list(points)
+    out: list[tuple[float, float]] = []
+    for i, (x, y) in enumerate(points):
+        if i == 0:
+            dx = points[1][0] - x
+            dy = points[1][1] - y
+        elif i == len(points) - 1:
+            dx = x - points[i - 1][0]
+            dy = y - points[i - 1][1]
+        else:
+            dx = points[i + 1][0] - points[i - 1][0]
+            dy = points[i + 1][1] - points[i - 1][1]
+        length = math.hypot(dx, dy) or 1.0
+        tx, ty = dx / length, dy / length
+        nx, ny = -ty, tx
+        out.append((x + nx * offset, y + ny * offset))
+    return out
+
+
+def _seg_intersection(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    d: tuple[float, float],
+) -> tuple[float, float] | None:
+    """Proper intersection of segments AB and CD, or None."""
+    ax, ay = a
+    bx, by = b
+    cx, cy = c
+    dx, dy = d
+    abx, aby = bx - ax, by - ay
+    cdx, cdy = dx - cx, dy - cy
+    den = abx * cdy - aby * cdx
+    if abs(den) < 1e-9:
+        return None
+    t = ((cx - ax) * cdy - (cy - ay) * cdx) / den
+    u = ((cx - ax) * aby - (cy - ay) * abx) / den
+    if t < 0.0 or t > 1.0 or u < 0.0 or u > 1.0:
+        return None
+    return (ax + t * abx, ay + t * aby)
+
+
+def arterial_crossings(
+    arterials: list[dict],
+) -> dict[str, list[tuple[float, float]]]:
+    """Map each arterial name to world-space crossings with other arterials."""
+    gaps = arterial_crossing_gaps(arterials)
+    return {name: [(x, y) for x, y, _other_w in discs] for name, discs in gaps.items()}
+
+
+def arterial_crossing_gaps(
+    arterials: list[dict],
+) -> dict[str, list[tuple[float, float, float]]]:
+    """Map each arterial to ``(x, y, other_width)`` discs at crossings / T-tips.
+
+    ``other_width`` is the paved width of the crossing road — use it to size
+    barrier / fence / mark openings so the pad clears that ribbon.
+    """
+    hits: dict[str, list[tuple[float, float, float]]] = {
+        str(a.get("name", "")): [] for a in arterials
+    }
+    for i, a in enumerate(arterials):
+        a_pts = list(a.get("points") or ())
+        a_name = str(a.get("name", ""))
+        a_w = float(a.get("width") or 0.0)
+        if len(a_pts) < 2 or not a_name:
+            continue
+        for b in arterials[i + 1 :]:
+            b_pts = list(b.get("points") or ())
+            b_name = str(b.get("name", ""))
+            b_w = float(b.get("width") or 0.0)
+            if len(b_pts) < 2 or not b_name:
+                continue
+            for ai in range(len(a_pts) - 1):
+                for bi in range(len(b_pts) - 1):
+                    hit = _seg_intersection(
+                        a_pts[ai], a_pts[ai + 1], b_pts[bi], b_pts[bi + 1]
+                    )
+                    if hit is None:
+                        continue
+                    hits[a_name].append((hit[0], hit[1], b_w))
+                    hits[b_name].append((hit[0], hit[1], a_w))
+    return hits
+
+
+def _point_in_gaps(
+    x: float,
+    y: float,
+    gaps: list[tuple[float, float, float]] | tuple[tuple[float, float, float], ...],
+) -> bool:
+    # Strict interior so circle-boundary cut points stay outside the gap.
+    for gx, gy, radius in gaps:
+        if radius <= 0.0:
+            continue
+        dx = x - gx
+        dy = y - gy
+        if dx * dx + dy * dy < radius * radius:
+            return True
+    return False
+
+
+def _segment_gap_exit_points(
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    gaps: list[tuple[float, float, float]] | tuple[tuple[float, float, float], ...],
+) -> list[tuple[float, float, float]]:
+    """``(t, x, y)`` where AB crosses a gap circle, sorted along the segment."""
+    hits: list[tuple[float, float, float]] = []
+    dx = bx - ax
+    dy = by - ay
+    aa = dx * dx + dy * dy
+    if aa < 1e-12:
+        return hits
+    for gx, gy, radius in gaps:
+        if radius <= 0.0:
+            continue
+        fx = ax - gx
+        fy = ay - gy
+        bb = 2.0 * (fx * dx + fy * dy)
+        cc = fx * fx + fy * fy - radius * radius
+        disc = bb * bb - 4.0 * aa * cc
+        if disc < 0.0:
+            continue
+        root = math.sqrt(disc)
+        for sign in (-1.0, 1.0):
+            t = (-bb + sign * root) / (2.0 * aa)
+            if 0.0 < t < 1.0:
+                hits.append((t, ax + dx * t, ay + dy * t))
+    hits.sort(key=lambda item: item[0])
+    # Dedup near-identical crossings from overlapping discs.
+    out: list[tuple[float, float, float]] = []
+    for t, x, y in hits:
+        if out and abs(t - out[-1][0]) < 1e-5:
+            continue
+        out.append((t, x, y))
+    return out
+
+
+def split_polyline_around_gaps(
+    points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    gaps: list[tuple[float, float, float]] | tuple[tuple[float, float, float], ...],
+) -> list[list[tuple[float, float]]]:
+    """Split a polyline into runs that stay outside circular gaps.
+
+    Cuts segments at the exact gap radii so openings stay square to the
+    intersection pad instead of depending on sample spacing.
+    """
+    pts = list(points)
+    if len(pts) < 2:
+        return []
+    active = [(gx, gy, r) for gx, gy, r in gaps if r > 0.0]
+    if not active:
+        return [pts]
+
+    # Original vertices + circle crossings. Boundary hits are kept as piece ends.
+    dense: list[tuple[float, float]] = [pts[0]]
+    for i in range(len(pts) - 1):
+        a = pts[i]
+        b = pts[i + 1]
+        for _t, x, y in _segment_gap_exit_points(a[0], a[1], b[0], b[1], active):
+            dense.append((x, y))
+        dense.append(b)
+
+    pieces: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+
+    def flush() -> None:
+        nonlocal current
+        if len(current) >= 2:
+            pieces.append(current)
+        current = []
+
+    def emit(p: tuple[float, float]) -> None:
+        if current and abs(current[-1][0] - p[0]) < 1e-9 and abs(current[-1][1] - p[1]) < 1e-9:
+            return
+        current.append(p)
+
+    for i, p in enumerate(dense):
+        if _point_in_gaps(p[0], p[1], active):
+            flush()
+            continue
+        if current:
+            prev = current[-1]
+            mx = 0.5 * (prev[0] + p[0])
+            my = 0.5 * (prev[1] + p[1])
+            # Two boundary hits of the same disc are both "outside" — break
+            # the span when the midpoint still sits inside the gap.
+            if _point_in_gaps(mx, my, active):
+                flush()
+        emit(p)
+    flush()
+    return pieces
+
+
+def split_polyline_around_points(
+    points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    gaps: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    radius: float,
+) -> list[list[tuple[float, float]]]:
+    """Split a polyline into runs that stay outside circular gaps."""
+    discs = [(gx, gy, radius) for gx, gy in gaps]
+    return split_polyline_around_gaps(points, discs)
+
+
+def make_highway_ribbon(
+    points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+    width: float,
+    thickness: float,
+) -> GeomNode:
+    """Continuous road ribbon following a centreline polyline in XY.
+
+    Builds a capped prism whose left/right edges track the path, so bends read
+    as smooth curves instead of abutting rectangular slabs.
+    """
+    if len(points) < 2:
+        raise ValueError("ribbon needs at least two centreline points")
+    if width <= 0.0 or thickness <= 0.0:
+        raise ValueError("ribbon width/thickness must be positive")
+
+    # Per-vertex unit tangents (averaged at interior joints).
+    tangents: list[tuple[float, float]] = []
+    for i, (x, y) in enumerate(points):
+        if i == 0:
+            dx = points[1][0] - x
+            dy = points[1][1] - y
+        elif i == len(points) - 1:
+            dx = x - points[i - 1][0]
+            dy = y - points[i - 1][1]
+        else:
+            dx = points[i + 1][0] - points[i - 1][0]
+            dy = points[i + 1][1] - points[i - 1][1]
+        length = math.hypot(dx, dy) or 1.0
+        tangents.append((dx / length, dy / length))
+
+    half = width / 2.0
+    hz = thickness / 2.0
+    left: list[tuple[float, float]] = []
+    right: list[tuple[float, float]] = []
+    for (x, y), (tx, ty) in zip(points, tangents):
+        nx, ny = -ty, tx
+        left.append((x + nx * half, y + ny * half))
+        right.append((x - nx * half, y - ny * half))
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("highway_ribbon", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+    n = len(points)
+
+    def add_pair(side: list[tuple[float, float]], z: float, nz: float) -> int:
+        base = vertex.getWriteRow()
+        for x, y in side:
+            vertex.addData3(x, y, z)
+            normal.addData3(0.0, 0.0, nz)
+        return base
+
+    # Top deck (left→right strips).
+    top_l = add_pair(left, hz, 1.0)
+    top_r = add_pair(right, hz, 1.0)
+    for i in range(n - 1):
+        tris.addVertices(top_l + i, top_r + i, top_r + i + 1)
+        tris.addVertices(top_l + i, top_r + i + 1, top_l + i + 1)
+
+    # Bottom deck.
+    bot_l = add_pair(left, -hz, -1.0)
+    bot_r = add_pair(right, -hz, -1.0)
+    for i in range(n - 1):
+        tris.addVertices(bot_l + i, bot_r + i + 1, bot_r + i)
+        tris.addVertices(bot_l + i, bot_l + i + 1, bot_r + i + 1)
+
+    def add_side_wall(
+        edge: list[tuple[float, float]], outward: bool
+    ) -> None:
+        base = vertex.getWriteRow()
+        for i, (x, y) in enumerate(edge):
+            tx, ty = tangents[i]
+            nx, ny = (-ty, tx) if outward else (ty, -tx)
+            vertex.addData3(x, y, -hz)
+            normal.addData3(nx, ny, 0.0)
+            vertex.addData3(x, y, hz)
+            normal.addData3(nx, ny, 0.0)
+        for i in range(n - 1):
+            i0 = base + 2 * i
+            i1 = i0 + 1
+            i2 = i0 + 2
+            i3 = i0 + 3
+            if outward:
+                tris.addVertices(i0, i2, i1)
+                tris.addVertices(i1, i2, i3)
+            else:
+                tris.addVertices(i0, i1, i2)
+                tris.addVertices(i1, i3, i2)
+
+    add_side_wall(left, outward=True)
+    add_side_wall(right, outward=True)
+
+    # End caps.
+    for end_i, invert in ((0, False), (n - 1, True)):
+        tx, ty = tangents[end_i]
+        nx, ny = (tx, ty) if invert else (-tx, -ty)
+        lx, ly = left[end_i]
+        rx, ry = right[end_i]
+        base = vertex.getWriteRow()
+        for x, y, z in (
+            (lx, ly, -hz),
+            (rx, ry, -hz),
+            (rx, ry, hz),
+            (lx, ly, hz),
+        ):
+            vertex.addData3(x, y, z)
+            normal.addData3(nx, ny, 0.0)
+        if invert:
+            tris.addVertices(base, base + 1, base + 2)
+            tris.addVertices(base, base + 2, base + 3)
+        else:
+            tris.addVertices(base, base + 2, base + 1)
+            tris.addVertices(base, base + 3, base + 2)
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("highway_ribbon")
+    node.addGeom(geom)
+    return node
+
+
 def box_instance(
     parent: NodePath,
     sx: float,
@@ -576,6 +953,326 @@ def box_instance(
         template = NodePath(make_box(sx, sy, sz, top=top, bottom=bottom))
         BOX_TEMPLATES[key] = template
     return template.copyTo(parent)
+
+
+def chamfer_box_instance(
+    parent: NodePath,
+    sx: float,
+    sy: float,
+    sz: float,
+    chamfer: float = 0.35,
+) -> NodePath:
+    """Floor slab with cut corners — breaks the pure extruded-box silhouette."""
+    key = (sx, sy, sz, chamfer)
+    template = CHAMFER_BOX_TEMPLATES.get(key)
+    if template is None:
+        template = NodePath(make_chamfer_box(sx, sy, sz, chamfer=chamfer))
+        CHAMFER_BOX_TEMPLATES[key] = template
+    return template.copyTo(parent)
+
+
+def cylinder_instance(
+    parent: NodePath,
+    radius: float,
+    length: float,
+    segments: int = 10,
+) -> NodePath:
+    """Cylinder along local +Y (axle). Used for car wheels."""
+    key = (radius, length, segments)
+    template = CYLINDER_TEMPLATES.get(key)
+    if template is None:
+        template = NodePath(make_cylinder(radius, length, segments=segments))
+        CYLINDER_TEMPLATES[key] = template
+    return template.copyTo(parent)
+
+
+def make_chamfer_box(
+    sx: float,
+    sy: float,
+    sz: float,
+    chamfer: float = 0.35,
+) -> GeomNode:
+    """Axis-aligned box with 45° corner cuts in plan (octagonal footprint)."""
+    hx, hy, hz = sx / 2.0, sy / 2.0, sz / 2.0
+    c = min(chamfer, hx * 0.45, hy * 0.45)
+    # CCW plan ring: start mid-front, walk around with cut corners.
+    ring = (
+        (-hx + c, -hy),
+        (hx - c, -hy),
+        (hx, -hy + c),
+        (hx, hy - c),
+        (hx - c, hy),
+        (-hx + c, hy),
+        (-hx, hy - c),
+        (-hx, -hy + c),
+    )
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("chamfer_box", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+    n = len(ring)
+
+    # Top fan.
+    top_c = (0.0, 0.0, hz)
+    top_i = [0] * n
+    for i, (x, y) in enumerate(ring):
+        top_i[i] = vertex.getWriteRow()
+        vertex.addData3(x, y, hz)
+        normal.addData3(0.0, 0.0, 1.0)
+    center_top = vertex.getWriteRow()
+    vertex.addData3(*top_c)
+    normal.addData3(0.0, 0.0, 1.0)
+    for i in range(n):
+        tris.addVertices(center_top, top_i[i], top_i[(i + 1) % n])
+
+    # Bottom fan (CW when viewed from above so normal faces −Z).
+    bot_i = [0] * n
+    for i, (x, y) in enumerate(ring):
+        bot_i[i] = vertex.getWriteRow()
+        vertex.addData3(x, y, -hz)
+        normal.addData3(0.0, 0.0, -1.0)
+    center_bot = vertex.getWriteRow()
+    vertex.addData3(0.0, 0.0, -hz)
+    normal.addData3(0.0, 0.0, -1.0)
+    for i in range(n):
+        tris.addVertices(center_bot, bot_i[(i + 1) % n], bot_i[i])
+
+    # Side quads.
+    for i in range(n):
+        j = (i + 1) % n
+        ax, ay = ring[i]
+        bx, by = ring[j]
+        nx, ny = face_normal((ax, ay, -hz), (bx, by, -hz), (bx, by, hz))[:2]
+        # Renormalize XY normal (sides are vertical).
+        length = math.hypot(nx, ny) or 1.0
+        nx, ny = nx / length, ny / length
+        base = vertex.getWriteRow()
+        for x, y, z in (
+            (ax, ay, -hz),
+            (bx, by, -hz),
+            (bx, by, hz),
+            (ax, ay, hz),
+        ):
+            vertex.addData3(x, y, z)
+            normal.addData3(nx, ny, 0.0)
+        tris.addVertices(base, base + 1, base + 2)
+        tris.addVertices(base, base + 2, base + 3)
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("chamfer_box")
+    node.addGeom(geom)
+    return node
+
+
+def make_cylinder(
+    radius: float,
+    length: float,
+    segments: int = 10,
+) -> GeomNode:
+    """Solid cylinder centred on the origin, axis along +Y."""
+    if segments < 5:
+        raise ValueError("segments must be at least 5")
+    hy = length / 2.0
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("cylinder", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    # Side strip.
+    for i in range(segments):
+        a0 = (2.0 * math.pi) * (i / segments)
+        a1 = (2.0 * math.pi) * ((i + 1) / segments)
+        c0, s0 = math.cos(a0), math.sin(a0)
+        c1, s1 = math.cos(a1), math.sin(a1)
+        # Circle in XZ; +Y is the axle.
+        p00 = (radius * c0, -hy, radius * s0)
+        p10 = (radius * c1, -hy, radius * s1)
+        p11 = (radius * c1, hy, radius * s1)
+        p01 = (radius * c0, hy, radius * s0)
+        n0 = (c0, 0.0, s0)
+        n1 = (c1, 0.0, s1)
+        base = vertex.getWriteRow()
+        for p, n in ((p00, n0), (p10, n1), (p11, n1), (p01, n0)):
+            vertex.addData3(*p)
+            normal.addData3(*n)
+        tris.addVertices(base, base + 1, base + 2)
+        tris.addVertices(base, base + 2, base + 3)
+
+    # Caps.
+    for y, nz in ((-hy, -1.0), (hy, 1.0)):
+        center = vertex.getWriteRow()
+        vertex.addData3(0.0, y, 0.0)
+        normal.addData3(0.0, nz, 0.0)
+        rim = []
+        for i in range(segments):
+            a = (2.0 * math.pi) * (i / segments)
+            rim.append(vertex.getWriteRow())
+            vertex.addData3(radius * math.cos(a), y, radius * math.sin(a))
+            normal.addData3(0.0, nz, 0.0)
+        for i in range(segments):
+            j = (i + 1) % segments
+            if nz > 0:
+                tris.addVertices(center, rim[i], rim[j])
+            else:
+                tris.addVertices(center, rim[j], rim[i])
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("cylinder")
+    node.addGeom(geom)
+    return node
+
+
+def z_cylinder_instance(
+    parent: NodePath,
+    radius: float,
+    height: float,
+    segments: int = 12,
+) -> NodePath:
+    """Vertical cylinder (axis +Z), centred on the origin."""
+    key = (radius, height, segments)
+    template = Z_CYLINDER_TEMPLATES.get(key)
+    if template is None:
+        template = NodePath(make_z_cylinder(radius, height, segments=segments))
+        Z_CYLINDER_TEMPLATES[key] = template
+    return template.copyTo(parent)
+
+
+def cone_instance(
+    parent: NodePath,
+    radius: float,
+    height: float,
+    segments: int = 12,
+) -> NodePath:
+    """Cone with base on z=0 and apex at z=height (centred in XY)."""
+    key = (radius, height, segments)
+    template = CONE_TEMPLATES.get(key)
+    if template is None:
+        template = NodePath(make_cone(radius, height, segments=segments))
+        CONE_TEMPLATES[key] = template
+    return template.copyTo(parent)
+
+
+def make_z_cylinder(
+    radius: float,
+    height: float,
+    segments: int = 12,
+) -> GeomNode:
+    """Solid cylinder centred on the origin, axis along +Z."""
+    if segments < 5:
+        raise ValueError("segments must be at least 5")
+    hz = height / 2.0
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("z_cylinder", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    for i in range(segments):
+        a0 = (2.0 * math.pi) * (i / segments)
+        a1 = (2.0 * math.pi) * ((i + 1) / segments)
+        c0, s0 = math.cos(a0), math.sin(a0)
+        c1, s1 = math.cos(a1), math.sin(a1)
+        p00 = (radius * c0, radius * s0, -hz)
+        p10 = (radius * c1, radius * s1, -hz)
+        p11 = (radius * c1, radius * s1, hz)
+        p01 = (radius * c0, radius * s0, hz)
+        n0 = (c0, s0, 0.0)
+        n1 = (c1, s1, 0.0)
+        base = vertex.getWriteRow()
+        for p, n in ((p00, n0), (p10, n1), (p11, n1), (p01, n0)):
+            vertex.addData3(*p)
+            normal.addData3(*n)
+        tris.addVertices(base, base + 1, base + 2)
+        tris.addVertices(base, base + 2, base + 3)
+
+    for z, nz in ((-hz, -1.0), (hz, 1.0)):
+        center = vertex.getWriteRow()
+        vertex.addData3(0.0, 0.0, z)
+        normal.addData3(0.0, 0.0, nz)
+        rim = []
+        for i in range(segments):
+            a = (2.0 * math.pi) * (i / segments)
+            rim.append(vertex.getWriteRow())
+            vertex.addData3(radius * math.cos(a), radius * math.sin(a), z)
+            normal.addData3(0.0, 0.0, nz)
+        for i in range(segments):
+            j = (i + 1) % segments
+            if nz > 0:
+                tris.addVertices(center, rim[i], rim[j])
+            else:
+                tris.addVertices(center, rim[j], rim[i])
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("z_cylinder")
+    node.addGeom(geom)
+    return node
+
+
+def make_cone(
+    radius: float,
+    height: float,
+    segments: int = 12,
+) -> GeomNode:
+    """Cone: base disc in z=0, apex at (0,0,height)."""
+    if segments < 5:
+        raise ValueError("segments must be at least 5")
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("cone", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+    apex = (0.0, 0.0, height)
+    # Side slope length for outward normals.
+    slope = math.hypot(radius, height) or 1.0
+    for i in range(segments):
+        a0 = (2.0 * math.pi) * (i / segments)
+        a1 = (2.0 * math.pi) * ((i + 1) / segments)
+        c0, s0 = math.cos(a0), math.sin(a0)
+        c1, s1 = math.cos(a1), math.sin(a1)
+        p0 = (radius * c0, radius * s0, 0.0)
+        p1 = (radius * c1, radius * s1, 0.0)
+        # Normal blends radial with up along the slant.
+        n0 = (c0 * height / slope, s0 * height / slope, radius / slope)
+        n1 = (c1 * height / slope, s1 * height / slope, radius / slope)
+        na = (
+            (n0[0] + n1[0]) * 0.5,
+            (n0[1] + n1[1]) * 0.5,
+            (n0[2] + n1[2]) * 0.5,
+        )
+        base = vertex.getWriteRow()
+        for p, n in ((p0, n0), (p1, n1), (apex, na)):
+            vertex.addData3(*p)
+            normal.addData3(*n)
+        tris.addVertices(base, base + 1, base + 2)
+
+    # Base cap (down).
+    center = vertex.getWriteRow()
+    vertex.addData3(0.0, 0.0, 0.0)
+    normal.addData3(0.0, 0.0, -1.0)
+    rim = []
+    for i in range(segments):
+        a = (2.0 * math.pi) * (i / segments)
+        rim.append(vertex.getWriteRow())
+        vertex.addData3(radius * math.cos(a), radius * math.sin(a), 0.0)
+        normal.addData3(0.0, 0.0, -1.0)
+    for i in range(segments):
+        j = (i + 1) % segments
+        tris.addVertices(center, rim[j], rim[i])
+
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("cone")
+    node.addGeom(geom)
+    return node
 
 
 def factory_template(
@@ -595,16 +1292,16 @@ def factory_template(
     wing_h = height * 0.72
     body = box_instance(root, sx, sy, wing_h)
     body.setPos(0.0, 0.0, bottom_z + wing_h / 2)
-    body.setMaterial(block_material(0.92), 1)
+    body.setMaterial(factory_material(0.92), 1)
     centre = box_instance(root, sx * 0.45, sy * 0.7, height)
     centre.setPos(0.0, 0.0, bottom_z + height / 2)
-    centre.setMaterial(block_material(0.88), 1)
+    centre.setMaterial(factory_material(0.88), 1)
 
     # Cornice lip and dark roof deck on the factory hall.
     roof_z = bottom_z + height
     cornice = box_instance(root, sx * 0.5, sy * 0.75, 0.2)
     cornice.setPos(0.0, 0.0, roof_z + 0.08)
-    cornice.setMaterial(block_material(0.78), 1)
+    cornice.setMaterial(factory_material(0.78), 1)
     deck = box_instance(root, sx * 0.42, sy * 0.62, 0.12)
     deck.setPos(0.0, 0.0, roof_z + 0.2)
     deck.setMaterial(roof_material(), 1)
@@ -614,48 +1311,14 @@ def factory_template(
         wing_roof.setPos(sign * sx * 0.36, 0.0, bottom_z + wing_h + 0.05)
         wing_roof.setMaterial(roof_material(), 1)
 
-    stack_size = (1.5, 1.5, 5.0)
-    stack_z = roof_z + 0.3 + stack_size[2] / 2
     sooty = stack_material()
     for stack_x in (-sx / 5, sx / 5):
-        stack = box_instance(root, *stack_size)
-        stack.setPos(stack_x, sy * 0.15, stack_z)
+        stack = z_cylinder_instance(root, 0.65, 5.0, segments=8)
+        stack.setPos(stack_x, sy * 0.15, roof_z + 0.3 + 2.5)
         stack.setMaterial(sooty, 1)
-
-    window_w = 0.85
-    window_h = 1.2
-    window_depth = 0.05
-    side_count = 5
-    window_gap = (sy - side_count * window_w) / (side_count + 1)
-    long_count = int((sx - window_gap) / (window_w + window_gap))
-    lower_z = bottom_z + height * 0.38
-    window_zs = (lower_z, lower_z + 2.4)
-    level = 0
-
-    def window_offsets(span: float, count: int) -> list[float]:
-        return [
-            -span / 2
-            + window_gap
-            + window_w / 2
-            + index * (window_w + window_gap)
-            for index in range(count)
-        ]
-
-    for sign in (1.0, -1.0):
-        face_x = sign * (sx / 2 + window_depth / 2)
-        for window_z in window_zs:
-            for offset_y in window_offsets(sy, side_count):
-                panel = box_instance(root, window_depth, window_w, window_h)
-                panel.setPos(face_x, offset_y, window_z)
-                panel.setMaterial(square_material(square_lightness(level)), 1)
-                level += 1
-        face_y = sign * (sy / 2 + window_depth / 2)
-        for window_z in window_zs:
-            for offset_x in window_offsets(sx, long_count):
-                panel = box_instance(root, window_w, window_depth, window_h)
-                panel.setPos(offset_x, face_y, window_z)
-                panel.setMaterial(square_material(square_lightness(level)), 1)
-                level += 1
+        cap = cone_instance(root, 0.7, 0.55, segments=8)
+        cap.setPos(stack_x, sy * 0.15, roof_z + 5.3)
+        cap.setMaterial(sooty, 1)
 
     root.flattenStrong()
     FACTORY_TEMPLATES[key] = root
@@ -663,7 +1326,7 @@ def factory_template(
 
 
 def car_template() -> NodePath:
-    """Sedan-ish car. Origin at the bounding-box centre; +X is forward.
+    """Sedan with tapered nose/cabin. Origin at centre; +X is forward.
 
     Keeps the ~2×1 footprint used by traffic spacing. Body parts are flattened;
     corner lamps stay named children so turn signals can blink independently.
@@ -695,8 +1358,12 @@ def car_template() -> NodePath:
         name: str | None = None,
         *,
         pitch: float = 0.0,
+        chamfer: float | None = None,
     ) -> NodePath:
-        box = box_instance(parent, sx, sy, sz)
+        if chamfer is not None:
+            box = chamfer_box_instance(parent, sx, sy, sz, chamfer=chamfer)
+        else:
+            box = box_instance(parent, sx, sy, sz)
         box.setPos(x, y, z)
         if pitch:
             box.setP(pitch)
@@ -705,44 +1372,51 @@ def car_template() -> NodePath:
             box.setName(name)
         return box
 
-    # Rocker / lower hull — slightly narrower than the shoulder line.
-    part(body_np, 1.82, 0.9, 0.28, 0.02, 0.0, -0.22, body)
-    # Shoulder / belt line, a touch wider for a less cubic read.
-    part(body_np, 1.7, 0.98, 0.22, 0.0, 0.0, -0.02, body)
-    # Cabin greenhouse, inset from the belt.
-    part(body_np, 0.88, 0.86, 0.32, -0.2, 0.0, 0.24, body)
-    # Trunk deck behind the cabin.
-    part(body_np, 0.42, 0.9, 0.14, -0.72, 0.0, 0.08, body)
-    # Sloped hood wedge toward the nose.
-    hood = body_np.attachNewNode(make_wedge(0.7, 0.92, 0.22))
-    hood.setPos(0.48, 0.0, 0.02)
+    # Lower hull: chamfered so the rocker isn't a brick.
+    part(body_np, 1.78, 0.88, 0.26, 0.04, 0.0, -0.24, body, chamfer=0.12)
+    # Shoulder / belt — slightly wider, soft corners.
+    part(body_np, 1.62, 0.96, 0.2, -0.02, 0.0, -0.02, body, chamfer=0.14)
+    # Cabin greenhouse, inset and chamfered.
+    part(body_np, 0.82, 0.82, 0.3, -0.22, 0.0, 0.22, body, chamfer=0.1)
+    # Trunk deck with a soft rear taper.
+    trunk = body_np.attachNewNode(make_wedge(0.5, 0.88, 0.16))
+    trunk.setPos(-0.72, 0.0, 0.04)
+    trunk.setH(180.0)
+    trunk.setMaterial(body, 1)
+    # Long hood wedge toward a pointed nose.
+    hood = body_np.attachNewNode(make_wedge(0.85, 0.9, 0.24))
+    hood.setPos(0.42, 0.0, 0.0)
     hood.setMaterial(body, 1)
 
     # Windshield / backlight as wedges so slopes don't spear through the roof.
-    windshield = detail.attachNewNode(make_wedge(0.32, 0.8, 0.3))
-    windshield.setPos(0.22, 0.0, 0.26)
+    windshield = detail.attachNewNode(make_wedge(0.36, 0.76, 0.28))
+    windshield.setPos(0.2, 0.0, 0.24)
     windshield.setMaterial(glass, 1)
-    backlight = detail.attachNewNode(make_wedge(0.28, 0.8, 0.24))
-    backlight.setPos(-0.58, 0.0, 0.22)
-    backlight.setH(180.0)  # tall end toward the cabin
+    backlight = detail.attachNewNode(make_wedge(0.3, 0.76, 0.22))
+    backlight.setPos(-0.56, 0.0, 0.2)
+    backlight.setH(180.0)
     backlight.setMaterial(glass, 1)
     for side in (-1.0, 1.0):
-        part(detail, 0.66, 0.04, 0.24, -0.18, side * 0.45, 0.24, glass)
-        # Soft wheel-arch cue carved into the rocker.
-        part(detail, 0.34, 0.06, 0.2, 0.52, side * 0.48, -0.22, trim)
-        part(detail, 0.34, 0.06, 0.2, -0.5, side * 0.48, -0.22, trim)
+        part(detail, 0.62, 0.04, 0.22, -0.2, side * 0.43, 0.22, glass)
+        # Soft wheel-arch lips.
+        part(detail, 0.32, 0.05, 0.16, 0.5, side * 0.47, -0.2, trim, chamfer=0.04)
+        part(detail, 0.32, 0.05, 0.16, -0.48, side * 0.47, -0.2, trim, chamfer=0.04)
 
-    # Bumpers wrap slightly around the corners.
-    part(detail, 0.12, 0.96, 0.16, 0.98, 0.0, -0.24, trim)
-    part(detail, 0.12, 0.96, 0.16, -0.98, 0.0, -0.24, trim)
-    part(detail, 0.05, 0.48, 0.1, 0.94, 0.0, -0.1, trim)
+    # Rounded-ish bumpers (chamfered bars).
+    part(detail, 0.1, 0.92, 0.14, 0.96, 0.0, -0.26, trim, chamfer=0.04)
+    part(detail, 0.1, 0.92, 0.14, -0.96, 0.0, -0.26, trim, chamfer=0.04)
+    part(detail, 0.05, 0.42, 0.08, 0.9, 0.0, -0.12, trim)
     for side in (-1.0, 1.0):
-        part(detail, 0.12, 0.1, 0.08, 0.22, side * 0.52, 0.12, trim)
+        part(detail, 0.1, 0.08, 0.07, 0.2, side * 0.5, 0.1, trim)
 
-    # Tire + inset hub so wheels read as discs, not cubes.
-    for wx, wy in ((0.55, 0.46), (0.55, -0.46), (-0.52, 0.46), (-0.52, -0.46)):
-        part(detail, 0.34, 0.12, 0.34, wx, wy, -0.34, wheel)
-        part(detail, 0.2, 0.14, 0.2, wx, wy, -0.34, trim)
+    # Cylindrical tires + hub caps.
+    for wx, wy in ((0.52, 0.44), (0.52, -0.44), (-0.5, 0.44), (-0.5, -0.44)):
+        tire = cylinder_instance(detail, 0.17, 0.14, segments=6)
+        tire.setPos(wx, wy, -0.34)
+        tire.setMaterial(wheel, 1)
+        hub = cylinder_instance(detail, 0.09, 0.15, segments=6)
+        hub.setPos(wx, wy, -0.34)
+        hub.setMaterial(trim, 1)
 
     body_np.flattenStrong()
     detail.flattenStrong()
@@ -750,12 +1424,14 @@ def car_template() -> NodePath:
     # +Y is the car's left; -Y is right. Lamps stay unflattened for signalling.
     for side, label in ((1.0, "left"), (-1.0, "right")):
         part(
-            root, 0.08, 0.16, 0.12, 0.98, side * 0.32, -0.08, headlight,
+            root, 0.08, 0.14, 0.1, 0.95, side * 0.3, -0.1, headlight,
             f"headlight-{label}",
+            chamfer=0.02,
         )
         part(
-            root, 0.08, 0.16, 0.1, -0.98, side * 0.32, -0.06, taillight,
+            root, 0.08, 0.14, 0.09, -0.95, side * 0.3, -0.08, taillight,
             f"taillight-{label}",
+            chamfer=0.02,
         )
 
     CAR_TEMPLATE = root

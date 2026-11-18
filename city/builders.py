@@ -6,7 +6,6 @@ import math
 
 from panda3d.core import (
     AmbientLight,
-    ColorAttrib,
     DirectionalLight,
     Material,
     NodePath,
@@ -17,6 +16,7 @@ from city.materials import (
     block_material,
     brown_material,
     centerline_material,
+    curb_material,
     lawn_material,
     mark_material,
     plinth_material,
@@ -31,12 +31,15 @@ from city.materials import (
 )
 from city.mesh import (
     box_instance,
+    chamfer_box_instance,
+    cone_instance,
     factory_template,
     lamp_template,
     make_annulus_sector,
     make_gable_roof,
-    make_sky_dome,
+    make_pyramid,
     tree_template,
+    z_cylinder_instance,
 )
 from city.plan import CityPlan
 
@@ -66,7 +69,7 @@ class SceneBuilders:
         shifts the whole ring north. A road that faces another block is left
         out, along with its corner squares, so the rings share one road.
         All-empty floors still draw a 2x5-sized road loop (29 by 11); with
-        ``factory`` True they also get a grey factory from the shared
+        ``factory`` True they also get a dark-brown factory from the shared
         flattened template, nine units tall.
         """
         south_floors, west_floors, east_floors, north_floors = floors
@@ -247,7 +250,6 @@ class SceneBuilders:
                     (walk_w, walk_w, 0.08),
                     sidewalk_material(),
                 )
-
     def _add_stack(
         self,
         x: float,
@@ -258,9 +260,10 @@ class SceneBuilders:
         heading: float = 0.0,
         doors: tuple[str, ...] = ("-y",),
     ) -> None:
-        """Stack ``floors`` with setbacks, belt courses, and a roof crown.
+        """Tower as a few shaped masses (not a stack of cubes).
 
-        Upper thirds step in so the silhouette isn't a single extruded box.
+        Style picks octagonal, round, or soft-rect shafts from the plan position
+        so neighbours vary without per-floor box storms.
         """
         parent = None
         if heading:
@@ -268,116 +271,105 @@ class SceneBuilders:
             parent.setPos(x, y, 0)
             parent.setH(heading)
             x, y = 0.0, 0.0
+        root = self.city if parent is None else parent
         sx, sy, sz = size
-        # Slightly proud base so the ground floor meets the sidewalk.
-        plinth_h = 0.32
-        self._add_block(
-            x,
-            y,
-            -sz / 2 + plinth_h / 2,
-            (sx + 0.45, sy + 0.45, plinth_h),
-            plinth_material(),
-            parent=parent,
-        )
-        # Slim corner pilasters on the lowest massing step.
-        pilaster = block_material(0.78)
-        for px, py in (
-            (-sx / 2, -sy / 2),
-            (sx / 2, -sy / 2),
-            (-sx / 2, sy / 2),
-            (sx / 2, sy / 2),
-        ):
-            self._add_block(
-                x + px * 0.92,
-                y + py * 0.92,
-                (min(floors, 6) * sz) / 2 - sz / 2,
-                (0.22, 0.22, min(floors, 6) * sz),
-                pilaster,
-                parent=parent,
-            )
+        total_h = floors * sz
+        bottom = -sz / 2
+        # 0=chamfer rect, 1=round, 2=deep chamfer (almost octagon).
+        style = int(abs(x * 3.1 + y * 7.3) * 10) % 3
 
-        for floor in range(floors):
-            # Step the plan in for mid and upper tiers.
-            if floor >= max(2, (floors * 3) // 4):
-                inset = 0.45
-            elif floor >= max(1, floors // 2):
-                inset = 0.22
+        plinth_h = 0.35
+        plinth = chamfer_box_instance(
+            root, sx + 0.5, sy + 0.5, plinth_h, chamfer=0.22,
+        )
+        plinth.setPos(x, y, bottom + plinth_h / 2)
+        plinth.setMaterial(plinth_material(), 1)
+
+        # Two massing steps: podium + shaft (and a slim top for tall towers).
+        podium_h = min(total_h * 0.28, sz * 4)
+        shaft_h = total_h - podium_h
+        top_h = 0.0
+        if floors >= 12:
+            top_h = min(shaft_h * 0.22, sz * 5)
+            shaft_h -= top_h
+
+        def add_mass(
+            wx: float,
+            wy: float,
+            hz: float,
+            z_center: float,
+            *,
+            chamfer: float,
+            round_r: float | None = None,
+        ) -> None:
+            if round_r is not None:
+                mass = z_cylinder_instance(root, round_r, hz, segments=12)
             else:
-                inset = 0.0
-            floor_size = (sx - 2.0 * inset, sy - 2.0 * inset, sz)
-            floor_z = floor * sz
-            self._add_block(
-                x,
-                y,
-                floor_z,
-                floor_size,
-                material,
-                top=False,
-                bottom=floor == 0,
-                parent=parent,
-            )
-            self._add_face_squares(
-                x, y, floor_z, floor_size, floor * 12, parent=parent, doors=doors,
-            )
-            # Thin belt course every few floors — breaks the flat curtain wall.
-            if floor > 0 and floor % 3 == 0 and inset < 0.4:
-                self._add_block(
-                    x,
-                    y,
-                    floor_z - sz / 2 + 0.06,
-                    (floor_size[0] + 0.12, floor_size[1] + 0.12, 0.12),
-                    block_material(0.88),
-                    parent=parent,
-                )
+                mass = chamfer_box_instance(root, wx, wy, hz, chamfer=chamfer)
+            mass.setPos(x, y, z_center)
+            mass.setMaterial(material, 1)
 
-        top_inset = 0.45 if floors >= 4 else 0.0
-        top_sx = sx - 2.0 * top_inset
-        top_sy = sy - 2.0 * top_inset
-        top_z = (floors - 1) * sz + sz / 2
-        # Cornice + mechanical crown, sized to the uppermost setback.
-        self._add_block(
-            x,
-            y,
-            top_z + 0.06,
-            (top_sx + 0.22, top_sy + 0.22, 0.14),
-            block_material(0.82),
-            parent=parent,
-        )
-        self._add_block(
-            x,
-            y,
-            top_z + 0.18,
-            (top_sx - 0.1, top_sy - 0.1, 0.12),
-            roof_material(),
-            parent=parent,
-        )
-        if floors >= 10:
+        podium_z = bottom + plinth_h + podium_h / 2
+        if style == 1:
+            add_mass(sx, sy, podium_h, podium_z, chamfer=0.2, round_r=min(sx, sy) * 0.52)
+        else:
+            add_mass(
+                sx, sy, podium_h, podium_z,
+                chamfer=0.35 if style == 2 else 0.22,
+            )
+
+        shaft_z = bottom + plinth_h + podium_h + shaft_h / 2
+        inset = 0.28 if floors >= 8 else 0.12
+        if style == 1:
+            add_mass(
+                sx - inset, sy - inset, shaft_h, shaft_z,
+                chamfer=0.2, round_r=min(sx, sy) * 0.42,
+            )
+        else:
+            add_mass(
+                sx - inset * 2, sy - inset * 2, shaft_h, shaft_z,
+                chamfer=0.4 if style == 2 else 0.25,
+            )
+
+        crown_z = bottom + plinth_h + podium_h + shaft_h
+        if top_h > 0.5:
+            top_z = crown_z + top_h / 2
+            if style == 1:
+                add_mass(
+                    sx * 0.55, sy * 0.55, top_h, top_z,
+                    chamfer=0.15, round_r=min(sx, sy) * 0.28,
+                )
+            else:
+                add_mass(
+                    sx * 0.55, sy * 0.55, top_h, top_z,
+                    chamfer=0.3 if style == 2 else 0.18,
+                )
+            crown_z += top_h
+
+        # Roof: cone, pyramid, or flat disc + mast — by style.
+        if style == 1:
+            roof = cone_instance(root, min(sx, sy) * 0.32, 1.1 if floors >= 10 else 0.7, segments=12)
+            roof.setPos(x, y, crown_z)
+            roof.setMaterial(roof_material(), 1)
+        elif style == 2:
+            roof = root.attachNewNode(
+                make_pyramid(sx * 0.5, sy * 0.5, 0.9 if floors >= 10 else 0.5)
+            )
+            roof.setPos(x, y, crown_z)
+            roof.setMaterial(roof_material(), 1)
+        else:
+            cap = chamfer_box_instance(root, sx * 0.5, sy * 0.5, 0.2, chamfer=0.15)
+            cap.setPos(x, y, crown_z + 0.1)
+            cap.setMaterial(roof_material(), 1)
+            if floors >= 10:
+                mast = z_cylinder_instance(root, 0.06, 1.6, segments=6)
+                mast.setPos(x, y, crown_z + 0.95)
+                mast.setMaterial(stack_material(), 1)
+        if floors >= 14 and style != 0:
             unit = stack_material()
-            self._add_block(
-                x - top_sx * 0.22,
-                y + top_sy * 0.18,
-                top_z + 0.55,
-                (0.65, 0.5, 0.75),
-                unit,
-                parent=parent,
-            )
-            self._add_block(
-                x + top_sx * 0.18,
-                y - top_sy * 0.12,
-                top_z + 0.48,
-                (0.5, 0.5, 0.55),
-                unit,
-                parent=parent,
-            )
-            # Slim antenna / mast so the crown isn't another box.
-            self._add_block(
-                x + top_sx * 0.05,
-                y + top_sy * 0.05,
-                top_z + 1.1,
-                (0.12, 0.12, 1.4),
-                unit,
-                parent=parent,
-            )
+            hut = chamfer_box_instance(root, 0.55, 0.45, 0.7, chamfer=0.08)
+            hut.setPos(x - sx * 0.12, y + sy * 0.1, crown_z + 0.4)
+            hut.setMaterial(unit, 1)
 
     def _add_block(
         self,
@@ -441,19 +433,19 @@ class SceneBuilders:
         """
         root = self.city if parent is None else parent
         sx, sy, sz = size
-        # Portrait office panes leave a concrete frame around each opening.
-        win_w = 0.78
+        # Two panes per face — enough to read as offices, far fewer verts.
+        win_w = 0.9
         win_h = 1.15
-        margin_x = 0.55
+        margin_x = 0.7
         depth = 0.05
         row_z = z - sz / 2 + (sz - win_h) / 2 + win_h / 2
         level = level_start
         door_faces = set(doors)
 
-        def centers(span: float) -> tuple[float, float, float]:
+        def centers(span: float) -> tuple[float, float]:
             left = -span / 2 + margin_x + win_w / 2
             right = span / 2 - margin_x - win_w / 2
-            return (left, (left + right) / 2, right)
+            return (left, right)
 
         def add_door(px: float, py: float, width_along_x: bool) -> None:
             door_width = 0.9
@@ -470,12 +462,11 @@ class SceneBuilders:
         along_y = centers(sy)
         for sign in (1.0, -1.0):
             face = "+y" if sign > 0 else "-y"
-            # Sit slightly proud so glass catches the sun against the wall.
             face_y = y + sign * (sy / 2 + depth / 2)
-            for offset in along_x:
+            for index, offset in enumerate(along_x):
                 tone = square_lightness(level)
                 level += 1
-                if z == 0 and offset == 0 and face in door_faces:
+                if z == 0 and index == 0 and face in door_faces:
                     add_door(x + offset, face_y, width_along_x=True)
                     continue
                 panel = box_instance(root, win_w, depth, win_h)
@@ -483,10 +474,10 @@ class SceneBuilders:
                 panel.setMaterial(square_material(tone), 1)
             face = "+x" if sign > 0 else "-x"
             face_x = x + sign * (sx / 2 + depth / 2)
-            for offset in along_y:
+            for index, offset in enumerate(along_y):
                 tone = square_lightness(level)
                 level += 1
-                if z == 0 and offset == 0 and face in door_faces:
+                if z == 0 and index == 0 and face in door_faces:
                     add_door(face_x, y + offset, width_along_x=False)
                     continue
                 panel = box_instance(root, depth, win_w, win_h)
@@ -622,19 +613,31 @@ class SceneBuilders:
             return
         # Towers sit flush with the curb line, so the walk overlays the lot-side
         # strip of asphalt instead of disappearing under the facade.
-        walk_w = 0.85
+        walk_w = 0.78
         walk_h = 0.08
+        curb_w = 0.16
+        curb_h = 0.14
         road_top = z + thickness / 2
         sign = 1.0 if sidewalk_inner >= 0 else -1.0
         edge = width / 2
         if along_x:
-            walk_y = y + sign * (edge - walk_w / 2)
+            curb_y = y + sign * (edge - curb_w / 2)
+            walk_y = y + sign * (edge - curb_w - walk_w / 2)
+            self._add_block(
+                x, curb_y, road_top + curb_h / 2,
+                (length, curb_w, curb_h), curb_material(), parent=parent,
+            )
             self._add_block(
                 x, walk_y, road_top + walk_h / 2,
                 (length, walk_w, walk_h), sidewalk_material(), parent=parent,
             )
         else:
-            walk_x = x + sign * (edge - walk_w / 2)
+            curb_x = x + sign * (edge - curb_w / 2)
+            walk_x = x + sign * (edge - curb_w - walk_w / 2)
+            self._add_block(
+                curb_x, y, road_top + curb_h / 2,
+                (curb_w, length, curb_h), curb_material(), parent=parent,
+            )
             self._add_block(
                 walk_x, y, road_top + walk_h / 2,
                 (walk_w, length, walk_h), sidewalk_material(), parent=parent,
@@ -654,9 +657,9 @@ class SceneBuilders:
         """Dashes on the road centerline, one unit apart edge to edge."""
         length = 2.0
         width = 0.5
-        gap = 1.0
+        gap = 2.0
         thickness = 0.04
-        # As many 2-unit dashes as fit with a 1-unit gap, centered on the road.
+        # Sparser dashes — same read from overview, fewer boxes to flatten.
         count = int((road_length + gap) / (length + gap))
         span = count * length + (count - 1) * gap
         z = road_top + thickness / 2
@@ -764,7 +767,7 @@ class SceneBuilders:
                 )
                 # Yard tree beside every other house — softens the grid.
                 if (crow + ccol) % 2 == 0:
-                    tree = tree_template().copyTo(self.city)
+                    tree = tree_template((crow * 2 + ccol) % 3).copyTo(self.city)
                     tree.setPos(hx + 1.6, hy + 1.1, road_z + 0.05)
                     tree.setH((crow * 37 + ccol * 19) % 360)
                     tree.setScale(0.85 + 0.12 * ((crow + ccol) % 3))
@@ -789,47 +792,45 @@ class SceneBuilders:
         brick: float = 0.7,
         chimney: bool = True,
     ) -> None:
-        """Gabled brick house with porch and optional side garage on ``(x, y)``."""
-        # Rectangular plan reads less like a toy cube than 2×2×2.
+        """Shaped brick house — chamfered mass, porch columns, gable or hip roof."""
         body = (2.4, 1.85, 1.85)
         sx, sy, sz = body
         brick_mat = brown_material(brick)
-        # Concrete foundation lip under the brick mass.
+        hip = int(abs(x * 11 + y * 3) * 10) % 2 == 0
         self._add_block(
             x, y, -sz / 2 + 0.08, (sx + 0.25, sy + 0.25, 0.18), sidewalk_material(),
         )
-        self._add_block(x, y, 0.0, body, brick_mat, top=False)
+        mass = chamfer_box_instance(self.city, sx, sy, sz, chamfer=0.22)
+        mass.setPos(x, y, 0.0)
+        mass.setMaterial(brick_mat, 1)
         self._add_house_openings(x, y, 0.0, body)
-        # Front porch slab + posts + shed roof.
         porch_y = y - sy / 2 - 0.35
         self._add_block(
             x, porch_y, -sz / 2 + 0.1, (1.5, 0.7, 0.16), sidewalk_material(),
         )
         for side in (-0.55, 0.55):
-            self._add_block(
-                x + side, porch_y, -0.15, (0.12, 0.12, 1.35), brick_mat,
-            )
+            col = z_cylinder_instance(self.city, 0.07, 1.35, segments=6)
+            col.setPos(x + side, porch_y, -0.15)
+            col.setMaterial(brick_mat, 1)
         porch_roof = self.city.attachNewNode(make_gable_roof(1.7, 0.85, 0.35))
         porch_roof.setPos(x, porch_y, sz / 2 - 0.15)
         porch_roof.setMaterial(roof_material(), 1)
-        # Main gable roof with eave overhang.
-        roof = self.city.attachNewNode(make_gable_roof(sx + 0.35, sy + 0.45, 1.05))
-        roof.setPos(x, y, sz / 2)
+        if hip:
+            roof = self.city.attachNewNode(make_pyramid(sx + 0.4, sy + 0.5, 1.15))
+            roof.setPos(x, y, sz / 2)
+        else:
+            roof = self.city.attachNewNode(make_gable_roof(sx + 0.35, sy + 0.45, 1.05))
+            roof.setPos(x, y, sz / 2)
         roof.setMaterial(roof_material(), 1)
         if chimney:
-            self._add_block(
-                x + sx * 0.28,
-                y + sy * 0.05,
-                sz / 2 + 0.85,
-                (0.32, 0.32, 0.95),
-                brown_material(brick * 0.85),
-            )
-        # Occasional one-car garage wing for lot variety.
+            pot = z_cylinder_instance(self.city, 0.16, 0.95, segments=6)
+            pot.setPos(x + sx * 0.28, y + sy * 0.05, sz / 2 + 0.85)
+            pot.setMaterial(brown_material(brick * 0.85), 1)
         if int((x * 3 + y * 5) * 10) % 5 == 0:
             gx = x + sx / 2 + 0.55
-            self._add_block(
-                gx, y, -0.15, (1.1, 1.5, 1.4), brick_mat, top=False,
-            )
+            wing = chamfer_box_instance(self.city, 1.1, 1.5, 1.4, chamfer=0.12)
+            wing.setPos(gx, y, -0.15)
+            wing.setMaterial(brick_mat, 1)
             door = box_instance(self.city, 0.06, 1.1, 1.05)
             door.setPos(gx, y - 0.78, -0.25)
             door.setMaterial(brown_material(0.45), 1)
@@ -845,35 +846,21 @@ class SceneBuilders:
         z: float,
         size: tuple[float, float, float],
     ) -> None:
-        """Door on −Y plus framed windows on the other faces."""
+        """Door on −Y plus a few unframed panes on the other faces."""
         sx, sy, sz = size
         depth = 0.05
-        frame = brown_material(0.45)
-        # Front door with a simple frame.
         door_h = 1.15
         door = box_instance(self.city, 0.55, depth, door_h)
         door.setPos(x, y - sy / 2 - depth / 2, z - sz / 2 + door_h / 2)
         door.setMaterial(brown_material(), 1)
-        frame_door = box_instance(self.city, 0.7, depth * 0.6, door_h + 0.12)
-        frame_door.setPos(x, y - sy / 2 - depth * 0.2, z - sz / 2 + door_h / 2)
-        frame_door.setMaterial(frame, 1)
 
         windows = (
-            (x + sx / 2 + depth / 2, y - 0.25, depth, 0.55, 0),
-            (x + sx / 2 + depth / 2, y + 0.35, depth, 0.55, 1),
-            (x - sx / 2 - depth / 2, y - 0.25, depth, 0.55, 2),
-            (x - sx / 2 - depth / 2, y + 0.35, depth, 0.55, 3),
-            (x, y + sy / 2 + depth / 2, 0.7, depth, 4),
+            (x + sx / 2 + depth / 2, y, depth, 0.7, 0),
+            (x - sx / 2 - depth / 2, y, depth, 0.7, 1),
+            (x, y + sy / 2 + depth / 2, 0.7, depth, 2),
         )
         win_h = 0.7
         for px, py, panel_x, panel_y, level in windows:
-            # Frame is a slightly larger slab behind/around the glass.
-            if panel_x <= panel_y:
-                trim = box_instance(self.city, panel_x + 0.04, panel_y + 0.1, win_h + 0.1)
-            else:
-                trim = box_instance(self.city, panel_x + 0.1, panel_y + 0.04, win_h + 0.1)
-            trim.setPos(px, py, z + 0.12)
-            trim.setMaterial(frame, 1)
             pane = box_instance(self.city, panel_x, panel_y, win_h)
             pane.setPos(px, py, z + 0.12)
             pane.setMaterial(square_material(square_lightness(level)), 1)
@@ -928,18 +915,4 @@ class SceneBuilders:
         fill_np = self.render.attachNewNode(fill)
         fill_np.setHpr(220, -25, 0)
         self.render.setLight(fill_np)
-
-        # Gradient sky; depth-write off so it never fights the city.
-        sky = self.render.attachNewNode(make_sky_dome(rings=4, sectors=12))
-        sky.setBin("background", 0)
-        sky.setDepthWrite(False)
-        sky.setLightOff()
-        sky.setShaderOff()
-        sky.setAttrib(ColorAttrib.makeVertex())
-        bounds = self.plan.framing_bounds()
-        sky.setPos(
-            (bounds["left"] + bounds["right"]) / 2,
-            (bounds["city_south"] + bounds["city_north"]) / 2,
-            0.0,
-        )
         # Fixed-function lighting: same materials, far cheaper than setShaderAuto.

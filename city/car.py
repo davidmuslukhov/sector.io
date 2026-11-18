@@ -94,6 +94,13 @@ class CarController:
         self._car_stride_y = stride_y
         self._car_cols = cols
         self._car_rows = rows
+        # Optional non-uniform Surrey grid (arterial gaps). Filled by CityApp.
+        self._car_road_xs: list[float] | None = None
+        self._car_road_ys: list[float] | None = None
+        self._car_west_cols = cols
+        self._car_south_rows = rows
+        self._car_gap_after_v: set[int] = set()
+        self._car_gap_after_h: set[int] = set()
         # Stop with the front bumper on the 5-wide intersection edge.
         self._car_stop_offset = 5.0 / 2 + size[0] / 2
         # Right-hand traffic: sit in the middle of the right half of the road.
@@ -193,10 +200,26 @@ class CarController:
             self.fleet.append(self)
 
     def _car_intersection_xy(self, v: int, h: int) -> tuple[float, float]:
+        if self._car_road_xs is not None and self._car_road_ys is not None:
+            return (self._car_road_xs[v], self._car_road_ys[h])
         return (
             self._car_origin_x + v * self._car_stride_x,
             self._car_origin_y + h * self._car_stride_y,
         )
+
+    def _car_crosses_arterial(self, v0: int, h0: int, v1: int, h1: int) -> bool:
+        """True when the edge crosses a named arterial gap (Hwy 99/15/10/…)."""
+        if h0 == h1:
+            lo, hi = sorted((v0, v1))
+            if self._car_gap_after_v:
+                return lo in self._car_gap_after_v and hi == lo + 1
+            return lo == self._car_west_cols and hi == self._car_west_cols + 1
+        if v0 == v1:
+            lo, hi = sorted((h0, h1))
+            if self._car_gap_after_h:
+                return lo in self._car_gap_after_h and hi == lo + 1
+            return lo == self._car_south_rows and hi == self._car_south_rows + 1
+        return False
 
     def _car_same_city(self, other: CarController) -> bool:
         """True when ``other`` is on this twin's grid (not the instanced copy)."""
@@ -1155,6 +1178,20 @@ class CarController:
     def _car_finish_path(self, kind: str | None = None) -> None:
         """Hand off after the last ramp waypoint."""
         kind = self._car_path_kind if kind is None else kind
+        # Geographic arterial cruiser — no diamond ring; loop the same polyline.
+        if kind == "arterial_loop":
+            loop = getattr(self, "_car_loop_path", None)
+            self._car_path = []
+            self._car_path_i = 0
+            self._car_path_kind = None
+            if loop and len(loop) >= 2:
+                self._car_pos[0], self._car_pos[1] = loop[0][0], loop[0][1]
+                self._car_set_surface_z(loop[0][2])
+                self._car_clear_grade_pitch()
+                self._car_begin_path(list(loop), kind="arterial_loop")
+                return
+            self._car_state = "drive"
+            return
         self._car_path = []
         self._car_path_i = 0
         self._car_path_kind = None
@@ -1654,8 +1691,12 @@ class CarController:
             if gateway is not None and (ndx, ndy) == toward_hwy:
                 options.append((ndx, ndy))
                 continue
-            if self._car_in_bounds(v + ndx, h + ndy):
-                options.append((ndx, ndy))
+            nv, nh = v + ndx, h + ndy
+            if not self._car_in_bounds(nv, nh):
+                continue
+            if self._car_crosses_arterial(v, h, nv, nh):
+                continue
+            options.append((ndx, ndy))
         if not options:
             return (-dx, -dy)
         legal = [opt for opt in options if self._car_may_proceed(opt)]

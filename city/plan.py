@@ -1,25 +1,8 @@
-"""Software-city layout architecture.
+"""Surrey, BC — geographic arterial layout (no ring).
 
-Sixteen rings, each two towers deep and five wide, form a square with four on
-each side. Twelve housing blocks in a six-by-two grid sit north of the tower
-city, west-aligned with it, and sixteen more in a two-by-eight grid sit west of
-the towers, spanning the southern factories through the northern housing; each
-lot shares roads with neighbours and holds a six-by-two grid of brown houses
-(2x2 cube under a 3x3 pyramid), two units between roofs, with a green slab as
-thick as the road filling the gaps. Eight empty road loops with the same
-29-by-11 inner footprint form a two-by-four grid south of the tower city, and
-twelve more form a two-by-six grid east of the tower city and its southern
-factories; each shares roads with its neighbours and holds a grey factory
-building 29 by 11 by 9 with three 2-by-2-by-6 stacks on the roof. Each ring has
-stacks of unique random heights, from ten to twenty-five floors. A block leaves
-out the road on any side that faces another block, so neighbours share one
-road. Twelve rows of full housing blocks fill the strip between the two cities,
-spanning the full city width; the northern copy sits exactly far enough north
-that those lots share the south city's north road and the north city's south
-road. A six-lane ring beltway wraps both cities with a six-lane ring (west,
-north, east, south), quarter-turn rounded corners cleared past the street grid,
-and a diamond interchange on each side (elevated cross-street bridge with four
-diagonal on/off ramps).
+Highways are open polylines with real bearings (diagonal Fraser Hwy / Hwy 1 /
+Hwy 99, N–S Hwy 15, E–W Hwy 10, Fraser-hugging Hwy 17). Neighborhoods are
+local lot grids that may be rotated to follow nearby corridors.
 """
 
 from __future__ import annotations
@@ -57,8 +40,39 @@ class HousingLot:
 
 
 @dataclass(frozen=True)
+class Neighborhood:
+    name: str
+    kind: str
+    origin_x: float
+    origin_y: float
+    heading_deg: float
+    cols: int
+    rows: int
+
+
+@dataclass(frozen=True)
+class StreetRoute:
+    """Local residential centreline with optional cul-de-sac bulbs."""
+
+    name: str
+    points: tuple[tuple[float, float], ...]
+    bulb_start: bool = False
+    bulb_end: bool = False
+    bulb_radius: float | None = None
+
+
+@dataclass(frozen=True)
+class HighwayRoute:
+    """Arterial centreline with a per-route lane count."""
+
+    name: str
+    points: tuple[tuple[float, float], ...]
+    lanes: int
+
+
+@dataclass(frozen=True)
 class CityPlan:
-    """District grids, strides, shared-road rules, twin city, and highway."""
+    """Surrey neighborhoods, lot metrics, and geographic highway polylines."""
 
     block_size: tuple[float, float, float]
     tower_count: int
@@ -68,6 +82,44 @@ class CityPlan:
     floor_max: int
     towers_per_ring: int
 
+    highway_lanes: int
+    fence_w: float
+    fence_h: float
+    barrier_w: float
+    barrier_h: float
+    highway_keepout: float
+    highway_routes: tuple[HighwayRoute, ...]
+    street_routes: tuple[StreetRoute, ...]
+    neighborhoods: tuple[Neighborhood, ...]
+
+    @property
+    def highway_polylines(self) -> tuple[tuple[str, tuple[tuple[float, float], ...]], ...]:
+        """Compatibility view: ``(name, points)`` pairs."""
+        return tuple((route.name, route.points) for route in self.highway_routes)
+
+    road_left: float
+    road_right: float
+    road_length: float
+    road_depth: float
+    stride_x: float
+    stride_y: float
+    lot_width: float
+    road_top: float
+    south_road0: float
+    west_road0: float
+    south_road_full0: float
+    west_road_full0: float
+    south_face: float
+    city_west_edge: float
+    tallest: int
+
+    # Compatibility for car/signal helpers that still expect a host grid.
+    cols: int
+    rows: int
+    north_shift: float
+    north_shift_lots: int
+    exit_row: int
+    between_housing_rows: int
     grid: int
     housing_cols: int
     housing_rows: int
@@ -77,916 +129,489 @@ class CityPlan:
     west_housing_rows: int
     east_factory_cols: int
     east_factory_rows: int
-
-    between_housing_rows: int
-
-    north_shift_lots: int
-    highway_lanes: int
-    fence_w: float
-    fence_h: float
-    barrier_w: float
-    barrier_h: float
-    exit_row: int
-
-    # Derived placement anchors (computed by load_city_plan from YAML).
-    road_left: float
-    road_right: float
-    road_length: float
-    road_depth: float
-    stride_x: float
-    stride_y: float
-    lot_width: float
     tower_west: float
-    cols: int
-    rows: int
-    west_housing_cols_count: int
     housing_south: int
-    south_road0: float
-    west_road0: float
-    south_road_full0: float
-    west_road_full0: float
-    road_top: float
-    south_face: float
-    city_west_edge: float
-    north_shift: float
-    tallest: int
+    west_housing_cols_count: int
+    west_cols: int
+    east_cols: int
+    south_rows: int
+    north_rows: int
+    arterial_gap_x: float
+    arterial_gap_y: float
+    gap_after_v: tuple[int, ...]
+    gap_after_h: tuple[int, ...]
+    road_xs_list: tuple[float, ...]
+    road_ys_list: tuple[float, ...]
+
+    def grid_x(self, v: int) -> float:
+        return self.road_xs_list[min(max(v, 0), len(self.road_xs_list) - 1)]
+
+    def grid_y(self, h: int) -> float:
+        return self.road_ys_list[min(max(h, 0), len(self.road_ys_list) - 1)]
+
+    def road_xs(self) -> list[float]:
+        return list(self.road_xs_list)
+
+    def road_ys(self) -> list[float]:
+        return list(self.road_ys_list)
+
+    def crosses_arterial(self, v0: int, h0: int, v1: int, h1: int) -> bool:
+        return False
 
     def solid_lot(self, brow: int, bcol: int) -> bool:
-        """True when the lot has a tower or factory wall at the road."""
-        if bcol < 0 or bcol >= self.cols or brow < 0 or brow >= self.rows:
-            return False
-        if bcol < self.west_housing_cols:
-            return False
-        if brow >= self.housing_south:
-            return False
-        return True
+        return False
 
+    def local_to_world(
+        self, neighborhood: Neighborhood, lx: float, ly: float
+    ) -> tuple[float, float]:
+        rad = math.radians(neighborhood.heading_deg)
+        c = math.cos(rad)
+        s = math.sin(rad)
+        return (
+            neighborhood.origin_x + lx * c - ly * s,
+            neighborhood.origin_y + lx * s + ly * c,
+        )
+
+    def lot_local_west_face(self, col: int) -> float:
+        return col * self.stride_x + self.road_width / 2
+
+    def lot_local_y_offset(self, row: int) -> float:
+        return row * self.stride_y
+
+    def highway_half_width(self) -> float:
+        return self.highway_lanes * (self.road_width / 2) / 2
+
+    def point_near_highway(self, x: float, y: float, clearance: float | None = None) -> bool:
+        clear = self.highway_keepout if clearance is None else clearance
+        clear2 = clear * clear
+        for _name, points in self.highway_polylines:
+            for i in range(len(points) - 1):
+                ax, ay = points[i]
+                bx, by = points[i + 1]
+                if _dist2_point_segment(x, y, ax, ay, bx, by) <= clear2:
+                    return True
+        return False
+
+    def lot_hits_highway(
+        self,
+        neighborhood: Neighborhood,
+        west_face: float,
+        y_offset: float,
+        *,
+        lot_width: float | None = None,
+        lot_depth: float | None = None,
+    ) -> bool:
+        """True if the lot lawn + street apron would overlap a highway ribbon."""
+        width = self.lot_width if lot_width is None else lot_width
+        depth = self.road_depth if lot_depth is None else lot_depth
+        # Lawn footprint only — local streets may approach arterials, houses may not.
+        local_corners = (
+            (west_face, y_offset),
+            (west_face + width, y_offset),
+            (west_face + width, y_offset + depth),
+            (west_face, y_offset + depth),
+        )
+        world = [self.local_to_world(neighborhood, lx, ly) for lx, ly in local_corners]
+        xs = [p[0] for p in world]
+        ys = [p[1] for p in world]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        # Stay outside the paved highway half-width plus YAML keepout margin.
+        clear = self.highway_half_width() + self.highway_keepout
+        clear2 = clear * clear
+        for _name, points in self.highway_polylines:
+            for i in range(len(points) - 1):
+                ax, ay = points[i]
+                bx, by = points[i + 1]
+                if _dist2_aabb_segment(min_x, min_y, max_x, max_y, ax, ay, bx, by) <= clear2:
+                    return True
+        return False
+
+    def iter_neighborhood_lots(
+        self, neighborhood: Neighborhood
+    ) -> Iterator[tuple[str, TowerLot | HousingLot]]:
+        """Yield ``(kind, lot)`` in neighborhood-local coordinates."""
+        for row in range(neighborhood.rows):
+            for col in range(neighborhood.cols):
+                west = self.lot_local_west_face(col)
+                y_off = self.lot_local_y_offset(row)
+                if self.lot_hits_highway(neighborhood, west, y_off):
+                    continue
+                eastern = col == neighborhood.cols - 1
+                southern = row == 0
+                if neighborhood.kind == "tower":
+                    yield (
+                        "tower",
+                        TowerLot(
+                            west_face=west,
+                            y_offset=y_off,
+                            eastern_road=eastern,
+                            southern_road=southern,
+                            empty=False,
+                        ),
+                    )
+                elif neighborhood.kind == "factory":
+                    yield (
+                        "factory",
+                        TowerLot(
+                            west_face=west,
+                            y_offset=y_off,
+                            eastern_road=eastern,
+                            southern_road=southern,
+                            empty=True,
+                        ),
+                    )
+                else:
+                    yield (
+                        "housing",
+                        HousingLot(
+                            west_face=west,
+                            y_offset=y_off,
+                            lot_width=self.lot_width,
+                            lot_depth=self.road_depth,
+                            eastern_road=eastern,
+                            southern_road=southern,
+                            northern_road=True,
+                            houses_across=6,
+                            houses_deep=2,
+                        ),
+                    )
+
+    # Empty legacy iterators — assembly uses neighborhoods instead.
     def iter_tower_lots(self) -> Iterator[TowerLot]:
-        for row in range(self.grid):
-            for col in range(self.grid):
-                yield TowerLot(
-                    west_face=self.road_left - (self.grid - 1 - col) * self.stride_x,
-                    y_offset=row * self.stride_y,
-                    eastern_road=False,
-                    southern_road=False,
-                    empty=False,
-                )
+        return iter(())
+
+    def iter_factory_lots(self) -> Iterator[TowerLot]:
+        return iter(())
+
+    def iter_housing_lots(self) -> Iterator[HousingLot]:
+        return iter(())
 
     def iter_north_housing_lots(self) -> Iterator[HousingLot]:
-        for hrow in range(self.housing_rows):
-            for hcol in range(self.housing_cols):
-                yield HousingLot(
-                    west_face=self.road_left - (self.grid - 1) * self.stride_x + hcol * self.stride_x,
-                    y_offset=(self.grid + hrow) * self.stride_y,
-                    lot_width=self.lot_width,
-                    lot_depth=self.road_depth,
-                    eastern_road=hcol == self.housing_cols - 1,
-                    southern_road=False,
-                    northern_road=True,
-                    houses_across=6,
-                    houses_deep=2,
-                )
+        return iter(())
 
     def iter_west_housing_lots(self) -> Iterator[HousingLot]:
-        for wrow in range(self.west_housing_rows):
-            for wcol in range(self.west_housing_cols):
-                yield HousingLot(
-                    west_face=self.tower_west - (self.west_housing_cols - wcol) * self.stride_x,
-                    y_offset=(wrow - self.factory_rows) * self.stride_y,
-                    lot_width=self.lot_width,
-                    lot_depth=self.road_depth,
-                    eastern_road=False,
-                    southern_road=wrow == 0,
-                    northern_road=True,
-                    houses_across=6,
-                    houses_deep=2,
-                )
+        return iter(())
 
     def iter_south_factory_lots(self) -> Iterator[TowerLot]:
-        for frow in range(self.factory_rows):
-            for fcol in range(self.factory_cols):
-                yield TowerLot(
-                    west_face=self.road_left - (self.factory_cols - 1 - fcol) * self.stride_x,
-                    y_offset=-(frow + 1) * self.stride_y,
-                    eastern_road=False,
-                    southern_road=frow == self.factory_rows - 1,
-                    empty=True,
-                )
+        return iter(())
 
     def iter_east_factory_lots(self) -> Iterator[TowerLot]:
-        for erow in range(self.east_factory_rows):
-            for ecol in range(self.east_factory_cols):
-                yield TowerLot(
-                    west_face=self.road_left + (ecol + 1) * self.stride_x,
-                    y_offset=(erow - self.factory_rows) * self.stride_y,
-                    eastern_road=ecol == self.east_factory_cols - 1,
-                    southern_road=erow == 0,
-                    empty=True,
-                )
+        return iter(())
 
     def iter_between_housing_lots(self) -> Iterator[HousingLot]:
-        """Full-size housing grid filling the strip between the twin cities."""
-        west0 = self.tower_west - self.west_housing_cols * self.stride_x
-        y0 = (self.grid + self.housing_rows) * self.stride_y
-        for brow in range(self.between_housing_rows):
-            for bcol in range(self.cols):
-                yield HousingLot(
-                    west_face=west0 + bcol * self.stride_x,
-                    y_offset=y0 + brow * self.stride_y,
-                    lot_width=self.lot_width,
-                    lot_depth=self.road_depth,
-                    eastern_road=bcol == self.cols - 1,
-                    southern_road=False,
-                    northern_road=brow < self.between_housing_rows - 1,
-                    houses_across=6,
-                    houses_deep=2,
-                )
+        return iter(())
 
-    def diamond_ramp_metrics(self, highway_width: float) -> dict[str, float]:
-        """Shared diamond proportions for rendering and car ramp paths."""
-        rw = self.road_width
-        opening_half = max(rw * 0.9, highway_width * 0.85)
-        along = max(highway_width * 1.55, opening_half * 1.15, rw * 4.5)
-        merge = rw * 0.3
-        # Keep abutments close to the belt edge so the city arterial has room to
-        # climb — short stubs make every slab crash into the same point.
-        abut = rw * 0.18
-        parallel = max(rw * 1.6, along * 0.28)
-        peel = along - parallel
-        curb = rw / 2
-        # Narrower than the arterial so two slips + deck don't share one volume.
-        slip_w = rw * 0.62
-        deck_clear = rw * 0.55
-        # Slips land on a flat terrace (\___/): climb, level pad, then bridge.
-        join_frac = 0.30
-        # Half-length hint for the level join pad (slip mouth width).
-        terrace_half = max(rw * 1.15, slip_w * 1.55)
-        # Flat grade run from the city gateway before the climb starts.
-        approach_flat = max(rw * 2.4, slip_w * 3.2)
-        return {
-            "opening_half": opening_half,
-            "along": along,
-            "merge": merge,
-            "abut": abut,
-            "parallel": parallel,
-            "peel": peel,
-            "curb": curb,
-            "slip_w": slip_w,
-            "deck_clear": deck_clear,
-            "join_frac": join_frac,
-            "terrace_half": terrace_half,
-            "approach_flat": approach_flat,
-            "bridge_clearance": self.barrier_h + 2.8,
-        }
-
-    def _annotate_diamond_ramps(
-        self,
-        diamond: dict,
-        *,
-        highway_width: float,
-        road_z: float,
-        road_thickness: float,
-        city_margin: float,
-        belt_west_inner: float,
-        belt_west_outer: float,
-        belt_east_inner: float,
-        belt_east_outer: float,
-        belt_south_inner: float,
-        belt_south_outer: float,
-        belt_north_inner: float,
-        belt_north_outer: float,
-    ) -> None:
-        """Attach ramp endpoints and enter/exit waypoint routes to ``diamond``.
-
-        ``city_margin`` keeps belt keepouts clear of city fabric. Gateway→foot
-        is ordinary city approach; the elevated corridor climbs from the foot
-        to a deck-height join terrace (\\___/) for the slip mouths.
-        """
-        m = self.diamond_ramp_metrics(highway_width)
-        along = m["along"]
-        peel = m["peel"]
-        merge = m["merge"]
-        abut = m["abut"]
-        curb = m["curb"]
-        join_frac = m["join_frac"]
-        terrace_half = m["terrace_half"]
-        approach_flat = m["approach_flat"]
-        slip_w = m["slip_w"]
-        bridge_z = road_z + m["bridge_clearance"]
-        grade_top = road_z + road_thickness / 2
-        bridge_top = bridge_z + road_thickness / 2
-        # Flat terrace at deck height so slips T-junction onto the same level
-        # pad as the bridge (\__________/), not mid-slope.
-        city_join_z = bridge_z
-        outer_join_z = bridge_z
-        city_join_top = bridge_top
-        outer_join_top = bridge_top
-        hx = diamond["hx"]
-        hy = diamond["hy"]
-        side = diamond["side"]
-        rw = self.road_width
-        # Same inset as ``add_ramp_pair`` curb landings — climb ends on asphalt,
-        # not at a free lateral tip past the arterial curb.
-        curb_out = max(0.35, rw * 0.5 - 0.12)
-        margin = max(0.0, float(city_margin))
-        rise = abs(bridge_z - road_z)
-
-        def lerp2(
-            a: tuple[float, float], b: tuple[float, float], t: float,
-        ) -> tuple[float, float]:
-            return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-
-        def exit_foot(
-            city_end: tuple[float, float], toward_hwy: tuple[float, float],
-        ) -> tuple[float, float]:
-            """Climb starts after a flat grade approach from the city curb.
-
-            Keeps the gateway intersection on level road; climb/terrace still
-            fit between the foot and the belt abutment.
-            """
-            flat = max(approach_flat, min(margin, rw * 4.0) if margin > 0.5 else approach_flat)
-            return (
-                city_end[0] + toward_hwy[0] * flat,
-                city_end[1] + toward_hwy[1] * flat,
-            )
-
-        def terrace_ends(
-            bridge_pt: tuple[float, float],
-            grade_pt: tuple[float, float],
-        ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
-            """Throat + flat pad ends on climb ``bridge_pt`` → ``grade_pt``.
-
-            Returns ``(flat_hi, throat, flat_lo)`` where hi is bridge-ward and lo
-            is grade-ward. Profile is climb then level (\\___/): keep enough run
-            for a ~25–35% grade, and a flat long enough for the slip mouth.
-            """
-            climb = math.hypot(
-                grade_pt[0] - bridge_pt[0], grade_pt[1] - bridge_pt[1],
-            )
-            climb = max(climb, 0.1)
-            # Prefer a drivable climb; leftover length becomes the join terrace.
-            min_climb = min(climb * 0.62, max(rise / 0.28, rw * 2.4))
-            flat_need = max(rw * 1.35, slip_w * 1.9, terrace_half * 0.85)
-            flat_len = max(climb - min_climb, min(flat_need, climb * 0.45))
-            if flat_len + min_climb > climb:
-                flat_len = max(0.0, climb - min_climb)
-            if flat_len < rw * 0.9:
-                # Short arterial: shrink climb before giving up the slip pad.
-                flat_len = min(max(rw * 1.1, slip_w * 1.5), climb * 0.48)
-                min_climb = climb - flat_len
-            t_lo = flat_len / climb
-            # Throat sits mid-flat, clear of the climb kink and the abutment.
-            t_throat = min(max(join_frac * t_lo, t_lo * 0.42), t_lo * 0.62)
-            t_hi = max(0.03, min(t_throat * 0.45, t_throat - 0.04))
-            return (
-                lerp2(bridge_pt, grade_pt, t_hi),
-                lerp2(bridge_pt, grade_pt, t_throat),
-                lerp2(bridge_pt, grade_pt, t_lo),
-            )
-
-        def curb_land(
-            throat: tuple[float, float], toward: tuple[float, float],
-        ) -> tuple[float, float]:
-            """Climb terminus on the arterial curb (matches mesh landings)."""
-            return (
-                throat[0] + toward[0] * curb_out,
-                throat[1] + toward[1] * curb_out,
-            )
-
-        def attach_ew_joins(
-            ramps: dict,
-            city_ix: tuple[float, float],
-            foot: tuple[float, float],
-            outer_ix: tuple[float, float],
-            outer_end: tuple[float, float],
-        ) -> None:
-            """Arterial along X — curb-land joins north/south of the throat."""
-            city_flat_hi, city_throat, city_flat_lo = terrace_ends(city_ix, foot)
-            outer_flat_hi, outer_throat, outer_flat_lo = terrace_ends(
-                outer_ix, outer_end,
-            )
-            ramps["city_throat"] = city_throat
-            ramps["city_join_n"] = curb_land(city_throat, (0.0, 1.0))
-            ramps["city_join_s"] = curb_land(city_throat, (0.0, -1.0))
-            ramps["city_flat_lo"] = city_flat_lo
-            ramps["city_flat_hi"] = city_flat_hi
-            ramps["outer_throat"] = outer_throat
-            ramps["outer_join_n"] = curb_land(outer_throat, (0.0, 1.0))
-            ramps["outer_join_s"] = curb_land(outer_throat, (0.0, -1.0))
-            ramps["outer_flat_lo"] = outer_flat_lo
-            ramps["outer_flat_hi"] = outer_flat_hi
-
-        def attach_ns_joins(
-            ramps: dict,
-            city_ix: tuple[float, float],
-            foot: tuple[float, float],
-            outer_ix: tuple[float, float],
-            outer_end: tuple[float, float],
-        ) -> None:
-            """Arterial along Y — curb-land joins west/east of the throat."""
-            city_flat_hi, city_throat, city_flat_lo = terrace_ends(city_ix, foot)
-            outer_flat_hi, outer_throat, outer_flat_lo = terrace_ends(
-                outer_ix, outer_end,
-            )
-            ramps["city_throat"] = city_throat
-            ramps["city_join_w"] = curb_land(city_throat, (-1.0, 0.0))
-            ramps["city_join_e"] = curb_land(city_throat, (1.0, 0.0))
-            ramps["city_flat_lo"] = city_flat_lo
-            ramps["city_flat_hi"] = city_flat_hi
-            ramps["outer_throat"] = outer_throat
-            ramps["outer_join_w"] = curb_land(outer_throat, (-1.0, 0.0))
-            ramps["outer_join_e"] = curb_land(outer_throat, (1.0, 0.0))
-            ramps["outer_flat_lo"] = outer_flat_lo
-            ramps["outer_flat_hi"] = outer_flat_hi
-
-        if side == "west":
-            city_end = (diamond["city_x"] - curb, hy)
-            foot = exit_foot(city_end, (-1.0, 0.0))
-            city_ix = (belt_west_inner + abut, hy)
-            outer_ix = (belt_west_outer - abut, hy)
-            # Keep original stub length — don't let city_margin inflate it.
-            outer_reach = max(
-                highway_width * 1.1,
-                max(0.0, foot[0] - belt_west_inner),
-                rw * 3.0,
-            )
-            outer_end = (belt_west_outer - outer_reach, hy)
-            inner_x = belt_west_inner - merge
-            outer_x = belt_west_outer + merge
-            ramps = {
-                "city_end": city_end,
-                "exit_foot": foot,
-                "city_ix": city_ix,
-                "outer_ix": outer_ix,
-                "outer_end": outer_end,
-                "inner_n0": (inner_x, hy + along),
-                "inner_n1": (inner_x, hy + peel),
-                "inner_s0": (inner_x, hy - along),
-                "inner_s1": (inner_x, hy - peel),
-                "outer_n0": (outer_x, hy + along),
-                "outer_n1": (outer_x, hy + peel),
-                "outer_s0": (outer_x, hy - along),
-                "outer_s1": (outer_x, hy - peel),
-                # Along-highway diverge/merge stations (lane X filled by the car).
-                "diverge_ccw": (hx, hy - along),
-                "diverge_cw": (hx, hy + along),
-                "merge_ccw": (hx, hy + along),
-                "merge_cw": (hx, hy - along),
-            }
-            attach_ew_joins(ramps, city_ix, foot, outer_ix, outer_end)
-            # CCW = northbound on the inner curb; CW = southbound on the outer.
-            # City-bound right lane is south — exit_ccw merges via city_join_s.
-            exit_ccw = [
-                (*ramps["inner_s0"], grade_top),
-                (*ramps["inner_s1"], grade_top),
-                (*ramps["city_join_s"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_ccw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_join_n"], city_join_top),
-                (*ramps["inner_n1"], grade_top),
-                (*ramps["inner_n0"], grade_top),
-            ]
-            exit_cw = [
-                (*ramps["outer_n0"], grade_top),
-                (*ramps["outer_n1"], grade_top),
-                (*ramps["outer_join_n"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*outer_ix, bridge_top),
-                (*city_ix, bridge_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_cw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*city_ix, bridge_top),
-                (*outer_ix, bridge_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_join_s"], outer_join_top),
-                (*ramps["outer_s1"], grade_top),
-                (*ramps["outer_s0"], grade_top),
-            ]
-        elif side == "east":
-            city_end = (diamond["city_x"] + curb, hy)
-            foot = exit_foot(city_end, (1.0, 0.0))
-            city_ix = (belt_east_inner - abut, hy)
-            outer_ix = (belt_east_outer + abut, hy)
-            outer_reach = max(
-                highway_width * 1.1,
-                max(0.0, belt_east_inner - foot[0]),
-                rw * 3.0,
-            )
-            outer_end = (belt_east_outer + outer_reach, hy)
-            inner_x = belt_east_inner + merge
-            outer_x = belt_east_outer - merge
-            ramps = {
-                "city_end": city_end,
-                "exit_foot": foot,
-                "city_ix": city_ix,
-                "outer_ix": outer_ix,
-                "outer_end": outer_end,
-                "inner_n0": (inner_x, hy + along),
-                "inner_n1": (inner_x, hy + peel),
-                "inner_s0": (inner_x, hy - along),
-                "inner_s1": (inner_x, hy - peel),
-                "outer_n0": (outer_x, hy + along),
-                "outer_n1": (outer_x, hy + peel),
-                "outer_s0": (outer_x, hy - along),
-                "outer_s1": (outer_x, hy - peel),
-                "diverge_ccw": (hx, hy + along),
-                "diverge_cw": (hx, hy - along),
-                "merge_ccw": (hx, hy - along),
-                "merge_cw": (hx, hy + along),
-            }
-            attach_ew_joins(ramps, city_ix, foot, outer_ix, outer_end)
-            # CCW = southbound on the inner curb; CW = northbound on the outer.
-            # City-bound right lane is north — exit_ccw merges via city_join_n.
-            exit_ccw = [
-                (*ramps["inner_n0"], grade_top),
-                (*ramps["inner_n1"], grade_top),
-                (*ramps["city_join_n"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_ccw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_join_s"], city_join_top),
-                (*ramps["inner_s1"], grade_top),
-                (*ramps["inner_s0"], grade_top),
-            ]
-            exit_cw = [
-                (*ramps["outer_s0"], grade_top),
-                (*ramps["outer_s1"], grade_top),
-                (*ramps["outer_join_s"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*outer_ix, bridge_top),
-                (*city_ix, bridge_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_cw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*city_ix, bridge_top),
-                (*outer_ix, bridge_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_join_n"], outer_join_top),
-                (*ramps["outer_n1"], grade_top),
-                (*ramps["outer_n0"], grade_top),
-            ]
-        elif side == "south":
-            city_end = (hx, diamond["city_y"] - curb)
-            foot = exit_foot(city_end, (0.0, -1.0))
-            city_ix = (hx, belt_south_inner + abut)
-            outer_ix = (hx, belt_south_outer - abut)
-            outer_reach = max(
-                highway_width * 1.1,
-                max(0.0, foot[1] - belt_south_inner),
-                rw * 3.0,
-            )
-            outer_end = (hx, belt_south_outer - outer_reach)
-            inner_y = belt_south_inner - merge
-            outer_y = belt_south_outer + merge
-            ramps = {
-                "city_end": city_end,
-                "exit_foot": foot,
-                "city_ix": city_ix,
-                "outer_ix": outer_ix,
-                "outer_end": outer_end,
-                "inner_w0": (hx - along, inner_y),
-                "inner_w1": (hx - peel, inner_y),
-                "inner_e0": (hx + along, inner_y),
-                "inner_e1": (hx + peel, inner_y),
-                "outer_w0": (hx - along, outer_y),
-                "outer_w1": (hx - peel, outer_y),
-                "outer_e0": (hx + along, outer_y),
-                "outer_e1": (hx + peel, outer_y),
-                "diverge_ccw": (hx + along, hy),
-                "diverge_cw": (hx - along, hy),
-                "merge_ccw": (hx - along, hy),
-                "merge_cw": (hx + along, hy),
-            }
-            attach_ns_joins(ramps, city_ix, foot, outer_ix, outer_end)
-            # CCW = westbound on the inner curb; CW = eastbound on the outer.
-            # City-bound right lane is east — exit_ccw merges via city_join_e.
-            exit_ccw = [
-                (*ramps["inner_e0"], grade_top),
-                (*ramps["inner_e1"], grade_top),
-                (*ramps["city_join_e"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_ccw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_join_w"], city_join_top),
-                (*ramps["inner_w1"], grade_top),
-                (*ramps["inner_w0"], grade_top),
-            ]
-            exit_cw = [
-                (*ramps["outer_w0"], grade_top),
-                (*ramps["outer_w1"], grade_top),
-                (*ramps["outer_join_w"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*outer_ix, bridge_top),
-                (*city_ix, bridge_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_cw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*city_ix, bridge_top),
-                (*outer_ix, bridge_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_join_e"], outer_join_top),
-                (*ramps["outer_e1"], grade_top),
-                (*ramps["outer_e0"], grade_top),
-            ]
-        else:  # north
-            city_end = (hx, diamond["city_y"] + curb)
-            foot = exit_foot(city_end, (0.0, 1.0))
-            city_ix = (hx, belt_north_inner - abut)
-            outer_ix = (hx, belt_north_outer + abut)
-            outer_reach = max(
-                highway_width * 1.1,
-                max(0.0, belt_north_inner - foot[1]),
-                rw * 3.0,
-            )
-            outer_end = (hx, belt_north_outer + outer_reach)
-            inner_y = belt_north_inner + merge
-            outer_y = belt_north_outer - merge
-            ramps = {
-                "city_end": city_end,
-                "exit_foot": foot,
-                "city_ix": city_ix,
-                "outer_ix": outer_ix,
-                "outer_end": outer_end,
-                "inner_w0": (hx - along, inner_y),
-                "inner_w1": (hx - peel, inner_y),
-                "inner_e0": (hx + along, inner_y),
-                "inner_e1": (hx + peel, inner_y),
-                "outer_w0": (hx - along, outer_y),
-                "outer_w1": (hx - peel, outer_y),
-                "outer_e0": (hx + along, outer_y),
-                "outer_e1": (hx + peel, outer_y),
-                "diverge_ccw": (hx - along, hy),
-                "diverge_cw": (hx + along, hy),
-                "merge_ccw": (hx + along, hy),
-                "merge_cw": (hx - along, hy),
-            }
-            attach_ns_joins(ramps, city_ix, foot, outer_ix, outer_end)
-            # CCW = eastbound on the inner curb; CW = westbound on the outer.
-            # City-bound right lane is west — exit_ccw merges via city_join_w.
-            exit_ccw = [
-                (*ramps["inner_w0"], grade_top),
-                (*ramps["inner_w1"], grade_top),
-                (*ramps["city_join_w"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_ccw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_throat"], city_join_top),
-                (*ramps["city_join_e"], city_join_top),
-                (*ramps["inner_e1"], grade_top),
-                (*ramps["inner_e0"], grade_top),
-            ]
-            exit_cw = [
-                (*ramps["outer_e0"], grade_top),
-                (*ramps["outer_e1"], grade_top),
-                (*ramps["outer_join_e"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*outer_ix, bridge_top),
-                (*city_ix, bridge_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*foot, grade_top),
-                (*city_end, grade_top),
-            ]
-            enter_cw = [
-                (*city_end, grade_top),
-                (*foot, grade_top),
-                (*ramps["city_flat_lo"], city_join_top),
-                (*ramps["city_flat_hi"], city_join_top),
-                (*city_ix, bridge_top),
-                (*outer_ix, bridge_top),
-                (*ramps["outer_flat_hi"], outer_join_top),
-                (*ramps["outer_throat"], outer_join_top),
-                (*ramps["outer_join_w"], outer_join_top),
-                (*ramps["outer_w1"], grade_top),
-                (*ramps["outer_w0"], grade_top),
-            ]
-
-        diamond["ramps"] = ramps
-        diamond["routes"] = {
-            "exit_ccw": exit_ccw,
-            "enter_ccw": enter_ccw,
-            "exit_cw": exit_cw,
-            "enter_cw": enter_cw,
-        }
-        diamond["grade_top"] = grade_top
-        diamond["bridge_top"] = bridge_top
-        diamond["bridge_z"] = bridge_z
-        diamond["city_join_z"] = city_join_z
-        diamond["outer_join_z"] = outer_join_z
-        diamond["city_join_top"] = city_join_top
-        diamond["outer_join_top"] = outer_join_top
-        diamond["along"] = along
-        diamond["peel"] = peel
-        diamond["merge"] = merge
-        diamond["abut"] = abut
-        diamond["curb"] = curb
-        diamond["slip_w"] = slip_w
-        diamond["deck_clear"] = m["deck_clear"]
-        diamond["join_frac"] = join_frac
-        diamond["terrace_half"] = terrace_half
-        diamond["approach_flat"] = approach_flat
-        diamond["outer_reach"] = outer_reach
-
-    def highway_geometry(self) -> dict[str, float | list[float]]:
-        """Derived beltway placement shared by scene assembly and the car.
-
-        City-facing edges of the four legs form an inner rounded rectangle around
-        the twin footprint: west of the city-west fence, a road-width clearance
-        past the easternmost city road, and flush with the north/south extents.
-        Those keep-outs are then pushed outward by the corner-fillet depth so the
-        quarter-annulus pads cannot cut into the street grid. Each leg is
-        ``highway_lanes`` wide; ``corner_radius`` is the inner arc radius.
-        """
+    def highway_geometry(self) -> dict[str, Any]:
         lane_width = self.road_width / 2
         highway_width = self.highway_lanes * lane_width
-        # Extra gap between outer city blocks and the belt's inner curb.
-        city_margin = 10.0
-        # Keep-out rectangle: city footprint plus the existing service clearances.
-        keepout_west = self.city_west_edge - self.fence_w - city_margin
-        city_south = self.south_face - self.factory_rows * self.stride_y - self.road_width
-        city_north = (
-            self.south_face
-            + (self.grid + self.housing_rows) * self.road_depth
-            + (self.grid + self.housing_rows) * self.road_width
-            + self.north_shift
-        )
-        city_east = (
-            self.west_road_full0 + self.cols * self.stride_x + self.road_width / 2
-        )
-        # Mirror the west clearance: one road width + fence past the east edge.
-        keepout_east = city_east + self.road_width + self.fence_w + city_margin
-        keepout_south = city_south - city_margin
-        keepout_north = city_north + city_margin
-        # Inner-corner radius: two highway widths keeps a clear curve without
-        # swallowing the straight legs of the twin footprint.
-        corner_radius = 2.0 * highway_width
-        keepout_width = keepout_east - keepout_west
-        keepout_height = keepout_north - keepout_south
-        max_radius = min(keepout_width, keepout_height) / 2 - lane_width
-        if corner_radius > max_radius:
-            corner_radius = max(lane_width, max_radius)
-        # A rounded-rect inner edge bites ``inset`` into a sharp rectangle of the
-        # same bounds; push the belt out so that bite stays in empty margin.
-        inset = corner_radius * (1.0 - math.sqrt(2.0) / 2.0)
-        belt_west_inner = keepout_west - inset
-        belt_east_inner = keepout_east + inset
-        belt_south_inner = keepout_south - inset
-        belt_north_inner = keepout_north + inset
-        belt_west_outer = belt_west_inner - highway_width
-        belt_east_outer = belt_east_inner + highway_width
-        belt_south_outer = belt_south_inner - highway_width
-        belt_north_outer = belt_north_inner + highway_width
-        # City-facing edge of the west carriageway; fence sits on that curb.
-        highway_east = belt_west_inner
-        highway_mid_x = highway_east - highway_width / 2
-        fence_x = highway_east + self.fence_w / 2
-        east_mid_x = belt_east_inner + highway_width / 2
-        south_mid_y = belt_south_inner - highway_width / 2
-        north_mid_y = belt_north_inner + highway_width / 2
-        ring_mid_x = (belt_west_outer + belt_east_outer) / 2
-        ring_mid_y = (belt_south_outer + belt_north_outer) / 2
-        ring_outer_width = belt_east_outer - belt_west_outer
-        ring_outer_height = belt_north_outer - belt_south_outer
-        # Straight N-S legs stop where the corner arcs begin.
-        ns_y0 = belt_south_inner + corner_radius
-        ns_y1 = belt_north_inner - corner_radius
-        ew_x0 = belt_west_inner + corner_radius
-        ew_x1 = belt_east_inner - corner_radius
-        highway_length = ns_y1 - ns_y0
-        highway_mid_y = (ns_y0 + ns_y1) / 2
         road_thickness = 0.1
         road_z = -self.block_size[2] / 2 + road_thickness / 2
-        # One diamond per side, snapped to the city grid so cars can use them.
-        # Ordered CCW from west: west → north → east → south.
-        west_exit_y = self.south_road_full0 + self.exit_row * self.stride_y
-        mid_col = self.cols // 2
-        south_exit_x = self.west_road_full0 + mid_col * self.stride_x
-        north_exit_x = south_exit_x
-        north_origin_y = self.south_road_full0 + self.north_shift
-        north_exit_y = north_origin_y + self.rows * self.stride_y
-        south_exit_y = self.south_road_full0
-        # Along-highway half-span of each city-side diamond rhombus.
-        slip_len = highway_width * 0.85
-        diamonds = (
-            {
-                "side": "west",
-                "axis": "ns",
-                "hx": highway_mid_x,
-                "hy": west_exit_y,
-                "city_v": 0,
-                "city_h": self.exit_row,
-                "city_origin_y": self.south_road_full0,
-                "into_city": (1, 0),
-                "ccw_dir": (0, 1),
-                "cw_dir": (0, -1),
-                "city_x": self.west_road_full0,
-                "city_y": west_exit_y,
-                "slip_len": slip_len,
-            },
-            {
-                "side": "north",
-                "axis": "ew",
-                "hx": north_exit_x,
-                "hy": north_mid_y,
-                "city_v": mid_col,
-                "city_h": self.rows,
-                "city_origin_y": north_origin_y,
-                "into_city": (0, -1),
-                "ccw_dir": (1, 0),
-                "cw_dir": (-1, 0),
-                "city_x": north_exit_x,
-                "city_y": north_exit_y,
-                "slip_len": slip_len,
-            },
-            {
-                "side": "east",
-                "axis": "ns",
-                "hx": east_mid_x,
-                "hy": west_exit_y,
-                "city_v": self.cols,
-                "city_h": self.exit_row,
-                "city_origin_y": self.south_road_full0,
-                "into_city": (-1, 0),
-                "ccw_dir": (0, -1),
-                "cw_dir": (0, 1),
-                "city_x": self.west_road_full0 + self.cols * self.stride_x,
-                "city_y": west_exit_y,
-                "slip_len": slip_len,
-            },
-            {
-                "side": "south",
-                "axis": "ew",
-                "hx": south_exit_x,
-                "hy": south_mid_y,
-                "city_v": mid_col,
-                "city_h": 0,
-                "city_origin_y": self.south_road_full0,
-                "into_city": (0, 1),
-                "ccw_dir": (-1, 0),
-                "cw_dir": (1, 0),
-                "city_x": south_exit_x,
-                "city_y": south_exit_y,
-                "slip_len": slip_len,
-            },
-        )
-        for diamond in diamonds:
-            self._annotate_diamond_ramps(
-                diamond,
-                highway_width=highway_width,
-                road_z=road_z,
-                road_thickness=road_thickness,
-                city_margin=city_margin,
-                belt_west_inner=belt_west_inner,
-                belt_west_outer=belt_west_outer,
-                belt_east_inner=belt_east_inner,
-                belt_east_outer=belt_east_outer,
-                belt_south_inner=belt_south_inner,
-                belt_south_outer=belt_south_outer,
-                belt_north_inner=belt_north_inner,
-                belt_north_outer=belt_north_outer,
+        bridge_clearance = self.barrier_h + 2.8
+        bridge_z = road_z + bridge_clearance
+        # Chaikin + Catmull-Rom → dense samples for a continuous ribbon edge.
+        sample_spacing = max(1.25, highway_width * 0.12)
+
+        arterials: list[dict[str, Any]] = []
+        xs: list[float] = []
+        ys: list[float] = []
+        for route in self.highway_routes:
+            lanes = max(2, int(route.lanes))
+            width = lanes * lane_width
+            spacing = max(1.25, width * 0.12)
+            smooth = tuple(
+                _smooth_polyline(_chaikin(route.points, iterations=2), spacing)
             )
-        ramp_metrics = self.diamond_ramp_metrics(highway_width)
-        # Lane centres per leg (index 0 = inner/city-side = right-hand for CCW).
-        west_lane_xs = [
-            belt_west_inner - lane_width * (i + 0.5) for i in range(self.highway_lanes)
-        ]
-        east_lane_xs = [
-            belt_east_inner + lane_width * (i + 0.5) for i in range(self.highway_lanes)
-        ]
-        south_lane_ys = [
-            belt_south_inner - lane_width * (i + 0.5) for i in range(self.highway_lanes)
-        ]
-        north_lane_ys = [
-            belt_north_inner + lane_width * (i + 0.5) for i in range(self.highway_lanes)
-        ]
+            arterials.append(
+                {
+                    "name": route.name,
+                    "points": smooth,
+                    "control_points": route.points,
+                    "axis": "poly",
+                    "lanes": lanes,
+                    "width": width,
+                }
+            )
+            for x, y in smooth:
+                xs.append(x)
+                ys.append(y)
+
+        pad = highway_width + 40.0
         return {
             "lane_width": lane_width,
             "highway_width": highway_width,
-            "highway_east": highway_east,
-            "highway_mid_x": highway_mid_x,
-            "fence_x": fence_x,
-            "city_south": city_south,
-            "city_north": city_north,
-            "city_east": city_east,
-            "highway_length": highway_length,
-            "highway_mid_y": highway_mid_y,
             "road_thickness": road_thickness,
             "road_z": road_z,
-            "diamonds": diamonds,
-            "west_lane_xs": west_lane_xs,
-            "east_lane_xs": east_lane_xs,
-            "south_lane_ys": south_lane_ys,
-            "north_lane_ys": north_lane_ys,
-            "belt_west_inner": belt_west_inner,
-            "belt_east_inner": belt_east_inner,
-            "belt_south_inner": belt_south_inner,
-            "belt_north_inner": belt_north_inner,
-            "belt_west_outer": belt_west_outer,
-            "belt_east_outer": belt_east_outer,
-            "belt_south_outer": belt_south_outer,
-            "belt_north_outer": belt_north_outer,
-            "east_mid_x": east_mid_x,
-            "south_mid_y": south_mid_y,
-            "north_mid_y": north_mid_y,
-            "ring_mid_x": ring_mid_x,
-            "ring_mid_y": ring_mid_y,
-            "ring_outer_width": ring_outer_width,
-            "ring_outer_height": ring_outer_height,
-            "east_fence_x": belt_east_inner - self.fence_w / 2,
-            "south_fence_y": belt_south_inner + self.fence_w / 2,
-            "north_fence_y": belt_north_inner - self.fence_w / 2,
-            "corner_radius": corner_radius,
-            "ns_y0": ns_y0,
-            "ns_y1": ns_y1,
-            "ew_x0": ew_x0,
-            "ew_x1": ew_x1,
-            "ew_span": ew_x1 - ew_x0,
-            "ew_mid_x": (ew_x0 + ew_x1) / 2,
-            "corner_sw": (belt_west_inner + corner_radius, belt_south_inner + corner_radius),
-            "corner_se": (belt_east_inner - corner_radius, belt_south_inner + corner_radius),
-            "corner_ne": (belt_east_inner - corner_radius, belt_north_inner - corner_radius),
-            "corner_nw": (belt_west_inner + corner_radius, belt_north_inner - corner_radius),
-            "opening_half": ramp_metrics["opening_half"],
-            "bridge_clearance": ramp_metrics["bridge_clearance"],
-            "bridge_z": road_z + ramp_metrics["bridge_clearance"],
-            "city_margin": city_margin,
+            "bridge_clearance": bridge_clearance,
+            "bridge_z": bridge_z,
+            "arterials": tuple(arterials),
+            "diamonds": (),
+            "bounds_west": min(xs) - pad,
+            "bounds_east": max(xs) + pad,
+            "bounds_south": min(ys) - pad,
+            "bounds_north": max(ys) + pad,
+            "west_lane_xs": [],
+            "east_lane_xs": [],
+            "south_lane_ys": [],
+            "north_lane_ys": [],
+            "ns_y0": min(ys),
+            "ns_y1": max(ys),
+            "ew_x0": min(xs),
+            "ew_x1": max(xs),
+            "corner_nw": (0.0, 0.0),
+            "corner_ne": (0.0, 0.0),
+            "corner_se": (0.0, 0.0),
+            "corner_sw": (0.0, 0.0),
+            "belt_west_outer": min(xs) - pad,
+            "belt_east_outer": max(xs) + pad,
+            "belt_south_outer": min(ys) - pad,
+            "belt_north_outer": max(ys) + pad,
+            "opening_half": highway_width * 0.85,
+        }
+
+    def street_geometry(self) -> dict[str, Any]:
+        """Local residential ribbons — narrower than highways, same smoothing."""
+        street_width = self.road_width
+        road_thickness = 0.1
+        road_z = -self.block_size[2] / 2 + road_thickness / 2
+        sample_spacing = max(0.9, street_width * 0.18)
+        default_bulb = street_width * 1.55
+        routes: list[dict[str, Any]] = []
+        bulbs: list[tuple[float, float, float]] = []
+        for route in self.street_routes:
+            radius = route.bulb_radius if route.bulb_radius is not None else default_bulb
+            # Straight runs stay crisp; only bend control polylines get Chaikin.
+            if _is_axis_aligned(route.points):
+                stem = tuple(_smooth_polyline(route.points, sample_spacing))
+            else:
+                stem = tuple(
+                    _smooth_polyline(
+                        _chaikin(route.points, iterations=2), sample_spacing
+                    )
+                )
+            if route.bulb_start:
+                bulbs.append(_cul_de_sac_center(stem, at_start=True, radius=radius))
+            if route.bulb_end:
+                bulbs.append(_cul_de_sac_center(stem, at_start=False, radius=radius))
+            routes.append(
+                {
+                    "name": route.name,
+                    "points": stem,
+                    "control_points": route.points,
+                }
+            )
+        return {
+            "street_width": street_width,
+            "road_thickness": road_thickness,
+            "road_z": road_z,
+            "routes": tuple(routes),
+            "bulbs": tuple(bulbs),
         }
 
     def framing_bounds(self) -> dict[str, float]:
         hwy = self.highway_geometry()
-        left = min(self.city_west_edge, hwy["belt_west_outer"])
-        right = hwy["belt_east_outer"]
         stack_bottom = -self.block_size[2] / 2
         stack_top = (self.tallest - 1) * self.block_size[2] + self.block_size[2] / 2
         return {
-            "left": left,
-            "right": right,
-            "city_south": hwy["belt_south_outer"],
-            "city_north": hwy["belt_north_outer"],
+            "left": hwy["bounds_west"],
+            "right": hwy["bounds_east"],
+            "city_south": hwy["bounds_south"],
+            "city_north": hwy["bounds_north"],
             "stack_bottom": stack_bottom,
             "stack_top": stack_top,
         }
 
 
+def _is_axis_aligned(points: tuple[tuple[float, float], ...]) -> bool:
+    """True when every segment is horizontal or vertical (within a hair)."""
+    for i in range(len(points) - 1):
+        x0, y0 = points[i]
+        x1, y1 = points[i + 1]
+        if abs(x1 - x0) > 1e-6 and abs(y1 - y0) > 1e-6:
+            return False
+    return len(points) >= 2
+
+
+def _cul_de_sac_center(
+    points: tuple[tuple[float, float], ...],
+    *,
+    at_start: bool,
+    radius: float,
+) -> tuple[float, float, float]:
+    """World-space disc centre for a cul-de-sac pad at a stem tip."""
+    if at_start:
+        x_end, y_end = points[0]
+        x_prev, y_prev = points[1]
+    else:
+        x_end, y_end = points[-1]
+        x_prev, y_prev = points[-2]
+    dx = x_end - x_prev
+    dy = y_end - y_prev
+    length = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / length, dy / length
+    # Pull the pad slightly past the tip so the stem meets the disc cleanly.
+    inset = radius * 0.35
+    return (x_end + ux * inset, y_end + uy * inset, radius)
+
+
+def _chaikin(
+    points: tuple[tuple[float, float], ...],
+    *,
+    iterations: int = 2,
+) -> tuple[tuple[float, float], ...]:
+    """Corner-cutting subdivision — softens polyline joints before splining."""
+    if len(points) < 3 or iterations <= 0:
+        return points
+    pts = list(points)
+    for _ in range(iterations):
+        nxt: list[tuple[float, float]] = [pts[0]]
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]
+            x1, y1 = pts[i + 1]
+            nxt.append((0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1))
+            nxt.append((0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1))
+        nxt.append(pts[-1])
+        pts = nxt
+    return tuple(pts)
+
+
+def _catmull_rom(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    t: float,
+) -> tuple[float, float]:
+    """Uniform cubic Catmull-Rom between p1→p2."""
+    t2 = t * t
+    t3 = t2 * t
+    x = 0.5 * (
+        (2.0 * p1[0])
+        + (-p0[0] + p2[0]) * t
+        + (2.0 * p0[0] - 5.0 * p1[0] + 4.0 * p2[0] - p3[0]) * t2
+        + (-p0[0] + 3.0 * p1[0] - 3.0 * p2[0] + p3[0]) * t3
+    )
+    y = 0.5 * (
+        (2.0 * p1[1])
+        + (-p0[1] + p2[1]) * t
+        + (2.0 * p0[1] - 5.0 * p1[1] + 4.0 * p2[1] - p3[1]) * t2
+        + (-p0[1] + 3.0 * p1[1] - 3.0 * p2[1] + p3[1]) * t3
+    )
+    return (x, y)
+
+
+def _smooth_polyline(
+    points: tuple[tuple[float, float], ...],
+    spacing: float,
+) -> list[tuple[float, float]]:
+    """Densify a control polyline with Catmull-Rom curves between vertices."""
+    n = len(points)
+    if n < 2:
+        return list(points)
+    if n == 2:
+        x0, y0 = points[0]
+        x1, y1 = points[1]
+        chord = math.hypot(x1 - x0, y1 - y0)
+        steps = max(1, int(math.ceil(chord / max(spacing, 0.5))))
+        return [
+            (x0 + (x1 - x0) * (s / steps), y0 + (y1 - y0) * (s / steps))
+            for s in range(steps + 1)
+        ]
+
+    def at(i: int) -> tuple[float, float]:
+        if i < 0:
+            # Reflect past the start so the first span still curves naturally.
+            return (
+                points[0][0] - (points[1][0] - points[0][0]),
+                points[0][1] - (points[1][1] - points[0][1]),
+            )
+        if i >= n:
+            return (
+                points[-1][0] + (points[-1][0] - points[-2][0]),
+                points[-1][1] + (points[-1][1] - points[-2][1]),
+            )
+        return points[i]
+
+    out: list[tuple[float, float]] = [points[0]]
+    for i in range(n - 1):
+        p0, p1, p2, p3 = at(i - 1), at(i), at(i + 1), at(i + 2)
+        chord = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        steps = max(1, int(math.ceil(chord / max(spacing, 0.5))))
+        for step in range(1, steps + 1):
+            out.append(_catmull_rom(p0, p1, p2, p3, step / steps))
+    return out
+
+
+def _dist2_point_segment(
+    px: float, py: float, ax: float, ay: float, bx: float, by: float
+) -> float:
+    abx = bx - ax
+    aby = by - ay
+    denom = abx * abx + aby * aby
+    if denom <= 1e-9:
+        dx = px - ax
+        dy = py - ay
+        return dx * dx + dy * dy
+    t = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / denom))
+    qx = ax + t * abx
+    qy = ay + t * aby
+    dx = px - qx
+    dy = py - qy
+    return dx * dx + dy * dy
+
+
+def _dist2_aabb_segment(
+    min_x: float,
+    min_y: float,
+    max_x: float,
+    max_y: float,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+) -> float:
+    """Squared distance between an axis-aligned rect and a segment (0 if they hit)."""
+    # Clamp segment endpoints into the rect to detect intersection / interior.
+    for px, py in ((ax, ay), (bx, by)):
+        if min_x <= px <= max_x and min_y <= py <= max_y:
+            return 0.0
+    # Sample the closest point on the segment to the rect centre, then to corners.
+    cx = 0.5 * (min_x + max_x)
+    cy = 0.5 * (min_y + max_y)
+    best = _dist2_point_segment(cx, cy, ax, ay, bx, by)
+    for px, py in (
+        (min_x, min_y),
+        (max_x, min_y),
+        (max_x, max_y),
+        (min_x, max_y),
+    ):
+        best = min(best, _dist2_point_segment(px, py, ax, ay, bx, by))
+    # Also project segment endpoints onto the rect (outside → edge distance).
+    for px, py in ((ax, ay), (bx, by)):
+        qx = max(min_x, min(max_x, px))
+        qy = max(min_y, min(max_y, py))
+        dx = px - qx
+        dy = py - qy
+        best = min(best, dx * dx + dy * dy)
+    # Dense sample along the segment catches crossings that miss corners.
+    abx = bx - ax
+    aby = by - ay
+    steps = max(2, int(math.ceil(math.hypot(abx, aby) / 4.0)))
+    for s in range(steps + 1):
+        t = s / steps
+        px = ax + abx * t
+        py = ay + aby * t
+        if min_x <= px <= max_x and min_y <= py <= max_y:
+            return 0.0
+        qx = max(min_x, min(max_x, px))
+        qy = max(min_y, min(max_y, py))
+        dx = px - qx
+        dy = py - qy
+        best = min(best, dx * dx + dy * dy)
+    return best
+
+
 def _require(data: dict[str, Any], *keys: str) -> Any:
-    """Walk nested dict keys; raise KeyError with a dotted path on failure."""
     cursor: Any = data
     path: list[str] = []
     for key in keys:
@@ -998,7 +623,6 @@ def _require(data: dict[str, Any], *keys: str) -> Any:
 
 
 def _build_city_plan(data: dict[str, Any]) -> CityPlan:
-    """Derive a CityPlan from authored YAML knobs."""
     block_size = tuple(float(v) for v in _require(data, "lot", "block_size"))
     if len(block_size) != 3:
         raise ValueError("lot.block_size must have three numbers")
@@ -1009,27 +633,90 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     floor_max = int(_require(data, "lot", "floor_max"))
     towers_per_ring = int(_require(data, "lot", "towers_per_ring"))
 
-    grid = int(_require(data, "districts", "grid"))
-    housing_cols = int(_require(data, "districts", "housing", "cols"))
-    housing_rows = int(_require(data, "districts", "housing", "rows"))
-    west_housing_cols = int(_require(data, "districts", "west_housing", "cols"))
-    west_housing_rows = int(_require(data, "districts", "west_housing", "rows"))
-    factory_rows = int(_require(data, "districts", "south_factories", "rows"))
-    factory_cols = int(_require(data, "districts", "south_factories", "cols"))
-    east_factory_cols = int(_require(data, "districts", "east_factories", "cols"))
-    east_factory_rows = int(_require(data, "districts", "east_factories", "rows"))
-    between_housing_rows = int(_require(data, "districts", "between_housing", "rows"))
-
     highway_lanes = int(_require(data, "highway", "lanes"))
     fence_w = float(_require(data, "highway", "fence_w"))
     fence_h = float(_require(data, "highway", "fence_h"))
     barrier_w = float(_require(data, "highway", "barrier_w"))
     barrier_h = float(_require(data, "highway", "barrier_h"))
-    exit_row = int(_require(data, "highway", "exit_row"))
+    highway_keepout = float(_require(data, "highway", "keepout"))
 
-    # Historical X origin: layout was once keyed off removed east landmarks
-    # (sphere right surface 2.25 + block_gap 5 + half block 2.5 = 9.75).
-    # road_left used 25.0/2 (5 towers * 5 units) rather than lot_width/2.
+    raw_highways = _require(data, "highways")
+    if not isinstance(raw_highways, dict) or not raw_highways:
+        raise ValueError("highways must be a non-empty mapping of polylines")
+    highway_routes: list[HighwayRoute] = []
+    for name, entry in raw_highways.items():
+        lanes = highway_lanes
+        if isinstance(entry, dict):
+            pts = entry.get("points", [])
+            if entry.get("lanes") is not None:
+                lanes = int(entry["lanes"])
+        else:
+            pts = entry
+        if not isinstance(pts, list) or len(pts) < 2:
+            raise ValueError(f"highways.{name} needs at least two [x, y] points")
+        if lanes < 2:
+            raise ValueError(f"highways.{name}.lanes must be >= 2")
+        highway_routes.append(
+            HighwayRoute(
+                name=str(name),
+                points=tuple((float(p[0]), float(p[1])) for p in pts),
+                lanes=lanes,
+            )
+        )
+
+    raw_streets = data.get("streets", {})
+    if raw_streets is None:
+        raw_streets = {}
+    if not isinstance(raw_streets, dict):
+        raise ValueError("streets must be a mapping of polylines")
+    street_routes: list[StreetRoute] = []
+    for name, entry in raw_streets.items():
+        bulb_start = False
+        bulb_end = False
+        bulb_radius: float | None = None
+        if isinstance(entry, dict):
+            pts = entry.get("points", [])
+            bulb_start = bool(entry.get("bulb_start", False))
+            bulb_end = bool(entry.get("bulb_end", False))
+            if entry.get("bulb_radius") is not None:
+                bulb_radius = float(entry["bulb_radius"])
+        else:
+            pts = entry
+        if not isinstance(pts, list) or len(pts) < 2:
+            raise ValueError(f"streets.{name} needs at least two [x, y] points")
+        street_routes.append(
+            StreetRoute(
+                name=str(name),
+                points=tuple((float(p[0]), float(p[1])) for p in pts),
+                bulb_start=bulb_start,
+                bulb_end=bulb_end,
+                bulb_radius=bulb_radius,
+            )
+        )
+
+    raw_hoods = data.get("neighborhoods", [])
+    if raw_hoods is None:
+        raw_hoods = []
+    if not isinstance(raw_hoods, list):
+        raise ValueError("neighborhoods must be a list")
+    neighborhoods: list[Neighborhood] = []
+    for entry in raw_hoods:
+        kind = str(entry["kind"])
+        if kind not in ("housing", "tower", "factory"):
+            raise ValueError(f"Unknown neighborhood kind: {kind}")
+        origin = entry["origin"]
+        neighborhoods.append(
+            Neighborhood(
+                name=str(entry["name"]),
+                kind=kind,
+                origin_x=float(origin[0]),
+                origin_y=float(origin[1]),
+                heading_deg=float(entry.get("heading", 0.0)),
+                cols=int(entry["cols"]),
+                rows=int(entry["rows"]),
+            )
+        )
+
     block_center_x = 9.75
     road_left = block_center_x - 25.0 / 2
     road_right = road_left + tower_count * block_size[0] + (tower_count - 1) * tower_gap
@@ -1039,25 +726,25 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     stride_y = road_width + road_depth
     lot_width = tower_count * block_size[0] + (tower_count - 1) * tower_gap
 
-    tower_west = road_left - (grid - 1) * stride_x
-    cols = west_housing_cols + grid + east_factory_cols
-    rows = factory_rows + grid + housing_rows
-    housing_south = factory_rows + grid
-
     road_y0 = -(block_size[1] / 2 + 1.0 + road_width / 2)
     tower_y0 = road_y0 + road_width / 2 + block_size[1] / 2
     south_road0 = tower_y0 - block_size[1] / 2 - road_width / 2
-    west_road0 = road_left - (grid - 1) * stride_x - road_width / 2
-    south_road_full0 = south_road0 - factory_rows * stride_y
-    west_road_full0 = west_road0 - west_housing_cols * stride_x
+    west_road0 = road_left - road_width / 2
     road_top = -block_size[2] / 2 + 0.1
     south_face = -1.0 - block_size[1] / 2
 
-    city_west_edge = west_road_full0 - road_width / 2
-    # Twin offset: city footprint (rows) plus the between-housing strip so the
-    # connector lots share the south city's north road and north city's south road.
-    north_shift_lots = rows + between_housing_rows
-    north_shift = north_shift_lots * stride_y
+    # Host grid for optional later city traffic (unused while neighborhoods empty).
+    if neighborhoods:
+        host = next((n for n in neighborhoods if n.name == "newton"), neighborhoods[0])
+        cols = host.cols
+        rows = host.rows
+        road_xs = tuple(host.origin_x + c * stride_x for c in range(cols + 1))
+        road_ys = tuple(host.origin_y + r * stride_y for r in range(rows + 1))
+    else:
+        cols = 1
+        rows = 1
+        road_xs = (0.0, stride_x)
+        road_ys = (0.0, stride_y)
 
     return CityPlan(
         block_size=block_size,
@@ -1067,23 +754,15 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
         floor_min=floor_min,
         floor_max=floor_max,
         towers_per_ring=towers_per_ring,
-        grid=grid,
-        housing_cols=housing_cols,
-        housing_rows=housing_rows,
-        factory_rows=factory_rows,
-        factory_cols=factory_cols,
-        west_housing_cols=west_housing_cols,
-        west_housing_rows=west_housing_rows,
-        east_factory_cols=east_factory_cols,
-        east_factory_rows=east_factory_rows,
-        between_housing_rows=between_housing_rows,
-        north_shift_lots=north_shift_lots,
         highway_lanes=highway_lanes,
         fence_w=fence_w,
         fence_h=fence_h,
         barrier_w=barrier_w,
         barrier_h=barrier_h,
-        exit_row=exit_row,
+        highway_keepout=highway_keepout,
+        highway_routes=tuple(highway_routes),
+        street_routes=tuple(street_routes),
+        neighborhoods=tuple(neighborhoods),
         road_left=road_left,
         road_right=road_right,
         road_length=road_length,
@@ -1091,25 +770,46 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
         stride_x=stride_x,
         stride_y=stride_y,
         lot_width=lot_width,
-        tower_west=tower_west,
-        cols=cols,
-        rows=rows,
-        west_housing_cols_count=west_housing_cols,
-        housing_south=housing_south,
+        road_top=road_top,
         south_road0=south_road0,
         west_road0=west_road0,
-        south_road_full0=south_road_full0,
-        west_road_full0=west_road_full0,
-        road_top=road_top,
+        south_road_full0=road_ys[0],
+        west_road_full0=road_xs[0],
         south_face=south_face,
-        city_west_edge=city_west_edge,
-        north_shift=north_shift,
+        city_west_edge=road_xs[0] - road_width / 2,
         tallest=floor_max,
+        cols=cols,
+        rows=rows,
+        north_shift=0.0,
+        north_shift_lots=0,
+        exit_row=1,
+        between_housing_rows=0,
+        grid=0,
+        housing_cols=cols,
+        housing_rows=rows,
+        factory_rows=0,
+        factory_cols=0,
+        west_housing_cols=0,
+        west_housing_rows=0,
+        east_factory_cols=0,
+        east_factory_rows=0,
+        tower_west=road_left,
+        housing_south=rows,
+        west_housing_cols_count=0,
+        west_cols=cols,
+        east_cols=0,
+        south_rows=rows,
+        north_rows=0,
+        arterial_gap_x=0.0,
+        arterial_gap_y=0.0,
+        gap_after_v=(),
+        gap_after_h=(),
+        road_xs_list=road_xs,
+        road_ys_list=road_ys,
     )
 
 
 def load_city_plan(path: str | Path | None = None) -> CityPlan:
-    """Load authored layout from YAML and derive a CityPlan."""
     yaml_path = Path(path) if path is not None else DEFAULT_CITY_YAML
     with yaml_path.open(encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
@@ -1119,5 +819,5 @@ def load_city_plan(path: str | Path | None = None) -> CityPlan:
 
 
 def default_city_plan() -> CityPlan:
-    """Return the packaged software-city layout from ``city/data/city.yaml``."""
+    """Return the packaged Surrey layout from ``city/data/city.yaml``."""
     return load_city_plan()

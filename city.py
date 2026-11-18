@@ -1,4 +1,4 @@
-"""Thin shim so ``python city.py`` still launches the software-city scene."""
+"""Thin shim so ``python city.py`` still launches the Surrey city scene."""
 
 from city.__main__ import main
 

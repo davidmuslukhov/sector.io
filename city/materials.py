@@ -1,10 +1,12 @@
-"""Cached Panda3D materials for the software-city scene."""
+"""Cached Panda3D materials for the Surrey city scene."""
 
 from __future__ import annotations
 
 from panda3d.core import Material
 
 _BLOCK_MATERIALS: dict[float, Material] = {}
+_CONCRETE_MATERIALS: dict[float, Material] = {}
+_FACTORY_MATERIALS: dict[float, Material] = {}
 _ROAD_MATERIAL: Material | None = None
 _LAWN_MATERIAL: Material | None = None
 _SIDEWALK_MATERIAL: Material | None = None
@@ -23,8 +25,8 @@ _SIGNAL_MATERIALS: dict[str, Material] = {}
 _CAR_MATERIALS: dict[str | tuple[str, tuple[float, float, float]], Material] = {}
 
 
-# One cool grey. ``1`` is the original tower; the band is wide enough to tell
-# neighbours apart and narrow enough that they stay the same colour.
+# Cool glass-blue towers. ``1`` is the base tint; the band keeps neighbours
+# distinct without leaving the glass look.
 BLOCK_SHADES = (
     0.860, 1.009, 0.916, 1.084, 0.972, 1.140, 0.897, 1.047,
     0.953, 1.103, 0.879, 1.028, 0.935, 1.121, 0.991, 1.065,
@@ -32,20 +34,54 @@ BLOCK_SHADES = (
 
 
 def block_material(lightness: float = 1.0) -> Material:
-    """Matte concrete. Nearby ``lightness`` values stay the same colour at a different shade."""
+    """Reflective dark glass-blue facade for towers."""
     cached = _BLOCK_MATERIALS.get(lightness)
     if cached is not None:
         return cached
-    # Warm-leaning concrete rather than plastic cool grey.
-    ambient = tuple(channel * lightness for channel in (0.36, 0.35, 0.33))
-    diffuse = tuple(channel * lightness for channel in (0.58, 0.56, 0.52))
-    specular = tuple(channel * lightness for channel in (0.14, 0.14, 0.13))
+    # Deep curtain-wall glass: dark blue body, bright specular highlights.
+    ambient = tuple(channel * lightness for channel in (0.04, 0.08, 0.16))
+    diffuse = tuple(channel * lightness for channel in (0.1, 0.2, 0.38))
+    specular = tuple(channel * lightness for channel in (0.4, 0.55, 0.8))
     material = Material()
     material.setAmbient((*ambient, 1))
     material.setDiffuse((*diffuse, 1))
     material.setSpecular((*specular, 1))
-    material.setShininess(6)
+    material.setShininess(96)
     _BLOCK_MATERIALS[lightness] = material
+    return material
+
+
+def concrete_material(lightness: float = 1.0) -> Material:
+    """Matte concrete for highway barriers, fences, and piers."""
+    cached = _CONCRETE_MATERIALS.get(lightness)
+    if cached is not None:
+        return cached
+    ambient = tuple(channel * lightness for channel in (0.28, 0.27, 0.25))
+    diffuse = tuple(channel * lightness for channel in (0.6, 0.58, 0.54))
+    specular = tuple(channel * lightness for channel in (0.16, 0.16, 0.15))
+    material = Material()
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((*specular, 1))
+    material.setShininess(8)
+    _CONCRETE_MATERIALS[lightness] = material
+    return material
+
+
+def factory_material(lightness: float = 1.0) -> Material:
+    """Dark industrial brown for factory halls."""
+    cached = _FACTORY_MATERIALS.get(lightness)
+    if cached is not None:
+        return cached
+    ambient = tuple(channel * lightness for channel in (0.12, 0.06, 0.035))
+    diffuse = tuple(channel * lightness for channel in (0.28, 0.14, 0.08))
+    specular = tuple(channel * lightness for channel in (0.06, 0.04, 0.03))
+    material = Material()
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((*specular, 1))
+    material.setShininess(4)
+    _FACTORY_MATERIALS[lightness] = material
     return material
 
 
@@ -54,10 +90,10 @@ def road_material() -> Material:
     global _ROAD_MATERIAL
     if _ROAD_MATERIAL is None:
         material = Material()
-        material.setAmbient((0.07, 0.07, 0.075, 1))
-        material.setDiffuse((0.16, 0.16, 0.165, 1))
-        material.setSpecular((0.04, 0.04, 0.045, 1))
-        material.setShininess(3)
+        material.setAmbient((0.055, 0.055, 0.06, 1))
+        material.setDiffuse((0.14, 0.14, 0.145, 1))
+        material.setSpecular((0.05, 0.05, 0.055, 1))
+        material.setShininess(4)
         _ROAD_MATERIAL = material
     return _ROAD_MATERIAL
 
@@ -67,25 +103,43 @@ def lawn_material() -> Material:
     global _LAWN_MATERIAL
     if _LAWN_MATERIAL is None:
         material = Material()
-        material.setAmbient((0.09, 0.17, 0.06, 1))
-        material.setDiffuse((0.22, 0.4, 0.15, 1))
-        material.setSpecular((0.03, 0.045, 0.02, 1))
+        material.setAmbient((0.07, 0.15, 0.05, 1))
+        material.setDiffuse((0.2, 0.42, 0.14, 1))
+        material.setSpecular((0.025, 0.04, 0.018, 1))
         material.setShininess(2)
         _LAWN_MATERIAL = material
     return _LAWN_MATERIAL
 
 
-def foliage_material() -> Material:
-    """Tree canopy — a touch darker/richer than lawn turf."""
+_FOLIAGE_VARIANTS: dict[int, Material] = {}
+
+
+def foliage_material(variant: int = 0) -> Material:
+    """Tree canopy — a touch darker/richer than lawn turf.
+
+    ``variant`` picks among a few greens so a street of trees isn't identical.
+    """
+    key = variant % 3
+    cached = _FOLIAGE_VARIANTS.get(key)
+    if cached is not None:
+        return cached
+    looks = (
+        ((0.08, 0.16, 0.05), (0.18, 0.38, 0.12)),
+        ((0.07, 0.15, 0.06), (0.16, 0.36, 0.14)),
+        ((0.1, 0.15, 0.04), (0.22, 0.36, 0.1)),
+    )
+    ambient, diffuse = looks[key]
+    material = Material()
+    material.setAmbient((*ambient, 1))
+    material.setDiffuse((*diffuse, 1))
+    material.setSpecular((0.05, 0.08, 0.04, 1))
+    material.setShininess(4)
+    _FOLIAGE_VARIANTS[key] = material
+    # Keep the no-arg cache pointing at variant 0 for older call sites.
     global _FOLIAGE_MATERIAL
-    if _FOLIAGE_MATERIAL is None:
-        material = Material()
-        material.setAmbient((0.08, 0.16, 0.05, 1))
-        material.setDiffuse((0.18, 0.38, 0.12, 1))
-        material.setSpecular((0.05, 0.08, 0.04, 1))
-        material.setShininess(4)
+    if key == 0:
         _FOLIAGE_MATERIAL = material
-    return _FOLIAGE_MATERIAL
+    return material
 
 
 def bark_material() -> Material:
@@ -162,13 +216,13 @@ def roof_material() -> Material:
 
 
 def plinth_material() -> Material:
-    """Darker stone base under each tower."""
+    """Dark grey stone base under each tower."""
     global _PLINTH_MATERIAL
     if _PLINTH_MATERIAL is None:
         material = Material()
-        material.setAmbient((0.2, 0.19, 0.18, 1))
-        material.setDiffuse((0.36, 0.34, 0.32, 1))
-        material.setSpecular((0.09, 0.09, 0.08, 1))
+        material.setAmbient((0.08, 0.08, 0.09, 1))
+        material.setDiffuse((0.18, 0.18, 0.2, 1))
+        material.setSpecular((0.06, 0.06, 0.07, 1))
         material.setShininess(4)
         _PLINTH_MATERIAL = material
     return _PLINTH_MATERIAL
@@ -214,8 +268,8 @@ def centerline_material() -> Material:
 
 
 # Most panes stay cool reflective glass; a few read as warm interiors.
-_GLASS_DARK = (0.06, 0.09, 0.13)
-_GLASS_LIT = (0.88, 0.7, 0.38)
+_GLASS_DARK = (0.05, 0.08, 0.12)
+_GLASS_LIT = (0.95, 0.74, 0.4)
 _YELLOW_LEVELS = (0.50, 0.55, 0.62, 0.78, 1.0)
 
 
@@ -230,15 +284,15 @@ def square_material(lightness: float) -> Material:
     diffuse = tuple(
         dark + (lit - dark) * mix for dark, lit in zip(_GLASS_DARK, _GLASS_LIT)
     )
-    ambient = tuple(channel * 0.4 for channel in diffuse)
-    specular = (0.62, 0.68, 0.75)
+    ambient = tuple(channel * 0.35 for channel in diffuse)
+    specular = (0.7, 0.76, 0.84)
     material = Material()
     material.setAmbient((*ambient, 1))
     material.setDiffuse((*diffuse, 1))
     material.setSpecular((*specular, 1))
-    material.setShininess(96)
-    if mix > 0.4:
-        material.setEmission((*tuple(channel * 0.42 * mix for channel in diffuse), 1))
+    material.setShininess(110)
+    if mix > 0.35:
+        material.setEmission((*tuple(channel * 0.5 * mix for channel in diffuse), 1))
     _SQUARE_MATERIALS[lightness] = material
     return material
 
