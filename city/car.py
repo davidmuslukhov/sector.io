@@ -2741,6 +2741,8 @@ class CarController:
         hwy = self._car_highway_cruise()
         ramp = self._car_ramp_cruise()
         kind = self._car_path_kind
+        if kind == "arterial_loop":
+            return hwy
         if kind == "exit_city":
             # Highway → ramp speed over the off-ramp.
             return self._car_blend_cruise(hwy, ramp, self._car_path_progress())
@@ -3091,9 +3093,9 @@ class CarController:
                 return task.cont
 
             # Off-ramps / deck climbs: decel against remaining path length so the
-            # city stop or abutment doesn't overrun. On-ramps skip the distance
-            # cap and slew up toward highway cruise through the merge.
-            if self._car_path_kind in ("enter_ccw", "enter_cw"):
+            # city stop or abutment doesn't overrun. On-ramps and arterial loops
+            # skip the distance cap and hold cruise through the run.
+            if self._car_path_kind in ("enter_ccw", "enter_cw", "arterial_loop"):
                 self._car_advance_speed(dt)
             else:
                 limit = path_remain()

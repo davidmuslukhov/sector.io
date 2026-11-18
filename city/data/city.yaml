@@ -195,12 +195,11 @@ highways:
       - [218, -35]
       - [218, -160]
 
-  # 152 St — between 140 St and Hwy 15, Hwy 1 down past Hwy 99 (4 lanes).
+  # 152 St — between 140 St and Hwy 15, 102 Ave down past Hwy 99 (4 lanes).
   st_152:
     lanes: 4
     points:
-      - [285, 270]
-      - [285, 242]
+      - [285, 175]
       - [285, 100]
       - [285, 18]
       - [285, -35]

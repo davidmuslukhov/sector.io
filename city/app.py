@@ -234,9 +234,14 @@ class CityApp(ShowBase):
             route_width = float(arterial.get("width", highway_width))
             name = str(arterial.get("name", ""))
             raw_gaps = crossing_gaps.get(name, [])
-            # Clear the crossing ribbon: half its width + a small apron.
+
+            def intersection_clear(other_w: float) -> float:
+                # Open past both ribbons so angled / T pads don't keep border stubs
+                # (Hwy 1 × 112 Ave, King George × Fraser Hwy, etc.).
+                return 0.55 * other_w + 0.35 * route_width + 2.5
+
             median_gaps = [
-                (x, y, other_w * 0.5 + 1.0) for x, y, other_w in raw_gaps
+                (x, y, intersection_clear(other_w)) for x, y, other_w in raw_gaps
             ]
             # One continuous ribbon per route — smooth edges through bends.
             deck = self.highway.attachNewNode(
@@ -255,7 +260,8 @@ class CityApp(ShowBase):
                 # Thin concrete lips along both pavement edges; gapped at crossings.
                 edge = route_width / 2 + plan.fence_w / 2
                 fence_gaps = [
-                    (x, y, other_w * 0.5 + 1.0 + edge) for x, y, other_w in raw_gaps
+                    (x, y, intersection_clear(other_w) + edge)
+                    for x, y, other_w in raw_gaps
                 ]
                 for side in (-1.0, 1.0):
                     edge_pts = offset_polyline(pts, side * edge)
@@ -384,10 +390,40 @@ class CityApp(ShowBase):
         fill_np.setHpr(220, -25, 0)
         self.render.setLight(fill_np)
 
-        # No city traffic while focusing on the highway skeleton.
+        # One cruiser on Fraser Hwy (right lane); Space focuses it.
         self._cars: list[CarController] = []
         self._car = None
         self._signals = None
+        self._fleet_root = self.render.attachNewNode("fleet")
+        fraser = next((a for a in arterials if a.get("name") == "fraser"), None)
+        if fraser is not None and len(fraser.get("points") or ()) >= 2:
+            lane_pts = offset_polyline(
+                list(fraser["points"]),
+                -float(fraser["width"]) / 4,
+            )
+            loop = [(x, y, road_top) for x, y in lane_pts]
+            car = CarController(self, self._cars)
+            car.setup(
+                road_top,
+                plan.west_road_full0,
+                plan.south_road_full0,
+                plan.stride_x,
+                plan.stride_y,
+                plan.cols,
+                plan.rows,
+                start_h=0,
+                start_v=0,
+                start_dir=(1, 0),
+                body_colour=(0.22, 0.48, 0.72),
+            )
+            car._car_diamonds = []
+            car._car_loop_path = loop
+            car._car_pos = [loop[0][0], loop[0][1]]
+            car._car_set_surface_z(loop[0][2])
+            car._car_begin_path(list(loop), kind="arterial_loop")
+            car._place_car()
+            self._car = car
+            self.taskMgr.add(self._fleet_task, "fleet")
 
         bounds = plan.framing_bounds()
         left = bounds["left"]

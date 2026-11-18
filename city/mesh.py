@@ -659,6 +659,29 @@ def arterial_crossings(
     return {name: [(x, y) for x, y, _other_w in discs] for name, discs in gaps.items()}
 
 
+def _dist2_point_segment(
+    px: float,
+    py: float,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+) -> tuple[float, float, float]:
+    """Return ``(dist2, qx, qy)`` for the closest point on segment AB to P."""
+    abx = bx - ax
+    aby = by - ay
+    denom = abx * abx + aby * aby
+    if denom < 1e-12:
+        return (px - ax) * (px - ax) + (py - ay) * (py - ay), ax, ay
+    t = ((px - ax) * abx + (py - ay) * aby) / denom
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    qx = ax + abx * t
+    qy = ay + aby * t
+    dx = px - qx
+    dy = py - qy
+    return dx * dx + dy * dy, qx, qy
+
+
 def arterial_crossing_gaps(
     arterials: list[dict],
 ) -> dict[str, list[tuple[float, float, float]]]:
@@ -670,6 +693,18 @@ def arterial_crossing_gaps(
     hits: dict[str, list[tuple[float, float, float]]] = {
         str(a.get("name", "")): [] for a in arterials
     }
+
+    def add_hit(
+        name: str, x: float, y: float, other_w: float, *, merge: float = 3.0
+    ) -> None:
+        """Keep one disc per junction; keep the wider crossing width."""
+        bucket = hits[name]
+        for i, (hx, hy, hw) in enumerate(bucket):
+            if (hx - x) * (hx - x) + (hy - y) * (hy - y) <= merge * merge:
+                bucket[i] = (0.5 * (hx + x), 0.5 * (hy + y), max(hw, other_w))
+                return
+        bucket.append((x, y, other_w))
+
     for i, a in enumerate(arterials):
         a_pts = list(a.get("points") or ())
         a_name = str(a.get("name", ""))
@@ -682,6 +717,7 @@ def arterial_crossing_gaps(
             b_w = float(b.get("width") or 0.0)
             if len(b_pts) < 2 or not b_name:
                 continue
+            found = False
             for ai in range(len(a_pts) - 1):
                 for bi in range(len(b_pts) - 1):
                     hit = _seg_intersection(
@@ -689,8 +725,38 @@ def arterial_crossing_gaps(
                     )
                     if hit is None:
                         continue
-                    hits[a_name].append((hit[0], hit[1], b_w))
-                    hits[b_name].append((hit[0], hit[1], a_w))
+                    found = True
+                    add_hit(a_name, hit[0], hit[1], b_w)
+                    add_hit(b_name, hit[0], hit[1], a_w)
+            if found:
+                continue
+            # T-tips / near-miss shared ends after smoothing: snap endpoint→segment.
+            tip_tol = max(2.5, 0.35 * max(a_w, b_w))
+            tip_tol2 = tip_tol * tip_tol
+            for tip in (a_pts[0], a_pts[-1]):
+                best = None
+                for bi in range(len(b_pts) - 1):
+                    d2, qx, qy = _dist2_point_segment(
+                        tip[0], tip[1], b_pts[bi][0], b_pts[bi][1], b_pts[bi + 1][0], b_pts[bi + 1][1]
+                    )
+                    if d2 <= tip_tol2 and (best is None or d2 < best[0]):
+                        best = (d2, qx, qy)
+                if best is not None:
+                    _d2, qx, qy = best
+                    add_hit(a_name, qx, qy, b_w)
+                    add_hit(b_name, qx, qy, a_w)
+            for tip in (b_pts[0], b_pts[-1]):
+                best = None
+                for ai in range(len(a_pts) - 1):
+                    d2, qx, qy = _dist2_point_segment(
+                        tip[0], tip[1], a_pts[ai][0], a_pts[ai][1], a_pts[ai + 1][0], a_pts[ai + 1][1]
+                    )
+                    if d2 <= tip_tol2 and (best is None or d2 < best[0]):
+                        best = (d2, qx, qy)
+                if best is not None:
+                    _d2, qx, qy = best
+                    add_hit(a_name, qx, qy, b_w)
+                    add_hit(b_name, qx, qy, a_w)
     return hits
 
 
