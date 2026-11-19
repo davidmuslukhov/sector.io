@@ -119,9 +119,10 @@ highways:
     - [155, 127]
     - [155, 180]
     - [155, 245]
-    - [110, 263]
-    - [60, 280]
-    - [20, 300]
+    - [155, 290]
+    - [155, 325]
+    - [100, 335]
+    - [40, 332]
     - [-20, 325]
 
   # Scott Road / 120 Street — Surrey–Delta west boundary, roughly N–S.
@@ -150,8 +151,8 @@ highways:
       - [395, 18]
       - [480, 18]
 
-  # 102 Ave — 120 St east across King George to a T at Hwy 15 (4 lanes).
-  ave_102:
+  # 96 Ave — 120 St east across King George to a T at Hwy 15 (4 lanes).
+  ave_96:
     lanes: 4
     points:
       - [14, 175]
@@ -162,17 +163,59 @@ highways:
       - [385, 175]
       - [480, 175]
 
-  # 112 Ave — King George east to a T at Hwy 15 (4 lanes).
-  ave_112:
+  # 102 Ave — 128 St east across King George to 140 St (2 lanes).
+  ave_102:
+    lanes: 2
+    points:
+      - [85, 210]
+      - [120, 210]
+      - [155, 210]
+      - [187, 210]
+      - [218, 210]
+
+  # 108 Ave — 120 St east across King George to Hwy 15 (4 lanes).
+  ave_108:
     lanes: 4
     points:
+      - [12, 245]
+      - [85, 245]
+      - [120, 245]
       - [155, 245]
-      - [218, 245]
+      - [187, 245]
+      - [230, 245]
       - [285, 245]
       - [380, 245]
       - [480, 245]
 
-  # 128 St — between 120 St and King George, Hwy 99 north to purple guide (4 lanes).
+  # 114 Ave — T into King George N–S stem (like Fraser), then east to Hwy 15.
+  ave_114:
+    lanes: 4
+    points:
+      - [155, 290]
+      - [175, 290]
+      - [218, 290]
+      - [285, 290]
+      - [380, 290]
+      - [480, 290]
+
+  # Whalley Blvd — 2-lane N–S between 114 Ave and 96 Ave (east of King George).
+  whalley_blvd:
+    lanes: 2
+    points:
+      - [187, 290]
+      - [187, 245]
+      - [187, 210]
+      - [187, 175]
+
+  # University Dr — 2-lane N–S between 128 St and King George (108 Ave → 96 Ave).
+  university_dr:
+    lanes: 2
+    points:
+      - [120, 245]
+      - [120, 210]
+      - [120, 175]
+
+  # 128 St — Hwy 99 north to a T into King George’s NW arm (4 lanes).
   st_128:
     lanes: 4
     points:
@@ -183,19 +226,21 @@ highways:
       - [85, 180]
       - [85, 250]
       - [85, 295]
+      - [85, 334]
 
-  # 140 St — between King George and Hwy 15, Hwy 1 down to Hwy 99 (4 lanes).
+  # 140 St — between King George and Hwy 15, 114 Ave down to Hwy 99 (4 lanes).
   st_140:
     lanes: 4
     points:
-      - [218, 270]
+      - [218, 290]
+      - [218, 245]
       - [218, 180]
       - [218, 78]
       - [218, 18]
       - [218, -35]
       - [218, -160]
 
-  # 152 St — between 140 St and Hwy 15, 102 Ave down past Hwy 99 (4 lanes).
+  # 152 St — between 140 St and Hwy 15, 96 Ave down past Hwy 99 (4 lanes).
   st_152:
     lanes: 4
     points:

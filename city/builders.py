@@ -32,13 +32,14 @@ from city.materials import (
 from city.mesh import (
     box_instance,
     chamfer_box_instance,
-    cone_instance,
     factory_template,
     lamp_template,
     make_annulus_sector,
     make_gable_roof,
     make_pyramid,
     tree_template,
+    tri_prism_instance,
+    tri_pyramid_instance,
     z_cylinder_instance,
 )
 from city.plan import CityPlan
@@ -259,11 +260,12 @@ class SceneBuilders:
         material: Material,
         heading: float = 0.0,
         doors: tuple[str, ...] = ("-y",),
+        footprint: str | None = None,
     ) -> None:
         """Tower as a few shaped masses (not a stack of cubes).
 
-        Style picks octagonal, round, or soft-rect shafts from the plan position
-        so neighbours vary without per-floor box storms.
+        ``footprint`` is ``\"rect\"``, ``\"round\"``, or ``\"tri\"``. When omitted,
+        style is hashed from position (chamfer rect / round / deep chamfer).
         """
         parent = None
         if heading:
@@ -275,13 +277,25 @@ class SceneBuilders:
         sx, sy, sz = size
         total_h = floors * sz
         bottom = -sz / 2
-        # 0=chamfer rect, 1=round, 2=deep chamfer (almost octagon).
-        style = int(abs(x * 3.1 + y * 7.3) * 10) % 3
+        if footprint == "rect":
+            style = 0
+        elif footprint == "round":
+            style = 1
+        elif footprint == "tri":
+            style = 3
+        else:
+            # 0=chamfer rect, 1=round, 2=deep chamfer (almost octagon).
+            style = int(abs(x * 3.1 + y * 7.3) * 10) % 3
 
         plinth_h = 0.35
-        plinth = chamfer_box_instance(
-            root, sx + 0.5, sy + 0.5, plinth_h, chamfer=0.22,
-        )
+        tri_side = min(sx, sy) * 1.2
+        # Round towers sit on a flat square plinth; tri keeps a matching pad.
+        if style == 3:
+            plinth = tri_prism_instance(root, tri_side + 0.55, plinth_h)
+        else:
+            plinth = chamfer_box_instance(
+                root, sx + 0.5, sy + 0.5, plinth_h, chamfer=0.22,
+            )
         plinth.setPos(x, y, bottom + plinth_h / 2)
         plinth.setMaterial(plinth_material(), 1)
 
@@ -301,18 +315,22 @@ class SceneBuilders:
             *,
             chamfer: float,
             round_r: float | None = None,
+            tri_s: float | None = None,
         ) -> None:
             if round_r is not None:
-                mass = z_cylinder_instance(root, round_r, hz, segments=12)
+                mass = z_cylinder_instance(root, round_r, hz, segments=16)
+            elif tri_s is not None:
+                mass = tri_prism_instance(root, tri_s, hz)
             else:
                 mass = chamfer_box_instance(root, wx, wy, hz, chamfer=chamfer)
             mass.setPos(x, y, z_center)
             mass.setMaterial(material, 1)
 
         podium_z = bottom + plinth_h + podium_h / 2
-        if style == 1:
-            add_mass(sx, sy, podium_h, podium_z, chamfer=0.2, round_r=min(sx, sy) * 0.52)
+        if style == 3:
+            add_mass(sx, sy, podium_h, podium_z, chamfer=0.2, tri_s=tri_side)
         else:
+            # Round towers keep a flat rectangular podium; shaft above is circular.
             add_mass(
                 sx, sy, podium_h, podium_z,
                 chamfer=0.35 if style == 2 else 0.22,
@@ -324,6 +342,11 @@ class SceneBuilders:
             add_mass(
                 sx - inset, sy - inset, shaft_h, shaft_z,
                 chamfer=0.2, round_r=min(sx, sy) * 0.42,
+            )
+        elif style == 3:
+            add_mass(
+                sx, sy, shaft_h, shaft_z,
+                chamfer=0.2, tri_s=tri_side * (0.88 if floors >= 8 else 0.94),
             )
         else:
             add_mass(
@@ -339,6 +362,11 @@ class SceneBuilders:
                     sx * 0.55, sy * 0.55, top_h, top_z,
                     chamfer=0.15, round_r=min(sx, sy) * 0.28,
                 )
+            elif style == 3:
+                add_mass(
+                    sx * 0.55, sy * 0.55, top_h, top_z,
+                    chamfer=0.15, tri_s=tri_side * 0.55,
+                )
             else:
                 add_mass(
                     sx * 0.55, sy * 0.55, top_h, top_z,
@@ -346,9 +374,20 @@ class SceneBuilders:
                 )
             crown_z += top_h
 
-        # Roof: cone, pyramid, or flat disc + mast — by style.
+        # Roof: flat disc, pyramid, tri pyramid, or flat box + mast — by style.
         if style == 1:
-            roof = cone_instance(root, min(sx, sy) * 0.32, 1.1 if floors >= 10 else 0.7, segments=12)
+            cap_r = min(sx, sy) * 0.42
+            cap = z_cylinder_instance(root, cap_r, 0.22, segments=16)
+            cap.setPos(x, y, crown_z + 0.11)
+            cap.setMaterial(roof_material(), 1)
+            if floors >= 10:
+                mast = z_cylinder_instance(root, 0.06, 1.4, segments=6)
+                mast.setPos(x, y, crown_z + 0.9)
+                mast.setMaterial(stack_material(), 1)
+        elif style == 3:
+            roof = tri_pyramid_instance(
+                root, tri_side * 0.55, 1.1 if floors >= 10 else 0.7,
+            )
             roof.setPos(x, y, crown_z)
             roof.setMaterial(roof_material(), 1)
         elif style == 2:
@@ -365,7 +404,7 @@ class SceneBuilders:
                 mast = z_cylinder_instance(root, 0.06, 1.6, segments=6)
                 mast.setPos(x, y, crown_z + 0.95)
                 mast.setMaterial(stack_material(), 1)
-        if floors >= 14 and style != 0:
+        if floors >= 14 and style not in (0, 3):
             unit = stack_material()
             hut = chamfer_box_instance(root, 0.55, 0.45, 0.7, chamfer=0.08)
             hut.setPos(x - sx * 0.12, y + sy * 0.1, crown_z + 0.4)

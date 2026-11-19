@@ -451,6 +451,10 @@ CYLINDER_TEMPLATES: dict[tuple[float, float, int], NodePath] = {}
 Z_CYLINDER_TEMPLATES: dict[tuple[float, float, int], NodePath] = {}
 # Cones / spires. Keyed by radius, height, segments.
 CONE_TEMPLATES: dict[tuple[float, float, int], NodePath] = {}
+# Equilateral triangular prisms. Keyed by side, height.
+TRI_PRISM_TEMPLATES: dict[tuple[float, float], NodePath] = {}
+# Equilateral triangular pyramids. Keyed by side, height.
+TRI_PYRAMID_TEMPLATES: dict[tuple[float, float], NodePath] = {}
 # Flattened factory buildings. Keyed by plan, height, and bottom z.
 FACTORY_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
 # Flattened car mesh. Copied once per scene.
@@ -656,7 +660,7 @@ def arterial_crossings(
 ) -> dict[str, list[tuple[float, float]]]:
     """Map each arterial name to world-space crossings with other arterials."""
     gaps = arterial_crossing_gaps(arterials)
-    return {name: [(x, y) for x, y, _other_w in discs] for name, discs in gaps.items()}
+    return {name: [(x, y) for x, y, _radius in discs] for name, discs in gaps.items()}
 
 
 def _dist2_point_segment(
@@ -682,28 +686,61 @@ def _dist2_point_segment(
     return dx * dx + dy * dy, qx, qy
 
 
+def _seg_unit(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    length = math.hypot(dx, dy) or 1.0
+    return dx / length, dy / length
+
+
+def _crossing_clear_radius(
+    own_w: float,
+    other_w: float,
+    sin_angle: float,
+) -> float:
+    """Median/mark opening radius that clears the other ribbon at this angle.
+
+    Shallow crossings (Fraser Hwy × 88 Ave) need a much larger disc than a
+    right-angle junction so barriers don't clip through the skewed pad.
+    """
+    sin_a = max(0.22, min(1.0, abs(sin_angle)))
+    return (other_w * 0.5) / sin_a + own_w * 0.35 + 3.0
+
+
 def arterial_crossing_gaps(
     arterials: list[dict],
 ) -> dict[str, list[tuple[float, float, float]]]:
-    """Map each arterial to ``(x, y, other_width)`` discs at crossings / T-tips.
+    """Map each arterial to ``(x, y, clear_radius)`` discs at crossings / T-tips.
 
-    ``other_width`` is the paved width of the crossing road — use it to size
-    barrier / fence / mark openings so the pad clears that ribbon.
+    ``clear_radius`` already accounts for both paved widths and the crossing
+    angle — use it directly for median / mark gaps (add edge offset for fences).
     """
     hits: dict[str, list[tuple[float, float, float]]] = {
         str(a.get("name", "")): [] for a in arterials
     }
 
     def add_hit(
-        name: str, x: float, y: float, other_w: float, *, merge: float = 3.0
+        name: str, x: float, y: float, radius: float, *, merge: float = 4.0
     ) -> None:
-        """Keep one disc per junction; keep the wider crossing width."""
+        """Keep one disc per junction; keep the larger opening."""
         bucket = hits[name]
-        for i, (hx, hy, hw) in enumerate(bucket):
+        for i, (hx, hy, hr) in enumerate(bucket):
             if (hx - x) * (hx - x) + (hy - y) * (hy - y) <= merge * merge:
-                bucket[i] = (0.5 * (hx + x), 0.5 * (hy + y), max(hw, other_w))
+                bucket[i] = (0.5 * (hx + x), 0.5 * (hy + y), max(hr, radius))
                 return
-        bucket.append((x, y, other_w))
+        bucket.append((x, y, radius))
+
+    def record(
+        a_name: str,
+        b_name: str,
+        x: float,
+        y: float,
+        a_w: float,
+        b_w: float,
+        sin_angle: float,
+    ) -> None:
+        add_hit(a_name, x, y, _crossing_clear_radius(a_w, b_w, sin_angle))
+        add_hit(b_name, x, y, _crossing_clear_radius(b_w, a_w, sin_angle))
 
     for i, a in enumerate(arterials):
         a_pts = list(a.get("points") or ())
@@ -726,37 +763,53 @@ def arterial_crossing_gaps(
                     if hit is None:
                         continue
                     found = True
-                    add_hit(a_name, hit[0], hit[1], b_w)
-                    add_hit(b_name, hit[0], hit[1], a_w)
+                    aux, auy = _seg_unit(a_pts[ai], a_pts[ai + 1])
+                    bux, buy = _seg_unit(b_pts[bi], b_pts[bi + 1])
+                    sin_a = abs(aux * buy - auy * bux)
+                    record(a_name, b_name, hit[0], hit[1], a_w, b_w, sin_a)
             if found:
                 continue
             # T-tips / near-miss shared ends after smoothing: snap endpoint→segment.
             tip_tol = max(2.5, 0.35 * max(a_w, b_w))
             tip_tol2 = tip_tol * tip_tol
+            # T junctions are ~90° locally; use a healthy sin floor via helper.
             for tip in (a_pts[0], a_pts[-1]):
                 best = None
+                best_bi = 0
                 for bi in range(len(b_pts) - 1):
                     d2, qx, qy = _dist2_point_segment(
                         tip[0], tip[1], b_pts[bi][0], b_pts[bi][1], b_pts[bi + 1][0], b_pts[bi + 1][1]
                     )
                     if d2 <= tip_tol2 and (best is None or d2 < best[0]):
                         best = (d2, qx, qy)
+                        best_bi = bi
                 if best is not None:
                     _d2, qx, qy = best
-                    add_hit(a_name, qx, qy, b_w)
-                    add_hit(b_name, qx, qy, a_w)
+                    # Approach tangent of the stem vs through-road segment.
+                    if tip is a_pts[0]:
+                        aux, auy = _seg_unit(a_pts[0], a_pts[1])
+                    else:
+                        aux, auy = _seg_unit(a_pts[-2], a_pts[-1])
+                    bux, buy = _seg_unit(b_pts[best_bi], b_pts[best_bi + 1])
+                    record(a_name, b_name, qx, qy, a_w, b_w, abs(aux * buy - auy * bux))
             for tip in (b_pts[0], b_pts[-1]):
                 best = None
+                best_ai = 0
                 for ai in range(len(a_pts) - 1):
                     d2, qx, qy = _dist2_point_segment(
                         tip[0], tip[1], a_pts[ai][0], a_pts[ai][1], a_pts[ai + 1][0], a_pts[ai + 1][1]
                     )
                     if d2 <= tip_tol2 and (best is None or d2 < best[0]):
                         best = (d2, qx, qy)
+                        best_ai = ai
                 if best is not None:
                     _d2, qx, qy = best
-                    add_hit(a_name, qx, qy, b_w)
-                    add_hit(b_name, qx, qy, a_w)
+                    if tip is b_pts[0]:
+                        bux, buy = _seg_unit(b_pts[0], b_pts[1])
+                    else:
+                        bux, buy = _seg_unit(b_pts[-2], b_pts[-1])
+                    aux, auy = _seg_unit(a_pts[best_ai], a_pts[best_ai + 1])
+                    record(a_name, b_name, qx, qy, a_w, b_w, abs(aux * buy - auy * bux))
     return hits
 
 
@@ -1636,6 +1689,112 @@ def make_pyramid(sx: float, sy: float, height: float) -> GeomNode:
     node = GeomNode("pyramid")
     node.addGeom(geom)
     return node
+
+
+def _equilateral_xy(side: float) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Centroid-centred equilateral triangle in XY (point toward +Y)."""
+    h = math.sqrt(3.0) * 0.5 * side
+    return (
+        (0.0, (2.0 / 3.0) * h),
+        (-0.5 * side, -(1.0 / 3.0) * h),
+        (0.5 * side, -(1.0 / 3.0) * h),
+    )
+
+
+def make_tri_prism(side: float, height: float) -> GeomNode:
+    """Equilateral triangular prism, centroid at origin, extruded ±height/2 on Z."""
+    hz = height / 2.0
+    p0, p1, p2 = _equilateral_xy(side)
+    bot = ((p0[0], p0[1], -hz), (p1[0], p1[1], -hz), (p2[0], p2[1], -hz))
+    top = ((p0[0], p0[1], hz), (p1[0], p1[1], hz), (p2[0], p2[1], hz))
+
+    faces: tuple[tuple[tuple[float, float, float], ...], ...] = (
+        (bot[0], bot[2], bot[1]),  # bottom (outward −Z)
+        (top[0], top[1], top[2]),  # top
+        (bot[0], bot[1], top[1], top[0]),
+        (bot[1], bot[2], top[2], top[1]),
+        (bot[2], bot[0], top[0], top[2]),
+    )
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("tri_prism", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    for face in faces:
+        n = face_normal(face[0], face[1], face[2])
+        start = vertex.getWriteRow()
+        for corner in face:
+            vertex.addData3(*corner)
+            normal.addData3(*n)
+        tris.addVertices(start, start + 1, start + 2)
+        if len(face) == 4:
+            tris.addVertices(start, start + 2, start + 3)
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("tri_prism")
+    node.addGeom(geom)
+    return node
+
+
+def make_tri_pyramid(side: float, height: float) -> GeomNode:
+    """Equilateral triangular pyramid. Base on z=0, apex at z=height."""
+    p0, p1, p2 = _equilateral_xy(side)
+    base = ((p0[0], p0[1], 0.0), (p1[0], p1[1], 0.0), (p2[0], p2[1], 0.0))
+    apex = (0.0, 0.0, height)
+    sides = (
+        (base[0], base[1], apex),
+        (base[1], base[2], apex),
+        (base[2], base[0], apex),
+    )
+
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData("tri_pyramid", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    def add_face(
+        corners: tuple[tuple[float, float, float], ...],
+        n: tuple[float, float, float],
+    ) -> None:
+        start = vertex.getWriteRow()
+        for corner in corners:
+            vertex.addData3(*corner)
+            normal.addData3(*n)
+        tris.addVertices(start, start + 1, start + 2)
+
+    for corners in sides:
+        add_face(corners, face_normal(*corners))
+    add_face((base[0], base[2], base[1]), (0.0, 0.0, -1.0))
+    tris.closePrimitive()
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("tri_pyramid")
+    node.addGeom(geom)
+    return node
+
+
+def tri_prism_instance(parent: NodePath, side: float, height: float) -> NodePath:
+    key = (side, height)
+    template = TRI_PRISM_TEMPLATES.get(key)
+    if template is None:
+        template = NodePath(make_tri_prism(side, height))
+        TRI_PRISM_TEMPLATES[key] = template
+    return template.copyTo(parent)
+
+
+def tri_pyramid_instance(parent: NodePath, side: float, height: float) -> NodePath:
+    key = (side, height)
+    template = TRI_PYRAMID_TEMPLATES.get(key)
+    if template is None:
+        template = NodePath(make_tri_pyramid(side, height))
+        TRI_PYRAMID_TEMPLATES[key] = template
+    return template.copyTo(parent)
 
 
 def face_normal(

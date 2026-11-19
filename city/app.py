@@ -27,6 +27,7 @@ from city.materials import (
     road_material,
 )
 from city.mesh import (
+    _dist2_point_segment,
     arterial_crossing_gaps,
     box_instance,
     make_highway_ribbon,
@@ -48,8 +49,12 @@ HIGHWAY_LABELS = {
     "king_george": "King George Blvd",
     "scott_120": "120 St",
     "ave_72": "72 Ave",
+    "ave_96": "96 Ave",
     "ave_102": "102 Ave",
-    "ave_112": "112 Ave",
+    "ave_108": "108 Ave",
+    "ave_114": "114 Ave",
+    "whalley_blvd": "Whalley Blvd",
+    "university_dr": "University Dr",
     "st_128": "128 St",
     "st_140": "140 St",
     "st_152": "152 St",
@@ -127,7 +132,7 @@ class CityApp(ShowBase):
                         houses_deep=lot.houses_deep,
                     )
 
-        # One house + one tower on the NE green plate (east of Hwy 15).
+        # Demo towers on the NE plate, plus skyscrapers in the circled Whalley blocks.
         ne = SceneBuilders(self.city, plan, self.render)
         ne._add_house(560.0, 400.0, brick=0.68, chimney=True)
         ne._add_stack(
@@ -136,15 +141,153 @@ class CityApp(ShowBase):
             18,
             block_size,
             block_material(BLOCK_SHADES[1]),
+            footprint="rect",
             doors=("-y",),
         )
-
+        ne._add_stack(
+            605.0,
+            400.0,
+            18,
+            block_size,
+            block_material(BLOCK_SHADES[4]),
+            footprint="round",
+            doors=("-y",),
+        )
+        ne._add_stack(
+            590.0,
+            415.0,
+            16,
+            block_size,
+            block_material(BLOCK_SHADES[7]),
+            footprint="tri",
+            heading=18.0,
+            doors=("-y",),
+        )
         hwy = plan.highway_geometry()
         lane_width = hwy["lane_width"]
         highway_width = hwy["highway_width"]
         road_z = hwy["road_z"]
         road_thickness = hwy["road_thickness"]
         arterials = list(hwy["arterials"])
+
+        # Road corridors for tower sight checks: (ax, ay, bx, by, half_width).
+        road_segs: list[tuple[float, float, float, float, float]] = []
+        for route in arterials:
+            pts = list(route.get("control_points") or route.get("points") or ())
+            half_w = float(route.get("width") or 0.0) * 0.5
+            for i in range(len(pts) - 1):
+                road_segs.append(
+                    (pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], half_w)
+                )
+
+        def _tower_sees_road(
+            tx: float,
+            ty: float,
+            half: float,
+            others: list[tuple[float, float]],
+            *,
+            max_dist: float = 48.0,
+            step: float = 0.7,
+        ) -> bool:
+            """True if a cardinal ray hits pavement before another tower."""
+            for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
+                dist = half + 0.05
+                while dist < max_dist:
+                    px = tx + dx * dist
+                    py = ty + dy * dist
+                    blocked = False
+                    for ox, oy in others:
+                        if abs(px - ox) <= half and abs(py - oy) <= half:
+                            blocked = True
+                            break
+                    if blocked:
+                        break
+                    for ax, ay, bx, by, hw in road_segs:
+                        d2, _qx, _qy = _dist2_point_segment(px, py, ax, ay, bx, by)
+                        if d2 <= hw * hw:
+                            return True
+                    dist += step
+            return False
+
+        # Circled blocks packed with towers, split around 102 Ave.
+        # Each tuple is (west, east, south, north) inset from the arterials.
+        tower_blocks = (
+            (92.0, 113.0, 184.0, 204.0),   # 128–Uni, 96–102
+            (127.0, 148.0, 184.0, 204.0),  # Uni–KG, 96–102
+            (162.0, 180.0, 184.0, 204.0),  # KG–Whalley, 96–102
+            (194.0, 211.0, 184.0, 204.0),  # Whalley–140, 96–102
+            (92.0, 113.0, 216.0, 236.0),   # 128–Uni, 102–108
+            (127.0, 148.0, 216.0, 236.0),  # Uni–KG, 102–108
+            (162.0, 180.0, 216.0, 236.0),  # KG–Whalley, 102–108
+            (194.0, 211.0, 216.0, 236.0),  # Whalley–140, 102–108
+            (162.0, 180.0, 253.0, 282.0),  # KG–Whalley, above 108
+            (194.0, 211.0, 253.0, 282.0),  # Whalley–140, above 108
+        )
+        # Dark grey lot pads under the tower blocks (above the lawn).
+        pad_mat = concrete_material(0.32)
+        pad_thickness = 0.14
+        for west, east, south, north in tower_blocks:
+            pad = box_instance(
+                self.city,
+                east - west,
+                north - south,
+                pad_thickness,
+            )
+            pad.setPos(
+                (west + east) * 0.5,
+                (south + north) * 0.5,
+                road_z - 0.02,
+            )
+            pad.setMaterial(pad_mat, 1)
+
+        footprints = ("rect", "round", "tri")
+        tower_pitch = block_size[0] + plan.tower_gap + 0.6
+        tower_half = block_size[0] * 0.5
+        floor_hi = plan.floor_max + 6
+        candidates: list[tuple[float, float, int, str, float, int]] = []
+        for west, east, south, north in tower_blocks:
+            cols = max(2, min(3, int((east - west) / tower_pitch)))
+            rows = max(2, min(4, int((north - south) / tower_pitch)))
+            for row in range(rows):
+                for col in range(cols):
+                    x = west + (col + 0.5) * (east - west) / cols
+                    y = south + (row + 0.5) * (north - south) / rows
+                    seed = abs(int(x * 17 + y * 31))
+                    x += ((seed % 7) - 3) * 0.12
+                    y += ((seed % 5) - 2) * 0.12
+                    # Medium or tall only — no short stacks.
+                    mid_lo = max(plan.floor_min, 14)
+                    mid_hi = max(mid_lo + 4, plan.floor_max - 2)
+                    tall_lo = mid_hi + 1
+                    tall_hi = floor_hi
+                    roll = (seed * 13 + seed // 5) % 100
+                    if roll < 40:
+                        span = max(1, tall_hi - tall_lo + 1)
+                        floors = tall_lo + ((seed * 7) % span)
+                    else:
+                        span = max(1, mid_hi - mid_lo + 1)
+                        floors = mid_lo + ((seed * 11) % span)
+                    footprint = footprints[seed % 3]
+                    heading = (seed % 9 - 4) * 5.0 if footprint == "tri" else 0.0
+                    candidates.append((x, y, floors, footprint, heading, seed))
+
+        # Drop towers with no clear cardinal sightline to a road.
+        kept: list[tuple[float, float, int, str, float, int]] = []
+        for x, y, floors, footprint, heading, seed in candidates:
+            others = [(ox, oy) for ox, oy, *_rest in candidates if ox != x or oy != y]
+            if _tower_sees_road(x, y, tower_half, others):
+                kept.append((x, y, floors, footprint, heading, seed))
+        for x, y, floors, footprint, heading, seed in kept:
+            ne._add_stack(
+                x,
+                y,
+                floors,
+                block_size,
+                block_material(BLOCK_SHADES[seed % len(BLOCK_SHADES)]),
+                footprint=footprint,
+                heading=heading,
+                doors=("-y",),
+            )
 
         self.highway = self.render.attachNewNode("highway")
         road_mat = road_material()
@@ -233,16 +376,8 @@ class CityApp(ShowBase):
             route_lanes = int(arterial.get("lanes", plan.highway_lanes))
             route_width = float(arterial.get("width", highway_width))
             name = str(arterial.get("name", ""))
-            raw_gaps = crossing_gaps.get(name, [])
-
-            def intersection_clear(other_w: float) -> float:
-                # Open past both ribbons so angled / T pads don't keep border stubs
-                # (Hwy 1 × 112 Ave, King George × Fraser Hwy, etc.).
-                return 0.55 * other_w + 0.35 * route_width + 2.5
-
-            median_gaps = [
-                (x, y, intersection_clear(other_w)) for x, y, other_w in raw_gaps
-            ]
+            # (x, y, clear_radius) — radius is angle-aware (shallow junctions open wider).
+            median_gaps = list(crossing_gaps.get(name, []))
             # One continuous ribbon per route — smooth edges through bends.
             deck = self.highway.attachNewNode(
                 make_highway_ribbon(pts, route_width, road_thickness)
@@ -259,10 +394,7 @@ class CityApp(ShowBase):
             if name in SIDE_BORDER_ROUTES and plan.fence_w > 0.0 and plan.fence_h > 0.0:
                 # Thin concrete lips along both pavement edges; gapped at crossings.
                 edge = route_width / 2 + plan.fence_w / 2
-                fence_gaps = [
-                    (x, y, intersection_clear(other_w) + edge)
-                    for x, y, other_w in raw_gaps
-                ]
+                fence_gaps = [(x, y, radius + edge) for x, y, radius in median_gaps]
                 for side in (-1.0, 1.0):
                     edge_pts = offset_polyline(pts, side * edge)
                     for piece in split_polyline_around_gaps(edge_pts, fence_gaps):
