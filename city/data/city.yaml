@@ -43,7 +43,7 @@ highways:
     - [460, 370]
     - [480, 366]
 
-  # Trans-Canada — from Hwy 17 south, then east through north Surrey.
+  # Trans-Canada — from Hwy 17 south, then east through north Surrey to 192 St.
   hwy1:
     - [176.0, 387.2]
     - [215, 357]
@@ -55,8 +55,9 @@ highways:
     - [460, 195]
     - [520, 180]
     - [580, 168]
+    - [610, 160]
 
-  # Fraser Highway — T into King George just north of 88 Ave, then SE.
+  # Fraser Highway — T into King George just north of 88 Ave, then SE to 192 St.
   fraser:
     - [155, 127]
     - [175, 152]
@@ -67,9 +68,11 @@ highways:
     - [415, 59]
     - [480, 32]
     - [540, 9]
+    - [610, -18]
 
-  # 176 St / Pacific Highway — N–S, cropped north at the Hwy 17 T.
+  # 176 St / Pacific Highway — N–S to 28 Ave, cropped north at the Hwy 17 T.
   hwy15:
+    - [480, -320]
     - [480, -250]
     - [480, -60]
     - [480, 60]
@@ -77,25 +80,28 @@ highways:
     - [480, 300]
     - [480, 366]
 
-  # 88 Ave — east–west, west tip on 120 St.
+  # 88 Ave — east–west, 120 St to 192 St.
   hwy10:
     - [18, 78]
     - [180, 78]
     - [320, 78]
     - [460, 78]
     - [530, 78]
+    - [610, 78]
 
-  # Hwy 99 — far south W–E, turns south parallel to (east of) King George.
+  # Hwy 99 — W–E, then SE; crosses King George at a shallow acute angle (both continue).
   hwy99:
     - [-185, -160]
     - [-130, -160]
     - [-40, -160]
     - [40, -160]
     - [100, -160]
-    - [145, -160]
-    - [170, -165]
-    - [175, -230]
-    - [178, -305]
+    - [160, -165]
+    - [220, -205]
+    - [280, -255]
+    - [350, -320]
+    - [430, -395]
+    - [517, -477]
 
   # Hwy 10 — continuous west→east through King George to a T at Hwy 15.
   hwy8:
@@ -109,9 +115,15 @@ highways:
     - [380, -35]
     - [480, -35]
 
-  # King George Boulevard — White Rock north past Fraser T, then NW to Hwy 17.
+  # King George — N–S then SE; crosses Hwy 99 (~27°), continues south parallel to Hwy 99; T at 0 Ave.
   king_george:
-    - [152, -160]
+    - [482, -477]
+    - [390, -390]
+    - [310, -315]
+    - [240, -250]
+    - [200, -170]
+    - [160, -100]
+    - [152, -50]
     - [148, -35]
     - [152, 5]
     - [158, 20]
@@ -125,7 +137,7 @@ highways:
     - [40, 332]
     - [-20, 325]
 
-  # Scott Road / 120 Street — Surrey–Delta west boundary, roughly N–S.
+  # Scott Road / 120 Street — Surrey–Delta west boundary, N–S to Hwy 99.
   scott_120:
     - [8, 350]
     - [10, 300]
@@ -137,6 +149,14 @@ highways:
     - [22, -20]
     - [24, -70]
     - [26, -160]
+
+  # 120 St (south) — separate from Scott Rd segment; 28 Ave to a short stub below 16 Ave.
+  st_120_s:
+    lanes: 4
+    points:
+      - [26, -320]
+      - [26, -400]
+      - [26, -420]
 
   # 72 Ave — east–west arterial between 88 Ave and Hwy 10 (4 lanes).
   ave_72:
@@ -151,10 +171,11 @@ highways:
       - [395, 18]
       - [480, 18]
 
-  # 96 Ave — 120 St east across King George to a T at Hwy 15 (4 lanes).
+  # 96 Ave — Hwy 17 (T) east across King George to a T at Hwy 15 (4 lanes).
   ave_96:
     lanes: 4
     points:
+      - [-78, 175]
       - [14, 175]
       - [85, 175]
       - [155, 175]
@@ -240,7 +261,7 @@ highways:
       - [218, -35]
       - [218, -160]
 
-  # 152 St — between 140 St and Hwy 15, 96 Ave down past Hwy 99 (4 lanes).
+  # 152 St — between 140 St and Hwy 15, 96 Ave south to 0 Ave (4 lanes).
   st_152:
     lanes: 4
     points:
@@ -250,6 +271,85 @@ highways:
       - [285, -35]
       - [285, -160]
       - [285, -250]
+      - [285, -320]
+      - [285, -400]
+      - [285, -477]
+
+  # 136 St — Marine Dr north to just above 28 Ave (4 lanes).
+  st_136:
+    lanes: 4
+    points:
+      - [174, -485]
+      - [174, -400]
+      - [174, -290]
+
+  # Marine Dr — from short 120 St stub, SE S-curve across 136 St into 0 Ave (4 lanes).
+  marine_dr:
+    lanes: 4
+    points:
+      - [26, -420]
+      - [45, -445]
+      - [80, -465]
+      - [120, -478]
+      - [174, -485]
+      - [200, -480]
+      - [220, -477]
+
+  # 58 Ave — east of King George SE approach across Hwy 15 to 192 St (4 lanes).
+  ave_58:
+    lanes: 4
+    points:
+      - [200, -110]
+      - [285, -110]
+      - [480, -110]
+      - [610, -110]
+
+  # 28 Ave — south 120 St east across Hwy 99 / King George SE legs to 192 St (4 lanes).
+  ave_28:
+    lanes: 4
+    points:
+      - [26, -320]
+      - [250, -320]
+      - [285, -320]
+      - [350, -320]
+      - [480, -320]
+      - [610, -320]
+
+  # 16 Ave — south 120 St east across SE legs to 192 St (4 lanes).
+  ave_16:
+    lanes: 4
+    points:
+      - [26, -400]
+      - [174, -400]
+      - [285, -400]
+      - [320, -400]
+      - [435, -400]
+      - [520, -400]
+      - [610, -400]
+
+  # 0 Ave — from Marine Dr join east; T-junctions with 152 St, King George, Hwy 99 (4 lanes).
+  ave_0:
+    lanes: 4
+    points:
+      - [220, -477]
+      - [285, -477]
+      - [380, -477]
+      - [482, -477]
+      - [517, -477]
+      - [610, -477]
+
+  # 192 St — east N–S from Hwy 1 corridor down to 0 Ave (4 lanes).
+  st_192:
+    lanes: 4
+    points:
+      - [610, 180]
+      - [610, 78]
+      - [610, 60]
+      - [610, -18]
+      - [610, -110]
+      - [610, -320]
+      - [610, -400]
+      - [610, -477]
 
 neighborhoods: []
 

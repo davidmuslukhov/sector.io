@@ -11,6 +11,8 @@ from panda3d.core import (
     DirectionalLight,
     Filename,
     KeyboardButton,
+    LineSegs,
+    Point3,
     TextNode,
 )
 from direct.gui.OnscreenText import OnscreenText
@@ -48,16 +50,24 @@ HIGHWAY_LABELS = {
     "hwy8": "Hwy 10",
     "king_george": "King George Blvd",
     "scott_120": "120 St",
+    "st_120_s": "120 St",
     "ave_72": "72 Ave",
     "ave_96": "96 Ave",
     "ave_102": "102 Ave",
     "ave_108": "108 Ave",
     "ave_114": "114 Ave",
+    "ave_58": "58 Ave",
+    "ave_28": "28 Ave",
+    "ave_16": "16 Ave",
+    "ave_0": "0 Ave",
     "whalley_blvd": "Whalley Blvd",
     "university_dr": "University Dr",
+    "marine_dr": "Marine Dr",
     "st_128": "128 St",
+    "st_136": "136 St",
     "st_140": "140 St",
     "st_152": "152 St",
+    "st_192": "192 St",
 }
 
 # Thin side fences: provincial highways plus Fraser, 88 Ave, and King George.
@@ -209,9 +219,9 @@ class CityApp(ShowBase):
                     dist += step
             return False
 
-        # Circled blocks packed with towers, split around 102 Ave.
+        # City Centre: circled blocks packed with towers, split around 102 Ave.
         # Each tuple is (west, east, south, north) inset from the arterials.
-        tower_blocks = (
+        self.city_centre_blocks = (
             (92.0, 113.0, 184.0, 204.0),   # 128–Uni, 96–102
             (127.0, 148.0, 184.0, 204.0),  # Uni–KG, 96–102
             (162.0, 180.0, 184.0, 204.0),  # KG–Whalley, 96–102
@@ -223,12 +233,14 @@ class CityApp(ShowBase):
             (162.0, 180.0, 253.0, 282.0),  # KG–Whalley, above 108
             (194.0, 211.0, 253.0, 282.0),  # Whalley–140, above 108
         )
+        self.city_centre = self.city.attachNewNode("city-centre")
+        cc = SceneBuilders(self.city_centre, plan, self.render)
         # Dark grey lot pads under the tower blocks (above the lawn).
         pad_mat = concrete_material(0.32)
         pad_thickness = 0.14
-        for west, east, south, north in tower_blocks:
+        for west, east, south, north in self.city_centre_blocks:
             pad = box_instance(
-                self.city,
+                self.city_centre,
                 east - west,
                 north - south,
                 pad_thickness,
@@ -245,7 +257,7 @@ class CityApp(ShowBase):
         tower_half = block_size[0] * 0.5
         floor_hi = plan.floor_max + 6
         candidates: list[tuple[float, float, int, str, float, int]] = []
-        for west, east, south, north in tower_blocks:
+        for west, east, south, north in self.city_centre_blocks:
             cols = max(2, min(3, int((east - west) / tower_pitch)))
             rows = max(2, min(4, int((north - south) / tower_pitch)))
             for row in range(rows):
@@ -278,7 +290,7 @@ class CityApp(ShowBase):
             if _tower_sees_road(x, y, tower_half, others):
                 kept.append((x, y, floors, footprint, heading, seed))
         for x, y, floors, footprint, heading, seed in kept:
-            ne._add_stack(
+            cc._add_stack(
                 x,
                 y,
                 floors,
@@ -288,6 +300,246 @@ class CityApp(ShowBase):
                 heading=heading,
                 doors=("-y",),
             )
+
+        self._ground_z = road_z
+        outline_z = road_z + road_thickness / 2 + 0.03
+        # District rings follow arterial centrelines (click → outline + title).
+        self._districts: dict[str, dict] = {
+            "city_centre": {
+                "title": "Surrey City Centre",
+                # 128 St → 96 Ave → 140 St → 114 Ave → King George → 108 Ave.
+                "ring": (
+                    (85.0, 175.0),
+                    (218.0, 175.0),
+                    (218.0, 290.0),
+                    (155.0, 290.0),
+                    (155.0, 245.0),
+                    (85.0, 245.0),
+                ),
+                "bright": self.city_centre,
+            },
+            "whalley": {
+                "title": "Whalley",
+                # 120 St → 88 Ave → 152 St → Hwy 1 → Hwy 17 → 96 Ave (incl. Hwy 17/120/96 triangle); City Centre notched.
+                "ring": (
+                    (18.0, 78.0),
+                    (285.0, 78.0),
+                    (285.0, 175.0),
+                    (218.0, 175.0),
+                    (218.0, 290.0),
+                    (155.0, 290.0),
+                    (155.0, 245.0),
+                    (85.0, 245.0),
+                    (85.0, 175.0),
+                    (218.0, 175.0),
+                    (285.0, 175.0),
+                    (285.0, 234.0),
+                    (280.0, 236.0),
+                    (266.0, 263.0),
+                    (247.0, 319.0),
+                    (215.0, 357.0),
+                    (176.0, 387.2),
+                    (140.0, 383.0),
+                    (80.0, 372.0),
+                    (25.0, 355.0),
+                    (8.0, 350.0),
+                    (-20.0, 325.0),
+                    (-50.0, 280.0),
+                    (-68.0, 230.0),
+                    (-78.0, 175.0),
+                    (14.0, 175.0),
+                    (16.0, 120.0),
+                ),
+                "bright": None,
+            },
+            "north_delta": {
+                "title": "North Delta",
+                # West of 120 St, Hwy 99 north to 96 Ave along Hwy 17 (excludes SW Hwy 17/99 wedge).
+                "ring": (
+                    (14.0, 175.0),
+                    (-78.0, 175.0),
+                    (-90.0, 120.0),
+                    (-105.0, 40.0),
+                    (-120.0, -50.0),
+                    (-128.5, -160.0),
+                    (26.0, -160.0),
+                    (24.0, -70.0),
+                    (22.0, -20.0),
+                    (20.0, 30.0),
+                    (18.0, 78.0),
+                    (16.0, 120.0),
+                ),
+                "bright": None,
+            },
+            "newton": {
+                "title": "Newton",
+                # 88 Ave → 152 St → Hwy 99 (follow to 152 St) → 120 St.
+                "ring": (
+                    (18.0, 78.0),
+                    (285.0, 78.0),
+                    (285.0, -260.0),
+                    (280.0, -255.0),
+                    (220.0, -205.0),
+                    (160.0, -165.0),
+                    (100.0, -160.0),
+                    (40.0, -160.0),
+                    (26.0, -160.0),
+                    (24.0, -70.0),
+                    (22.0, -20.0),
+                    (20.0, 30.0),
+                ),
+                "bright": None,
+            },
+            "guildford": {
+                "title": "Guildford",
+                # 152 St / 96 Ave → Hwy 15 → Hwy 17 → Hwy 1 (west edge shared with Whalley).
+                "ring": (
+                    (285.0, 175.0),
+                    (480.0, 175.0),
+                    (480.0, 180.0),
+                    (480.0, 300.0),
+                    (480.0, 366.0),
+                    (460.0, 370.0),
+                    (400.0, 382.0),
+                    (340.0, 390.0),
+                    (270.0, 393.0),
+                    (200.0, 390.0),
+                    (176.0, 387.2),
+                    (215.0, 357.0),
+                    (247.0, 319.0),
+                    (266.0, 263.0),
+                    (280.0, 236.0),
+                    (285.0, 234.0),
+                ),
+                "bright": None,
+            },
+            "fleetwood": {
+                "title": "Fleetwood",
+                # 152 St → 96 Ave → Hwy 15 → Hwy 10.
+                "ring": (
+                    (285.0, 175.0),
+                    (480.0, 175.0),
+                    (480.0, -35.0),
+                    (285.0, -35.0),
+                ),
+                "bright": None,
+            },
+            "cloverdale": {
+                "title": "Cloverdale",
+                # Hwy 15 → Hwy 1 (angled NE tip) → 192 St → 28 Ave → Hwy 99 → 152 St → Hwy 10.
+                "ring": (
+                    (480.0, 175.0),
+                    (480.0, 190.0),
+                    (520.0, 180.0),
+                    (580.0, 168.0),
+                    (610.0, 160.0),
+                    (610.0, -320.0),
+                    (350.0, -320.0),
+                    (280.0, -255.0),
+                    (285.0, -260.0),
+                    (285.0, -35.0),
+                    (480.0, -35.0),
+                ),
+                "bright": None,
+            },
+            "white_rock_centre": {
+                "title": "White Rock Centre",
+                # 16 Ave → King George → 0 Ave → 136 St (carved from South Surrey).
+                "ring": (
+                    (174.0, -400.0),
+                    (401.0, -400.0),
+                    (482.0, -477.0),
+                    (174.0, -477.0),
+                ),
+                "bright": None,
+            },
+            "south_surrey": {
+                "title": "South Surrey",
+                # Hwy 99 north → 28 Ave to 192 St → 0 Ave with White Rock Centre notched out → Marine Dr → 120 St.
+                "ring": (
+                    (26.0, -160.0),
+                    (100.0, -160.0),
+                    (160.0, -165.0),
+                    (220.0, -205.0),
+                    (280.0, -255.0),
+                    (350.0, -320.0),
+                    (480.0, -320.0),
+                    (610.0, -320.0),
+                    (610.0, -400.0),
+                    (610.0, -477.0),
+                    (517.0, -477.0),
+                    (482.0, -477.0),
+                    (401.0, -400.0),
+                    (174.0, -400.0),
+                    (174.0, -477.0),
+                    (174.0, -485.0),
+                    (120.0, -478.0),
+                    (80.0, -465.0),
+                    (45.0, -445.0),
+                    (26.0, -420.0),
+                    (26.0, -400.0),
+                    (26.0, -320.0),
+                ),
+                "bright": None,
+            },
+            "surrey": {
+                "title": "Surrey",
+                # Outer outline of all districts except North Delta and White Rock Centre.
+                "ring": (
+                    (-78.0, 175.0),
+                    (-68.0, 230.0),
+                    (-50.0, 280.0),
+                    (-20.0, 325.0),
+                    (8.0, 350.0),
+                    (25.0, 355.0),
+                    (80.0, 372.0),
+                    (140.0, 383.0),
+                    (200.0, 390.0),
+                    (270.0, 393.0),
+                    (340.0, 390.0),
+                    (400.0, 382.0),
+                    (460.0, 370.0),
+                    (480.0, 366.0),
+                    (480.0, 190.0),
+                    (520.0, 180.0),
+                    (580.0, 168.0),
+                    (610.0, 160.0),
+                    (610.0, -320.0),
+                    (610.0, -400.0),
+                    (610.0, -477.0),
+                    (517.0, -477.0),
+                    (482.0, -477.0),
+                    (401.0, -400.0),
+                    (174.0, -400.0),
+                    (174.0, -477.0),
+                    (174.0, -485.0),
+                    (120.0, -478.0),
+                    (80.0, -465.0),
+                    (45.0, -445.0),
+                    (26.0, -420.0),
+                    (26.0, -400.0),
+                    (26.0, -320.0),
+                    (26.0, -160.0),
+                    (24.0, -70.0),
+                    (22.0, -20.0),
+                    (20.0, 30.0),
+                    (18.0, 78.0),
+                    (16.0, 120.0),
+                    (14.0, 175.0),
+                ),
+                "bright": None,
+                "hotkey_only": True,
+            },
+        }
+        for key, district in self._districts.items():
+            outline = self._build_district_outline(key, district["ring"], outline_z)
+            outline.hide()
+            district["outline"] = outline
+            district["label"] = None
+            district["label_scale"] = 1.0
+        self._selected_district: str | None = None
+        # Keep legacy alias used by City Centre tower assembly comments/tests.
+        self.city_centre_ring = self._districts["city_centre"]["ring"]
 
         self.highway = self.render.attachNewNode("highway")
         road_mat = road_material()
@@ -363,7 +615,8 @@ class CityApp(ShowBase):
                 s += period
 
         road_top = road_z + road_thickness / 2
-        labels_root = self.render.attachNewNode("highway_labels")
+        self._highway_labels = self.render.attachNewNode("highway_labels")
+        labels_root = self._highway_labels
         self._highway_label_nodes: list = []
         self._label_base_scale = max(36.0, highway_width * 2.8)
         self._label_ref_distance = 1.0
@@ -431,6 +684,31 @@ class CityApp(ShowBase):
             label.setDepthWrite(False)
             self._highway_label_nodes.append(label)
 
+        # Red district titles — shown only while that district is selected.
+        for key, district in self._districts.items():
+            ring = district["ring"]
+            text = TextNode(f"district-label-{key}")
+            text.setText(district["title"])
+            text.setAlign(TextNode.ACenter)
+            text.setTextColor(0.86, 0.12, 0.1, 1)
+            text.setShadow(0.05, 0.05)
+            text.setShadowColor(0.08, 0.02, 0.02, 0.75)
+            pivot = self.render.attachNewNode(f"district-label-pivot-{key}")
+            pivot.setPos(
+                sum(p[0] for p in ring) / len(ring),
+                sum(p[1] for p in ring) / len(ring),
+                road_top + 6.0,
+            )
+            label = pivot.attachNewNode(text)
+            label_scale = self._label_base_scale * 1.15
+            label.setScale(label_scale)
+            label.setBillboardPointEye()
+            label.setDepthTest(False)
+            label.setDepthWrite(False)
+            label.hide()
+            district["label"] = label
+            district["label_scale"] = label_scale
+
         self.highway.flattenStrong()
 
         # Local residential streets (Surrey interior fabric) — no median barrier.
@@ -494,18 +772,18 @@ class CityApp(ShowBase):
 
         lawn_mat = lawn_material()
         ground_pad = 80.0
-        ground = box_instance(
+        self._ground = box_instance(
             self.render,
             (hwy["bounds_east"] - hwy["bounds_west"]) + ground_pad,
             (hwy["bounds_north"] - hwy["bounds_south"]) + ground_pad,
             0.16,
         )
-        ground.setPos(
+        self._ground.setPos(
             (hwy["bounds_west"] + hwy["bounds_east"]) / 2,
             (hwy["bounds_south"] + hwy["bounds_north"]) / 2,
             road_z - 0.12,
         )
-        ground.setMaterial(lawn_mat, 1)
+        self._ground.setMaterial(lawn_mat, 1)
 
         # Fixed-function lights (same stack the city builders used).
         ambient = AmbientLight("ambient")
@@ -580,8 +858,23 @@ class CityApp(ShowBase):
         # Overview distance → label world scale of 1× (see _update_camera).
         self._label_ref_distance = self.distance
         self.dragging = False
+        self._drag_moved = False
+        self._press_x = 0.0
+        self._press_y = 0.0
         self.last_x = 0.0
         self.last_y = 0.0
+        self._click_drag_threshold = 0.02
+        # Nodes dimmed when a district is selected (optional bright node excluded).
+        self._dim_targets = list(self.city.getChildren())
+        self._dim_targets.extend(
+            (
+                self.highway,
+                self.streets,
+                self._ground,
+                self._fleet_root,
+                self._highway_labels,
+            )
+        )
         # Space cycles: car 0..n-1, then restore this overview framing.
         self._default_look_at = list(self.look_at)
         self._default_distance = self.distance
@@ -593,6 +886,8 @@ class CityApp(ShowBase):
 
         self.accept("escape", sys.exit)
         self.accept("space", self._cycle_car_focus)
+        self.accept("backspace", self._clear_district_selection)
+        self.accept("s", self._select_surrey)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
         self.accept("mouse1", self._start_drag)
@@ -688,9 +983,14 @@ class CityApp(ShowBase):
         self.camera.lookAt(look_x, look_y, look_z)
         # Keep label screen size roughly constant while zooming.
         ref = max(self._label_ref_distance, 1e-6)
-        scale = self._label_base_scale * (self.distance / ref)
+        zoom = self.distance / ref
+        scale = self._label_base_scale * zoom
         for label in self._highway_label_nodes:
             label.setScale(scale)
+        for district in self._districts.values():
+            label = district.get("label")
+            if label is not None:
+                label.setScale(district["label_scale"] * zoom)
 
     def _zoom(self, factor: float) -> None:
         self.distance = min(
@@ -702,25 +1002,150 @@ class CityApp(ShowBase):
             self._car_focus_distance = self.distance
         self._update_camera()
 
+    def _build_district_outline(self, key: str, ring: tuple, z: float):
+        """Dashed red outline along a district's arterial ring."""
+        segs = LineSegs(f"district-outline-{key}")
+        segs.setThickness(3.0)
+        segs.setColor(0.86, 0.12, 0.1, 1.0)
+        dash = 2.4
+        gap = 1.3
+        for i in range(len(ring)):
+            x0, y0 = ring[i]
+            x1, y1 = ring[(i + 1) % len(ring)]
+            dx = x1 - x0
+            dy = y1 - y0
+            length = math.hypot(dx, dy)
+            if length < 1e-6:
+                continue
+            ux = dx / length
+            uy = dy / length
+            t = 0.0
+            drawing = True
+            while t < length:
+                seg_len = dash if drawing else gap
+                t_end = min(length, t + seg_len)
+                if drawing:
+                    segs.moveTo(x0 + ux * t, y0 + uy * t, z)
+                    segs.drawTo(x0 + ux * t_end, y0 + uy * t_end, z)
+                t = t_end
+                drawing = not drawing
+        return self.render.attachNewNode(segs.create())
+
+    @staticmethod
+    def _point_in_ring(ring: tuple, x: float, y: float) -> bool:
+        """True if (x, y) is inside the ring (even-odd fill)."""
+        n = len(ring)
+        inside = False
+        j = n - 1
+        for i in range(n):
+            xi, yi = ring[i]
+            xj, yj = ring[j]
+            if ((yi > y) != (yj > y)) and (
+                x < (xj - xi) * (y - yi) / (yj - yi + 1e-30) + xi
+            ):
+                inside = not inside
+            j = i
+        return inside
+
+    def _ground_hit_xy(self) -> tuple[float, float] | None:
+        """Ray from camera through the mouse onto the ground plane."""
+        if not self.mouseWatcherNode.hasMouse():
+            return None
+        mpos = self.mouseWatcherNode.getMouse()
+        near = Point3()
+        far = Point3()
+        self.camLens.extrude(mpos, near, far)
+        near_w = self.render.getRelativePoint(self.cam, near)
+        far_w = self.render.getRelativePoint(self.cam, far)
+        dz = far_w.z - near_w.z
+        if abs(dz) < 1e-9:
+            return None
+        t = (self._ground_z - near_w.z) / dz
+        if t < 0.0:
+            return None
+        return (
+            near_w.x + (far_w.x - near_w.x) * t,
+            near_w.y + (far_w.y - near_w.y) * t,
+        )
+
+    def _select_district(self, key: str) -> None:
+        if self._selected_district == key:
+            return
+        self._clear_district_selection()
+        district = self._districts[key]
+        self._selected_district = key
+        dim = (0.55, 0.55, 0.55, 1.0)
+        bright = district.get("bright")
+        for node in self._dim_targets:
+            if bright is not None and node == bright:
+                continue
+            node.setColorScale(*dim)
+        district["outline"].show()
+        label = district.get("label")
+        if label is not None:
+            label.show()
+
+    def _clear_district_selection(self) -> None:
+        if self._selected_district is None:
+            return
+        district = self._districts[self._selected_district]
+        self._selected_district = None
+        for node in self._dim_targets:
+            node.clearColorScale()
+        district["outline"].hide()
+        label = district.get("label")
+        if label is not None:
+            label.hide()
+
+    def _select_surrey(self) -> None:
+        """Hotkey: outline Greater Surrey (excludes North Delta and White Rock Centre)."""
+        self._select_district("surrey")
+
+    def _try_select_district(self) -> None:
+        hit = self._ground_hit_xy()
+        if hit is None:
+            return
+        x, y = hit
+        for key, district in self._districts.items():
+            if district.get("hotkey_only"):
+                continue
+            if self._point_in_ring(district["ring"], x, y):
+                self._select_district(key)
+                return
+
     def _start_drag(self) -> None:
         if not self.mouseWatcherNode.hasMouse():
             return
         self.dragging = True
+        self._drag_moved = False
         self.last_x = self.mouseWatcherNode.getMouseX()
         self.last_y = self.mouseWatcherNode.getMouseY()
+        self._press_x = self.last_x
+        self._press_y = self.last_y
 
     def _end_drag(self) -> None:
+        was_click = self.dragging and not self._drag_moved
         self.dragging = False
+        if was_click:
+            self._try_select_district()
 
     def _drag_task(self, task):
         if self.dragging and self.mouseWatcherNode.hasMouse():
             x = self.mouseWatcherNode.getMouseX()
             y = self.mouseWatcherNode.getMouseY()
-            self.heading -= (x - self.last_x) * 120.0
-            self.pitch = max(-85.0, min(85.0, self.pitch + (y - self.last_y) * 90.0))
+            if (
+                abs(x - self._press_x) > self._click_drag_threshold
+                or abs(y - self._press_y) > self._click_drag_threshold
+            ):
+                self._drag_moved = True
+            if self._drag_moved:
+                self.heading -= (x - self.last_x) * 120.0
+                self.pitch = max(
+                    -85.0, min(85.0, self.pitch + (y - self.last_y) * 90.0)
+                )
+                self._update_camera()
             self.last_x = x
             self.last_y = y
-            self._update_camera()
         return task.cont
 
     def _pan_task(self, task):
