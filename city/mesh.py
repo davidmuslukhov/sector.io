@@ -20,7 +20,6 @@ from city.materials import (
     car_material,
     factory_material,
     foliage_material,
-    lamp_material,
     roof_material,
     stack_material,
 )
@@ -460,7 +459,6 @@ FACTORY_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
 # Flattened car mesh. Copied once per scene.
 CAR_TEMPLATE: NodePath | None = None
 TREE_TEMPLATE: NodePath | None = None
-LAMP_TEMPLATE: NodePath | None = None
 
 
 def make_sky_dome(
@@ -468,18 +466,18 @@ def make_sky_dome(
     *,
     rings: int = 8,
     sectors: int = 24,
+    zenith: tuple[float, float, float] = (0.22, 0.42, 0.78),
+    horizon_cool: tuple[float, float, float] = (0.62, 0.72, 0.86),
+    horizon_warm: tuple[float, float, float] = (0.92, 0.82, 0.68),
+    sun_phi_deg: float = 38.0,
+    glow_strength: float = 0.18,
 ) -> GeomNode:
     """Upper hemisphere with a zenith→horizon colour wash (no textures).
 
     Horizon warms toward the sun azimuth so the dome reads as daylight, not a
     flat fill. Cheap: vertex colours only, no textures or shaders.
     """
-    # Deep cool zenith, pale warm haze at the horizon; sun side is brighter.
-    zenith = (0.22, 0.42, 0.78)
-    horizon_cool = (0.62, 0.72, 0.86)
-    horizon_warm = (0.92, 0.82, 0.68)
-    # Match the key light HPR (~38°) so the bright side faces the sun.
-    sun_phi = math.radians(38.0)
+    sun_phi = math.radians(sun_phi_deg)
     fmt = GeomVertexFormat.getV3c4()
     vdata = GeomVertexData("sky", fmt, Geom.UHStatic)
     vertex = GeomVertexWriter(vdata, "vertex")
@@ -504,7 +502,7 @@ def make_sky_dome(
             horizon_cool[2] + (horizon_warm[2] - horizon_cool[2]) * sun,
         )
         # Soft sun glow near the horizon on the warm side.
-        glow = sun * t * t * 0.18
+        glow = sun * t * t * glow_strength
         row = vertex.getWriteRow()
         vertex.addData3(x, y, z)
         color.addData4(
@@ -585,28 +583,6 @@ def tree_template(variant: int = 0) -> NodePath:
     return root
 
 
-def lamp_template() -> NodePath:
-    """Street lamp: slim pole, arm, and glowing head."""
-    global LAMP_TEMPLATE
-    if LAMP_TEMPLATE is not None:
-        return LAMP_TEMPLATE
-    root = NodePath("lamp")
-    pole_mat = lamp_material("pole")
-    head_mat = lamp_material("head")
-    pole = box_instance(root, 0.12, 0.12, 3.4)
-    pole.setPos(0.0, 0.0, 1.7)
-    pole.setMaterial(pole_mat, 1)
-    arm = box_instance(root, 0.9, 0.1, 0.1)
-    arm.setPos(0.35, 0.0, 3.35)
-    arm.setMaterial(pole_mat, 1)
-    head = box_instance(root, 0.35, 0.28, 0.18)
-    head.setPos(0.75, 0.0, 3.2)
-    head.setMaterial(head_mat, 1)
-    root.flattenStrong()
-    LAMP_TEMPLATE = root
-    return root
-
-
 def offset_polyline(
     points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
     offset: float,
@@ -661,6 +637,186 @@ def arterial_crossings(
     """Map each arterial name to world-space crossings with other arterials."""
     gaps = arterial_crossing_gaps(arterials)
     return {name: [(x, y) for x, y, _radius in discs] for name, discs in gaps.items()}
+
+
+def _polyline_length(pts: list[tuple[float, float]]) -> float:
+    total = 0.0
+    for i in range(len(pts) - 1):
+        total += math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
+    return total
+
+
+def _arms_for_arterial_at(
+    pts: list[tuple[float, float]],
+    width: float,
+    jx: float,
+    jy: float,
+) -> list[tuple[float, float]]:
+    """Outward unit arms along ``pts`` at junction (jx, jy)."""
+    if len(pts) < 2:
+        return []
+    tip = max(3.0, width * 0.45)
+    tip2 = (tip * 2.5) ** 2
+    best = None
+    for i in range(len(pts) - 1):
+        d2, qx, qy = _dist2_point_segment(
+            jx, jy, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]
+        )
+        if best is None or d2 < best[0]:
+            best = (d2, i, qx, qy)
+    if best is None or best[0] > tip2:
+        return []
+    _d2, i, qx, qy = best
+    ux, uy = _seg_unit(pts[i], pts[i + 1])
+    along = 0.0
+    for k in range(i):
+        along += math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1])
+    along += math.hypot(qx - pts[i][0], qy - pts[i][1])
+    total = _polyline_length(pts)
+    if along < tip:
+        return [(ux, uy)]
+    if total - along < tip:
+        return [(-ux, -uy)]
+    return [(ux, uy), (-ux, -uy)]
+
+
+def _dedup_arm_dirs(
+    arms: list[tuple[float, float]], *, tol_deg: float = 38.0
+) -> list[tuple[float, float]]:
+    """Collapse near-duplicate outward directions."""
+    if not arms:
+        return []
+    cos_tol = math.cos(math.radians(tol_deg))
+    out: list[tuple[float, float]] = []
+    for ox, oy in arms:
+        length = math.hypot(ox, oy) or 1.0
+        ox, oy = ox / length, oy / length
+        if any(ax * ox + ay * oy >= cos_tol for ax, ay in out):
+            continue
+        out.append((ox, oy))
+    return out
+
+
+def arterial_junctions(
+    arterials: list[dict],
+    *,
+    merge: float = 8.0,
+) -> list[dict]:
+    """3-/4-way arterial junctions with outward arm directions.
+
+    Each entry: ``x``, ``y``, ``roads`` (frozenset), ``arms`` (outward unit
+    vectors), ``half`` (intersection half-size for mast placement).
+    """
+    raw: list[tuple[float, float, str, str]] = []
+
+    def tip_record(
+        stem_pts: list[tuple[float, float]],
+        through_pts: list[tuple[float, float]],
+        stem_name: str,
+        through_name: str,
+        stem_w: float,
+        through_w: float,
+    ) -> None:
+        tip_tol = max(2.5, 0.35 * max(stem_w, through_w))
+        tip_tol2 = tip_tol * tip_tol
+        for tip in (stem_pts[0], stem_pts[-1]):
+            best = None
+            for bi in range(len(through_pts) - 1):
+                d2, qx, qy = _dist2_point_segment(
+                    tip[0],
+                    tip[1],
+                    through_pts[bi][0],
+                    through_pts[bi][1],
+                    through_pts[bi + 1][0],
+                    through_pts[bi + 1][1],
+                )
+                if d2 <= tip_tol2 and (best is None or d2 < best[0]):
+                    best = (d2, qx, qy)
+            if best is not None:
+                raw.append((best[1], best[2], stem_name, through_name))
+
+    for i, a in enumerate(arterials):
+        a_pts = list(a.get("points") or ())
+        a_name = str(a.get("name", ""))
+        a_w = float(a.get("width") or 0.0)
+        if len(a_pts) < 2 or not a_name:
+            continue
+        for b in arterials[i + 1 :]:
+            b_pts = list(b.get("points") or ())
+            b_name = str(b.get("name", ""))
+            b_w = float(b.get("width") or 0.0)
+            if len(b_pts) < 2 or not b_name:
+                continue
+            found = False
+            for ai in range(len(a_pts) - 1):
+                for bi in range(len(b_pts) - 1):
+                    hit = _seg_intersection(
+                        a_pts[ai], a_pts[ai + 1], b_pts[bi], b_pts[bi + 1]
+                    )
+                    if hit is None:
+                        continue
+                    found = True
+                    raw.append((hit[0], hit[1], a_name, b_name))
+            if found:
+                continue
+            tip_record(a_pts, b_pts, a_name, b_name, a_w, b_w)
+            tip_record(b_pts, a_pts, b_name, a_name, b_w, a_w)
+
+    merge2 = merge * merge
+    clusters: list[dict] = []
+    for x, y, a_name, b_name in raw:
+        matched = None
+        for cluster in clusters:
+            dx = cluster["x"] - x
+            dy = cluster["y"] - y
+            if dx * dx + dy * dy <= merge2:
+                matched = cluster
+                break
+        if matched is None:
+            clusters.append(
+                {"x": x, "y": y, "n": 1.0, "roads": {a_name, b_name}}
+            )
+            continue
+        n = matched["n"] + 1.0
+        matched["x"] = (matched["x"] * matched["n"] + x) / n
+        matched["y"] = (matched["y"] * matched["n"] + y) / n
+        matched["n"] = n
+        matched["roads"].add(a_name)
+        matched["roads"].add(b_name)
+
+    by_name = {
+        str(a.get("name", "")): a
+        for a in arterials
+        if str(a.get("name", ""))
+    }
+    junctions: list[dict] = []
+    for cluster in clusters:
+        jx = float(cluster["x"])
+        jy = float(cluster["y"])
+        roads = frozenset(cluster["roads"])
+        arms: list[tuple[float, float]] = []
+        max_w = 0.0
+        for name in roads:
+            arterial = by_name.get(name)
+            if arterial is None:
+                continue
+            pts = list(arterial.get("points") or ())
+            width = float(arterial.get("width") or 0.0)
+            max_w = max(max_w, width)
+            arms.extend(_arms_for_arterial_at(pts, width, jx, jy))
+        arms = _dedup_arm_dirs(arms)
+        if len(arms) not in (3, 4):
+            continue
+        junctions.append(
+            {
+                "x": jx,
+                "y": jy,
+                "roads": roads,
+                "arms": arms,
+                "half": max(4.0, max_w * 0.55),
+            }
+        )
+    return junctions
 
 
 def _dist2_point_segment(
@@ -1024,8 +1180,10 @@ def make_highway_ribbon(
                 tris.addVertices(i0, i1, i2)
                 tris.addVertices(i1, i3, i2)
 
+    # Left edge normals point left of travel; right edge must point the other way
+    # or the road-facing wall of a thin barrier is back-face culled (see-through).
     add_side_wall(left, outward=True)
-    add_side_wall(right, outward=True)
+    add_side_wall(right, outward=False)
 
     # End caps.
     for end_i, invert in ((0, False), (n - 1, True)):

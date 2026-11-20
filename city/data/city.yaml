@@ -1,7 +1,7 @@
-# Surrey, BC — arterial highways + local residential street fabric.
+# Surrey / Langley, BC — arterial highways + local residential street fabric.
 # World XY: X=east, Y=north. Schematic but oriented like the real map.
 # Provincial: Hwy 1, 10, 15, 17, 99. Major arterials: Fraser Hwy, 88 Ave,
-# King George Blvd, Scott Rd / 120 St.
+# King George Blvd, Scott Rd / 120 St. Surrey–Langley border is 196 St.
 
 lot:
   block_size: [5.0, 5.0, 2.0]
@@ -14,10 +14,10 @@ lot:
 
 highway:
   lanes: 6
-  fence_w: 0.25
-  fence_h: 1.0
-  barrier_w: 0.5
-  barrier_h: 1.0
+  fence_w: 0.55
+  fence_h: 1.15
+  barrier_w: 0.7
+  barrier_h: 1.15
   # Extra margin beyond the paved highway half-width (footprint-tested).
   keepout: 1.0
 
@@ -43,7 +43,7 @@ highways:
     - [460, 370]
     - [480, 366]
 
-  # Trans-Canada — from Hwy 17 south, then east through north Surrey to 192 St.
+  # Trans-Canada — from Hwy 17 south, then east through north Surrey into Langley.
   hwy1:
     - [176.0, 387.2]
     - [215, 357]
@@ -56,8 +56,15 @@ highways:
     - [520, 180]
     - [580, 168]
     - [610, 160]
+    - [642, 156]
+    - [706, 147]
+    - [720, 145]
+    - [834, 135]
+    - [1026, 118]
+    - [1122, 110]
+    - [1250, 100]
 
-  # Fraser Highway — T into King George just north of 88 Ave, then SE to 192 St.
+  # Fraser Highway — T into King George just north of 88 Ave, then SE into Langley.
   fraser:
     - [155, 127]
     - [175, 152]
@@ -69,6 +76,13 @@ highways:
     - [480, 32]
     - [540, 9]
     - [610, -18]
+    - [642, -29]
+    - [706, -51]
+    - [720, -55]
+    - [834, -93]
+    - [1026, -158]
+    - [1122, -190]
+    - [1250, -233]
 
   # 176 St / Pacific Highway — N–S to 28 Ave, cropped north at the Hwy 17 T.
   hwy15:
@@ -77,10 +91,11 @@ highways:
     - [480, -60]
     - [480, 60]
     - [480, 180]
+    - [480, 210]
     - [480, 300]
     - [480, 366]
 
-  # 88 Ave — east–west, 120 St to 192 St.
+  # 88 Ave — east–west, 120 St through 196 St into Langley (Willowbrook).
   hwy10:
     - [18, 78]
     - [180, 78]
@@ -88,6 +103,13 @@ highways:
     - [460, 78]
     - [530, 78]
     - [610, 78]
+    - [642, 78]
+    - [706, 78]
+    - [720, 78]
+    - [834, 78]
+    - [1026, 78]
+    - [1122, 78]
+    - [1250, 78]
 
   # Hwy 99 — W–E, then SE; crosses King George at a shallow acute angle (both continue).
   hwy99:
@@ -184,7 +206,7 @@ highways:
       - [385, 175]
       - [480, 175]
 
-  # 102 Ave — 128 St east across King George to 140 St (2 lanes).
+  # 102 Ave (west) — 128 St through City Centre; T into 140 St (stops before Hwy 1).
   ave_102:
     lanes: 2
     points:
@@ -193,6 +215,19 @@ highways:
       - [155, 210]
       - [187, 210]
       - [218, 210]
+
+  # 102 Ave (east) — T from Hwy 15 east into Langley to 276 St (2 lanes).
+  ave_102_e:
+    lanes: 2
+    points:
+      - [480, 210]
+      - [610, 210]
+      - [642, 210]
+      - [706, 210]
+      - [834, 210]
+      - [1026, 210]
+      - [1122, 210]
+      - [1250, 210]
 
   # 108 Ave — 120 St east across King George to Hwy 15 (4 lanes).
   ave_108:
@@ -255,6 +290,7 @@ highways:
     points:
       - [218, 290]
       - [218, 245]
+      - [218, 210]
       - [218, 180]
       - [218, 78]
       - [218, 18]
@@ -295,7 +331,7 @@ highways:
       - [200, -480]
       - [220, -477]
 
-  # 58 Ave — east of King George SE approach across Hwy 15 to 192 St (4 lanes).
+  # 58 Ave — east of King George SE approach across Hwy 15 into Langley (4 lanes).
   ave_58:
     lanes: 4
     points:
@@ -303,8 +339,15 @@ highways:
       - [285, -110]
       - [480, -110]
       - [610, -110]
+      - [642, -110]
+      - [706, -110]
+      - [720, -110]
+      - [834, -110]
+      - [1026, -110]
+      - [1122, -110]
+      - [1250, -110]
 
-  # 28 Ave — south 120 St east across Hwy 99 / King George SE legs to 192 St (4 lanes).
+  # 28 Ave — south 120 St east across Hwy 99 / King George SE legs into Langley (4 lanes).
   ave_28:
     lanes: 4
     points:
@@ -314,8 +357,15 @@ highways:
       - [350, -320]
       - [480, -320]
       - [610, -320]
+      - [642, -320]
+      - [706, -320]
+      - [720, -320]
+      - [834, -320]
+      - [1026, -320]
+      - [1122, -320]
+      - [1250, -320]
 
-  # 16 Ave — south 120 St east across SE legs to 192 St (4 lanes).
+  # 16 Ave — south 120 St east across SE legs into Langley (4 lanes).
   ave_16:
     lanes: 4
     points:
@@ -326,6 +376,13 @@ highways:
       - [435, -400]
       - [520, -400]
       - [610, -400]
+      - [642, -400]
+      - [706, -400]
+      - [720, -400]
+      - [834, -400]
+      - [1026, -400]
+      - [1122, -400]
+      - [1250, -400]
 
   # 0 Ave — from Marine Dr join east; T-junctions with 152 St, King George, Hwy 99 (4 lanes).
   ave_0:
@@ -337,12 +394,20 @@ highways:
       - [482, -477]
       - [517, -477]
       - [610, -477]
+      - [642, -477]
+      - [706, -477]
+      - [720, -477]
+      - [834, -477]
+      - [1026, -477]
+      - [1122, -477]
+      - [1250, -477]
 
-  # 192 St — east N–S from Hwy 1 corridor down to 0 Ave (4 lanes).
-  st_192:
+  # 196 St — Surrey–Langley border, N–S from 102 Ave down to 0 Ave (4 lanes).
+  st_196:
     lanes: 4
     points:
-      - [610, 180]
+      - [610, 210]
+      - [610, 160]
       - [610, 78]
       - [610, 60]
       - [610, -18]
@@ -350,6 +415,84 @@ highways:
       - [610, -320]
       - [610, -400]
       - [610, -477]
+
+  # 200 St — Langley N–S from 102 Ave to 0 Ave (4 lanes).
+  st_200:
+    lanes: 4
+    points:
+      - [642, 210]
+      - [642, 156]
+      - [642, 78]
+      - [642, -29]
+      - [642, -110]
+      - [642, -320]
+      - [642, -400]
+      - [642, -477]
+
+  # 208 St — Langley N–S from 102 Ave to 0 Ave (4 lanes).
+  st_208:
+    lanes: 4
+    points:
+      - [706, 210]
+      - [706, 147]
+      - [706, 78]
+      - [706, -51]
+      - [706, -110]
+      - [706, -320]
+      - [706, -400]
+      - [706, -477]
+
+  # 224 St — Langley N–S from 102 Ave to 0 Ave (4 lanes).
+  st_224:
+    lanes: 4
+    points:
+      - [834, 210]
+      - [834, 135]
+      - [834, 78]
+      - [834, -93]
+      - [834, -110]
+      - [834, -320]
+      - [834, -400]
+      - [834, -477]
+
+  # 248 St — Langley N–S from 102 Ave to 0 Ave (4 lanes).
+  st_248:
+    lanes: 4
+    points:
+      - [1026, 210]
+      - [1026, 118]
+      - [1026, 78]
+      - [1026, -110]
+      - [1026, -158]
+      - [1026, -320]
+      - [1026, -400]
+      - [1026, -477]
+
+  # 260 St — Langley N–S from 102 Ave to 0 Ave (4 lanes).
+  st_260:
+    lanes: 4
+    points:
+      - [1122, 210]
+      - [1122, 110]
+      - [1122, 78]
+      - [1122, -110]
+      - [1122, -190]
+      - [1122, -320]
+      - [1122, -400]
+      - [1122, -477]
+
+  # 276 St — Langley east edge, N–S from 102 Ave to 0 Ave (4 lanes).
+  st_276:
+    lanes: 4
+    points:
+      - [1250, 210]
+      - [1250, 100]
+      - [1250, 78]
+      - [1250, -110]
+      - [1250, -233]
+      - [1250, -320]
+      - [1250, -400]
+      - [1250, -477]
 
 neighborhoods: []
 

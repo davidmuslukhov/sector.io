@@ -5,9 +5,11 @@ from __future__ import annotations
 import math
 import random
 import sys
+from collections import defaultdict
 
 from panda3d.core import (
     AmbientLight,
+    CompassEffect,
     DirectionalLight,
     Filename,
     KeyboardButton,
@@ -19,7 +21,8 @@ from direct.gui.OnscreenText import OnscreenText
 from direct.showbase.ShowBase import ShowBase
 
 from city.builders import SceneBuilders
-from city.car import CarController
+from city.car import CarController, PlayerCar
+from city.daycycle import SUNRISE_SECONDS, DayNightCycle
 from city.materials import (
     BLOCK_SHADES,
     block_material,
@@ -31,13 +34,16 @@ from city.materials import (
 from city.mesh import (
     _dist2_point_segment,
     arterial_crossing_gaps,
+    arterial_junctions,
     box_instance,
     make_highway_ribbon,
+    make_sky_dome,
     offset_polyline,
     split_polyline_around_gaps,
     z_cylinder_instance,
 )
 from city.plan import default_city_plan
+from city.signals import TrafficLightController
 
 # Readable names for arterial YAML keys (world-space map labels).
 HIGHWAY_LABELS = {
@@ -54,6 +60,7 @@ HIGHWAY_LABELS = {
     "ave_72": "72 Ave",
     "ave_96": "96 Ave",
     "ave_102": "102 Ave",
+    "ave_102_e": "102 Ave",
     "ave_108": "108 Ave",
     "ave_114": "114 Ave",
     "ave_58": "58 Ave",
@@ -67,7 +74,13 @@ HIGHWAY_LABELS = {
     "st_136": "136 St",
     "st_140": "140 St",
     "st_152": "152 St",
-    "st_192": "192 St",
+    "st_196": "196 St",
+    "st_200": "200 St",
+    "st_208": "208 St",
+    "st_224": "224 St",
+    "st_248": "248 St",
+    "st_260": "260 St",
+    "st_276": "276 St",
 }
 
 # Thin side fences: provincial highways plus Fraser, 88 Ave, and King George.
@@ -82,6 +95,36 @@ SIDE_BORDER_ROUTES = frozenset(
         "hwy10",
         "king_george",
     }
+)
+
+# Spatial hash cell size for barrier / road lookups (car-mode hot path).
+_SEG_CELL = 10.0
+# Barrier prism length target — dense Chaikin samples are ~1.25; coarsen for FPS.
+_BARRIER_SPAN = 4.5
+# Drop leftover stubs between nearby crossings (e.g. Fraser × 58 Ave near 224 St).
+_BARRIER_MIN_RUN = 16.0
+
+# Car-mode HUD: neighborhood → (area label, municipality). Checked in order.
+_LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
+    ("city_centre", "Surrey City Centre", "Surrey"),
+    ("white_rock_centre", "White Rock Centre", "White Rock"),
+    ("langley_city", "Langley City", "Langley"),
+    ("whalley", "Whalley", "Surrey"),
+    ("newton", "Newton", "Surrey"),
+    ("guildford", "Guildford", "Surrey"),
+    ("fleetwood", "Fleetwood", "Surrey"),
+    ("cloverdale", "Cloverdale", "Surrey"),
+    ("south_surrey", "South Surrey", "Surrey"),
+    ("north_delta", "North Delta", "Delta"),
+    ("port_kells", "Port Kells", "Langley"),
+    ("walnut_grove", "Walnut Grove", "Langley"),
+    ("fort_langley", "Fort Langley", "Langley"),
+    ("east_clayton", "East Clayton", "Langley"),
+    ("willoughby", "Willoughby", "Langley"),
+    ("hopington", "Hopington", "Langley"),
+    ("fern_ridge", "Fern Ridge", "Langley"),
+    ("brookswood", "Brookswood", "Langley"),
+    ("campbell_valley", "Campbell Valley", "Langley"),
 )
 
 
@@ -142,37 +185,9 @@ class CityApp(ShowBase):
                         houses_deep=lot.houses_deep,
                     )
 
-        # Demo towers on the NE plate, plus skyscrapers in the circled Whalley blocks.
+        # Demo house on the NE plate; skyscrapers stay in the circled Whalley blocks.
         ne = SceneBuilders(self.city, plan, self.render)
         ne._add_house(560.0, 400.0, brick=0.68, chimney=True)
-        ne._add_stack(
-            590.0,
-            400.0,
-            18,
-            block_size,
-            block_material(BLOCK_SHADES[1]),
-            footprint="rect",
-            doors=("-y",),
-        )
-        ne._add_stack(
-            605.0,
-            400.0,
-            18,
-            block_size,
-            block_material(BLOCK_SHADES[4]),
-            footprint="round",
-            doors=("-y",),
-        )
-        ne._add_stack(
-            590.0,
-            415.0,
-            16,
-            block_size,
-            block_material(BLOCK_SHADES[7]),
-            footprint="tri",
-            heading=18.0,
-            doors=("-y",),
-        )
         hwy = plan.highway_geometry()
         lane_width = hwy["lane_width"]
         highway_width = hwy["highway_width"]
@@ -304,6 +319,10 @@ class CityApp(ShowBase):
         self._ground_z = road_z
         outline_z = road_z + road_thickness / 2 + 0.03
         # District rings follow arterial centrelines (click → outline + title).
+        # Outer boundary arterials use the outer curb so the full ribbon is inside:
+        # 0 Ave south -482, 102 Ave north 212.5, 276 St east 1255, Marine Dr SW +5,
+        # 120 St (28–Marine) west 21, Hwy 99 (Hwy 17–120) south -167.5,
+        # Hwy 15 (Hwy 17–102) east 487.5.
         self._districts: dict[str, dict] = {
             "city_centre": {
                 "title": "Surrey City Centre",
@@ -320,7 +339,8 @@ class CityApp(ShowBase):
             },
             "whalley": {
                 "title": "Whalley",
-                # 120 St → 88 Ave → 152 St → Hwy 1 → Hwy 17 → 96 Ave (incl. Hwy 17/120/96 triangle); City Centre notched.
+                # 120 St → 88 Ave → 152 St → Hwy 1 → Hwy 17 (both sides) → 96 Ave;
+                # City Centre notched.
                 "ring": (
                     (18.0, 78.0),
                     (285.0, 78.0),
@@ -339,14 +359,15 @@ class CityApp(ShowBase):
                     (247.0, 319.0),
                     (215.0, 357.0),
                     (176.0, 387.2),
-                    (140.0, 383.0),
-                    (80.0, 372.0),
-                    (25.0, 355.0),
-                    (8.0, 350.0),
-                    (-20.0, 325.0),
-                    (-50.0, 280.0),
-                    (-68.0, 230.0),
-                    (-78.0, 175.0),
+                    (176.0, 397.0),
+                    (138.2, 394.9),
+                    (77.2, 383.7),
+                    (19.9, 365.9),
+                    (-28.5, 333.5),
+                    (-60.7, 285.4),
+                    (-79.6, 233.1),
+                    (-89.8, 177.4),
+                    (-90.0, 175.0),
                     (14.0, 175.0),
                     (16.0, 120.0),
                 ),
@@ -354,15 +375,15 @@ class CityApp(ShowBase):
             },
             "north_delta": {
                 "title": "North Delta",
-                # West of 120 St, Hwy 99 north to 96 Ave along Hwy 17 (excludes SW Hwy 17/99 wedge).
+                # West of 120 St to the river side of Hwy 17 (both flanks), Hwy 99 south curb.
                 "ring": (
                     (14.0, 175.0),
-                    (-78.0, 175.0),
-                    (-90.0, 120.0),
-                    (-105.0, 40.0),
-                    (-120.0, -50.0),
-                    (-128.5, -160.0),
-                    (26.0, -160.0),
+                    (-90.0, 175.0),
+                    (-101.8, 122.4),
+                    (-116.8, 42.1),
+                    (-131.9, -48.6),
+                    (-142.0, -167.5),
+                    (26.0, -167.5),
                     (24.0, -70.0),
                     (22.0, -20.0),
                     (20.0, 30.0),
@@ -383,7 +404,7 @@ class CityApp(ShowBase):
                     (160.0, -165.0),
                     (100.0, -160.0),
                     (40.0, -160.0),
-                    (26.0, -160.0),
+                    (26.0, -167.5),
                     (24.0, -70.0),
                     (22.0, -20.0),
                     (20.0, 30.0),
@@ -392,18 +413,22 @@ class CityApp(ShowBase):
             },
             "guildford": {
                 "title": "Guildford",
-                # 152 St / 96 Ave → Hwy 15 → Hwy 17 → Hwy 1 (west edge shared with Whalley).
+                # 152 St / 96 Ave → Hwy 15 (east curb Hwy 17–102) → Hwy 17 (both sides) → Hwy 1.
                 "ring": (
                     (285.0, 175.0),
                     (480.0, 175.0),
                     (480.0, 180.0),
-                    (480.0, 300.0),
-                    (480.0, 366.0),
-                    (460.0, 370.0),
-                    (400.0, 382.0),
-                    (340.0, 390.0),
-                    (270.0, 393.0),
-                    (200.0, 390.0),
+                    (480.0, 210.0),
+                    (487.5, 210.0),
+                    (487.5, 300.0),
+                    (487.5, 366.0),
+                    (482.4, 377.8),
+                    (462.4, 381.8),
+                    (402.0, 393.8),
+                    (341.0, 402.0),
+                    (270.0, 405.0),
+                    (199.1, 402.0),
+                    (176.0, 397.0),
                     (176.0, 387.2),
                     (215.0, 357.0),
                     (247.0, 319.0),
@@ -426,7 +451,7 @@ class CityApp(ShowBase):
             },
             "cloverdale": {
                 "title": "Cloverdale",
-                # Hwy 15 → Hwy 1 (angled NE tip) → 192 St → 28 Ave → Hwy 99 → 152 St → Hwy 10.
+                # Hwy 15 → Hwy 1 (angled NE tip) → 196 St → 28 Ave → Hwy 99 → 152 St → Hwy 10.
                 "ring": (
                     (480.0, 175.0),
                     (480.0, 190.0),
@@ -444,20 +469,21 @@ class CityApp(ShowBase):
             },
             "white_rock_centre": {
                 "title": "White Rock Centre",
-                # 16 Ave → King George → 0 Ave → 136 St (carved from South Surrey).
+                # 16 Ave → King George → 0 Ave (south curb) → 136 St (carved from South Surrey).
                 "ring": (
                     (174.0, -400.0),
                     (401.0, -400.0),
-                    (482.0, -477.0),
-                    (174.0, -477.0),
+                    (482.0, -482.0),
+                    (174.0, -482.0),
                 ),
                 "bright": None,
             },
             "south_surrey": {
                 "title": "South Surrey",
-                # Hwy 99 north → 28 Ave to 192 St → 0 Ave with White Rock Centre notched out → Marine Dr → 120 St.
+                # Hwy 99 north → 28 Ave to 196 St → 0 Ave (south curb) with White Rock Centre
+                # notched out → Marine Dr (SW curb) → 120 St (west curb 28–Marine).
                 "ring": (
-                    (26.0, -160.0),
+                    (26.0, -167.5),
                     (100.0, -160.0),
                     (160.0, -165.0),
                     (220.0, -205.0),
@@ -466,21 +492,179 @@ class CityApp(ShowBase):
                     (480.0, -320.0),
                     (610.0, -320.0),
                     (610.0, -400.0),
-                    (610.0, -477.0),
-                    (517.0, -477.0),
-                    (482.0, -477.0),
+                    (610.0, -482.0),
+                    (517.0, -482.0),
+                    (482.0, -482.0),
                     (401.0, -400.0),
                     (174.0, -400.0),
-                    (174.0, -477.0),
-                    (174.0, -485.0),
-                    (120.0, -478.0),
-                    (80.0, -465.0),
-                    (45.0, -445.0),
-                    (26.0, -420.0),
-                    (26.0, -400.0),
+                    (174.0, -482.0),
+                    (173.4, -490.0),
+                    (118.9, -482.9),
+                    (78.0, -469.6),
+                    (41.7, -448.8),
+                    (21.0, -422.0),
+                    (21.0, -400.0),
+                    (21.0, -320.0),
                     (26.0, -320.0),
                 ),
                 "bright": None,
+            },
+            "port_kells": {
+                "title": "Port Kells",
+                # 196 St → 102 Ave (north curb) → 208 St → 88 Ave.
+                "ring": (
+                    (610.0, 212.5),
+                    (642.0, 212.5),
+                    (706.0, 212.5),
+                    (706.0, 78.0),
+                    (642.0, 78.0),
+                    (610.0, 78.0),
+                ),
+                "bright": None,
+            },
+            "walnut_grove": {
+                "title": "Walnut Grove",
+                # 208 St → 102 Ave (north curb) → 248 St → 88 Ave.
+                "ring": (
+                    (706.0, 212.5),
+                    (834.0, 212.5),
+                    (1026.0, 212.5),
+                    (1026.0, 78.0),
+                    (834.0, 78.0),
+                    (706.0, 78.0),
+                ),
+                "bright": None,
+            },
+            "fort_langley": {
+                "title": "Fort Langley",
+                # 248 St → 102 Ave (north curb) → 276 St (east curb) → 88 Ave.
+                "ring": (
+                    (1026.0, 212.5),
+                    (1122.0, 212.5),
+                    (1255.0, 212.5),
+                    (1255.0, 78.0),
+                    (1122.0, 78.0),
+                    (1026.0, 78.0),
+                ),
+                "bright": None,
+            },
+            "east_clayton": {
+                "title": "East Clayton",
+                # 196 St → 88 Ave → 208 St → Fraser Hwy.
+                "ring": (
+                    (610.0, 78.0),
+                    (642.0, 78.0),
+                    (706.0, 78.0),
+                    (706.0, -51.0),
+                    (642.0, -29.0),
+                    (610.0, -18.0),
+                ),
+                "bright": None,
+            },
+            "willoughby": {
+                "title": "Willoughby/Willowbrook",
+                # 208 St → 88 Ave → 248 St → Fraser Hwy.
+                "ring": (
+                    (706.0, 78.0),
+                    (834.0, 78.0),
+                    (1026.0, 78.0),
+                    (1026.0, -158.0),
+                    (834.0, -93.0),
+                    (720.0, -55.0),
+                    (706.0, -51.0),
+                ),
+                "bright": None,
+            },
+            "langley_city": {
+                "title": "Langley City",
+                # 196 St → Fraser Hwy → 208 St → 58 Ave.
+                "ring": (
+                    (610.0, -18.0),
+                    (642.0, -29.0),
+                    (706.0, -51.0),
+                    (706.0, -110.0),
+                    (610.0, -110.0),
+                ),
+                "bright": None,
+            },
+            "hopington": {
+                "title": "Hopington",
+                # 248 St → 88 Ave → 276 St (east curb) → Fraser Hwy.
+                "ring": (
+                    (1026.0, 78.0),
+                    (1122.0, 78.0),
+                    (1255.0, 78.0),
+                    (1255.0, -233.0),
+                    (1122.0, -190.0),
+                    (1026.0, -158.0),
+                ),
+                "bright": None,
+            },
+            "fern_ridge": {
+                "title": "Fern Ridge",
+                # 196 St → 58 Ave → 208 St → 0 Ave (south curb).
+                "ring": (
+                    (610.0, -110.0),
+                    (706.0, -110.0),
+                    (706.0, -482.0),
+                    (610.0, -482.0),
+                ),
+                "bright": None,
+            },
+            "brookswood": {
+                "title": "Brookswood",
+                # 208 St → Fraser Hwy → 224 St → 0 Ave (south curb).
+                "ring": (
+                    (706.0, -51.0),
+                    (720.0, -55.0),
+                    (834.0, -93.0),
+                    (834.0, -482.0),
+                    (706.0, -482.0),
+                ),
+                "bright": None,
+            },
+            "campbell_valley": {
+                "title": "Campbell Valley",
+                # 224 St → Fraser Hwy → 276 St (east curb) → 0 Ave (south curb).
+                "ring": (
+                    (834.0, -93.0),
+                    (1026.0, -158.0),
+                    (1122.0, -190.0),
+                    (1255.0, -233.0),
+                    (1255.0, -482.0),
+                    (834.0, -482.0),
+                ),
+                "bright": None,
+            },
+            "district_of_langley": {
+                "title": "District of Langley",
+                # All Langley districts except Langley City (notched via 58 Ave / 208 St / Fraser).
+                "ring": (
+                    (610.0, 212.5),
+                    (642.0, 212.5),
+                    (706.0, 212.5),
+                    (834.0, 212.5),
+                    (1026.0, 212.5),
+                    (1122.0, 212.5),
+                    (1255.0, 212.5),
+                    (1255.0, 78.0),
+                    (1255.0, -233.0),
+                    (1255.0, -482.0),
+                    (1122.0, -482.0),
+                    (1026.0, -482.0),
+                    (834.0, -482.0),
+                    (706.0, -482.0),
+                    (610.0, -482.0),
+                    (610.0, -110.0),
+                    (706.0, -110.0),
+                    (706.0, -51.0),
+                    (642.0, -29.0),
+                    (610.0, -18.0),
+                    (610.0, 78.0),
+                    (610.0, 212.5),
+                ),
+                "bright": None,
+                "hotkey_only": True,
             },
             "surrey": {
                 "title": "Surrey",
@@ -499,27 +683,30 @@ class CityApp(ShowBase):
                     (340.0, 390.0),
                     (400.0, 382.0),
                     (460.0, 370.0),
-                    (480.0, 366.0),
+                    (487.5, 366.0),
+                    (487.5, 210.0),
+                    (480.0, 210.0),
                     (480.0, 190.0),
                     (520.0, 180.0),
                     (580.0, 168.0),
                     (610.0, 160.0),
                     (610.0, -320.0),
                     (610.0, -400.0),
-                    (610.0, -477.0),
-                    (517.0, -477.0),
-                    (482.0, -477.0),
+                    (610.0, -482.0),
+                    (517.0, -482.0),
+                    (482.0, -482.0),
                     (401.0, -400.0),
                     (174.0, -400.0),
-                    (174.0, -477.0),
-                    (174.0, -485.0),
-                    (120.0, -478.0),
-                    (80.0, -465.0),
-                    (45.0, -445.0),
-                    (26.0, -420.0),
-                    (26.0, -400.0),
+                    (174.0, -482.0),
+                    (173.4, -490.0),
+                    (118.9, -482.9),
+                    (78.0, -469.6),
+                    (41.7, -448.8),
+                    (21.0, -422.0),
+                    (21.0, -400.0),
+                    (21.0, -320.0),
                     (26.0, -320.0),
-                    (26.0, -160.0),
+                    (26.0, -167.5),
                     (24.0, -70.0),
                     (22.0, -20.0),
                     (20.0, 30.0),
@@ -622,6 +809,61 @@ class CityApp(ShowBase):
         self._label_ref_distance = 1.0
         # Barriers, side fences, and lane marks open at arterial crossings.
         crossing_gaps = arterial_crossing_gaps(arterials)
+        # Named centreline segments for car-mode street HUD.
+        self._named_roads: list[tuple[str, float, float, float, float, float]] = []
+        # Solid median / edge walls for player-car collision: (ax,ay,bx,by,half_w).
+        self._solid_barriers: list[tuple[float, float, float, float, float]] = []
+
+        def _coarsen_polyline(points: list, max_span: float) -> list:
+            """Keep endpoints; skip verts until arc length reaches max_span."""
+            if len(points) < 2:
+                return list(points)
+            out = [points[0]]
+            acc = 0.0
+            for i in range(1, len(points)):
+                dx = points[i][0] - points[i - 1][0]
+                dy = points[i][1] - points[i - 1][1]
+                acc += math.hypot(dx, dy)
+                if acc >= max_span or i == len(points) - 1:
+                    out.append(points[i])
+                    acc = 0.0
+            return out
+
+        def _place_barrier_prisms(
+            piece: list,
+            width: float,
+            height: float,
+            z_center: float,
+        ) -> None:
+            """Rectangular prisms along a coarsened polyline (keeps collision cheap)."""
+            if width <= 0.0 or height <= 0.0 or len(piece) < 2:
+                return
+            run = 0.0
+            for i in range(1, len(piece)):
+                run += math.hypot(
+                    float(piece[i][0]) - float(piece[i - 1][0]),
+                    float(piece[i][1]) - float(piece[i - 1][1]),
+                )
+            if run < _BARRIER_MIN_RUN:
+                return
+            half_w = width * 0.5
+            pts = _coarsen_polyline(piece, _BARRIER_SPAN)
+            for i in range(len(pts) - 1):
+                x0 = float(pts[i][0])
+                y0 = float(pts[i][1])
+                x1 = float(pts[i + 1][0])
+                y1 = float(pts[i + 1][1])
+                dx = x1 - x0
+                dy = y1 - y0
+                length = math.hypot(dx, dy)
+                if length < 0.05:
+                    continue
+                box = box_instance(self.highway, length, width, height)
+                box.setPos((x0 + x1) * 0.5, (y0 + y1) * 0.5, z_center)
+                box.setH(math.degrees(math.atan2(dy, dx)))
+                box.setMaterial(barrier_mat, 1)
+                self._solid_barriers.append((x0, y0, x1, y1, half_w))
+
         for arterial in arterials:
             pts = list(arterial["points"])
             if len(pts) < 2:
@@ -637,25 +879,29 @@ class CityApp(ShowBase):
             )
             deck.setPos(0.0, 0.0, road_z)
             deck.setMaterial(road_mat, 1)
-            if plan.barrier_w > 0.0 and plan.barrier_h > 0.0:
-                for piece in split_polyline_around_gaps(pts, median_gaps):
-                    barrier = self.highway.attachNewNode(
-                        make_highway_ribbon(piece, plan.barrier_w, plan.barrier_h)
-                    )
-                    barrier.setPos(0.0, 0.0, road_top + plan.barrier_h / 2)
-                    barrier.setMaterial(barrier_mat, 1)
-            if name in SIDE_BORDER_ROUTES and plan.fence_w > 0.0 and plan.fence_h > 0.0:
-                # Thin concrete lips along both pavement edges; gapped at crossings.
-                edge = route_width / 2 + plan.fence_w / 2
-                fence_gaps = [(x, y, radius + edge) for x, y, radius in median_gaps]
-                for side in (-1.0, 1.0):
-                    edge_pts = offset_polyline(pts, side * edge)
-                    for piece in split_polyline_around_gaps(edge_pts, fence_gaps):
-                        fence = self.highway.attachNewNode(
-                            make_highway_ribbon(piece, plan.fence_w, plan.fence_h)
+            # Two-lane roads stay open — no median wall or edge fence.
+            if route_lanes > 2:
+                if plan.barrier_w > 0.0 and plan.barrier_h > 0.0:
+                    for piece in split_polyline_around_gaps(pts, median_gaps):
+                        _place_barrier_prisms(
+                            piece,
+                            plan.barrier_w,
+                            plan.barrier_h,
+                            road_top + plan.barrier_h / 2,
                         )
-                        fence.setPos(0.0, 0.0, road_top + plan.fence_h / 2)
-                        fence.setMaterial(barrier_mat, 1)
+                if name in SIDE_BORDER_ROUTES and plan.fence_w > 0.0 and plan.fence_h > 0.0:
+                    # Thin concrete lips along both pavement edges; gapped at crossings.
+                    edge = route_width / 2 + plan.fence_w / 2
+                    fence_gaps = [(x, y, radius + edge) for x, y, radius in median_gaps]
+                    for side in (-1.0, 1.0):
+                        edge_pts = offset_polyline(pts, side * edge)
+                        for piece in split_polyline_around_gaps(edge_pts, fence_gaps):
+                            _place_barrier_prisms(
+                                piece,
+                                plan.fence_w,
+                                plan.fence_h,
+                                road_top + plan.fence_h / 2,
+                            )
             paint_route_marks(
                 pts,
                 road_top,
@@ -665,6 +911,21 @@ class CityApp(ShowBase):
             )
 
             title = HIGHWAY_LABELS.get(name, name.replace("_", " ").title())
+            if title:
+                half_w = route_width * 0.5
+                # Coarser samples for HUD / on-road tests (full ribbon stays dense).
+                road_pts = _coarsen_polyline(pts, 5.0)
+                for i in range(len(road_pts) - 1):
+                    self._named_roads.append(
+                        (
+                            title,
+                            road_pts[i][0],
+                            road_pts[i][1],
+                            road_pts[i + 1][0],
+                            road_pts[i + 1][1],
+                            half_w,
+                        )
+                    )
             if not title:
                 continue
             mid = pts[len(pts) // 2]
@@ -683,6 +944,76 @@ class CityApp(ShowBase):
             label.setDepthTest(False)
             label.setDepthWrite(False)
             self._highway_label_nodes.append(label)
+
+        # Spatial hashes — car mode used to scan tens of thousands of segs / frame.
+        self._barrier_cell = _SEG_CELL
+        self._road_cell = _SEG_CELL
+        self._barrier_grid = self._build_segment_grid(
+            self._solid_barriers, xy_offset=0, cell=self._barrier_cell
+        )
+        self._road_grid = self._build_segment_grid(
+            self._named_roads, xy_offset=1, cell=self._road_cell
+        )
+
+        # Gantry signals on 3-/4-way arterial junctions (never on Hwy 1).
+        # Two curb posts per approach, joined by a full crossbar. Shared lens
+        # materials still animate after flattenStrong.
+        self._signals = None
+        self._signals_root = self.city.attachNewNode("traffic-signals")
+        signal_builders = SceneBuilders(self._signals_root, plan, self.render)
+        signal_count = 0
+        for junction in arterial_junctions(arterials):
+            if "hwy1" in junction["roads"]:
+                continue
+            jx = float(junction["x"])
+            jy = float(junction["y"])
+            half = float(junction["half"])
+            # Corner posts are shared by adjacent approach spans — place once.
+            posts: dict[tuple[float, float], tuple[float, float]] = {}
+            spans: list[tuple[float, float, float, float]] = []
+            arms = list(junction["arms"])
+            for ox, oy in arms:
+                # Through arms: gantry on that edge. T stem: gantry on the
+                # missing opposite side (e.g. roads N/S/W → lights on N/S/E).
+                has_opposite = any(
+                    dx * ox + dy * oy <= -0.85 for dx, dy in arms
+                )
+                if has_opposite:
+                    place_ox, place_oy = ox, oy
+                else:
+                    place_ox, place_oy = -ox, -oy
+                edge_x = jx + place_ox * half
+                edge_y = jy + place_oy * half
+                px, py = -place_oy, place_ox
+                ax = edge_x + px * half
+                ay = edge_y + py * half
+                bx = edge_x - px * half
+                by = edge_y - py * half
+                posts[(round(ax, 3), round(ay, 3))] = (ax, ay)
+                posts[(round(bx, 3), round(by, 3))] = (bx, by)
+                spans.append((ax, ay, bx, by))
+            for post_x, post_y in posts.values():
+                signal_builders._add_signal_post(
+                    post_x, post_y, road_top, block_size
+                )
+            for ax, ay, bx, by in spans:
+                signal_builders._add_traffic_light(
+                    ax,
+                    ay,
+                    bx,
+                    by,
+                    road_top,
+                    block_size,
+                    face_x=jx,
+                    face_y=jy,
+                )
+                signal_count += 1
+        if signal_count > 0:
+            self._signals_root.flattenStrong()
+            self._signals = TrafficLightController(self)
+            self.taskMgr.add(self._signals.update, "traffic-lights")
+        else:
+            self._signals_root.removeNode()
 
         # Red district titles — shown only while that district is selected.
         for key, district in self._districts.items():
@@ -785,25 +1116,35 @@ class CityApp(ShowBase):
         )
         self._ground.setMaterial(lawn_mat, 1)
 
-        # Fixed-function lights (same stack the city builders used).
-        ambient = AmbientLight("ambient")
-        ambient.setColor((0.34, 0.37, 0.42, 1))
-        self.render.setLight(self.render.attachNewNode(ambient))
-        sun = DirectionalLight("sun")
-        sun.setColor((1.15, 1.05, 0.9, 1))
-        sun_np = self.render.attachNewNode(sun)
-        sun_np.setHpr(38, -48, 0)
-        self.render.setLight(sun_np)
-        fill = DirectionalLight("fill")
-        fill.setColor((0.18, 0.22, 0.3, 1))
-        fill_np = self.render.attachNewNode(fill)
-        fill_np.setHpr(220, -25, 0)
-        self.render.setLight(fill_np)
+        # Fixed-function lights — colours / HPR driven by the day-night cycle.
+        self._ambient_light = AmbientLight("ambient")
+        self._ambient_np = self.render.attachNewNode(self._ambient_light)
+        self.render.setLight(self._ambient_np)
+        self._sun_light = DirectionalLight("sun")
+        self._sun_np = self.render.attachNewNode(self._sun_light)
+        self.render.setLight(self._sun_np)
+        self._fill_light = DirectionalLight("fill")
+        self._fill_np = self.render.attachNewNode(self._fill_light)
+        self.render.setLight(self._fill_np)
+
+        # Sky dome tracks the camera, world-oriented; rebuilt as the cycle shifts.
+        self._sky_root = self.camera.attachNewNode("sky-root")
+        self._sky_root.setEffect(CompassEffect.make(self.render))
+        self._sky_root.setBin("background", 0)
+        self._sky_root.setDepthWrite(False)
+        self._sky_root.setDepthTest(False)
+        self._sky_root.setLightOff()
+        self._sky_geom: object | None = None
+        self._sky_key: tuple | None = None
+        # Begin mid-sunrise so load isn't pitch-black; full loop is still 10 min.
+        self._day_cycle = DayNightCycle(SUNRISE_SECONDS * 0.5)
+        self._vehicle_lights_on = False
+        self._apply_day_cycle(self._day_cycle.sample(), force_sky=True)
 
         # One cruiser on Fraser Hwy (right lane); Space focuses it.
         self._cars: list[CarController] = []
         self._car = None
-        self._signals = None
+        self._player_car: PlayerCar | None = None
         self._fleet_root = self.render.attachNewNode("fleet")
         fraser = next((a for a in arterials if a.get("name") == "fraser"), None)
         if fraser is not None and len(fraser.get("points") or ()) >= 2:
@@ -834,6 +1175,21 @@ class CityApp(ShowBase):
             car._place_car()
             self._car = car
             self.taskMgr.add(self._fleet_task, "fleet")
+
+        # Green player car on King George Blvd through Surrey City Centre.
+        king = next((a for a in arterials if a.get("name") == "king_george"), None)
+        if king is not None:
+            kg_w = float(king.get("width", plan.road_width))
+            # Right lane, northbound, mid-block between 102 Ave and 108 Ave.
+            self._player_car = PlayerCar(
+                self,
+                road_top,
+                155.0 + kg_w / 4.0,
+                227.0,
+                heading=90.0,
+                body_colour=(0.16, 0.62, 0.28),
+            )
+            self.taskMgr.add(self._player_drive_task, "player-drive")
 
         bounds = plan.framing_bounds()
         left = bounds["left"]
@@ -880,14 +1236,89 @@ class CityApp(ShowBase):
         self._default_distance = self.distance
         self._default_heading = self.heading
         self._default_pitch = self.pitch
-        self._focus_index = -1  # -1 = overview; 0..len(_cars)-1 = follow car
+        self._focus_index = -1  # -1 = overview; 0..len(focusables)-1 = follow car
         self._car_focus_distance = 14.0
+        # C toggles Fortnite-style third-person drive mode on the green car.
+        self._car_mode = False
+        self._chase_back = 8.5
+        self._chase_height = 3.4
+        self._chase_look_ahead = 2.0
+        self._chase_look_z = 1.0
+        self._chase_yaw_offset = 0.0
+        self._map_look_at = list(self.look_at)
+        self._map_distance = self.distance
+        self._map_heading = self.heading
+        self._map_pitch = self.pitch
+        self._hud_place_text = ""
+        self._hud_street_text = ""
+        self._hud_speed_text = ""
+        # World units ≈ metres; 3.6 → km/h for the car-mode speedometer.
+        self._speed_to_kmh = 3.6
+        self._hud_place = OnscreenText(
+            text="",
+            parent=self.a2dTopLeft,
+            pos=(0.05, -0.08),
+            scale=0.055,
+            fg=(0.96, 0.97, 0.99, 1),
+            shadow=(0.0, 0.0, 0.0, 0.7),
+            align=TextNode.ALeft,
+            mayChange=True,
+        )
+        self._hud_street = OnscreenText(
+            text="",
+            parent=self.a2dTopCenter,
+            pos=(0.0, -0.1),
+            scale=0.07,
+            fg=(0.96, 0.97, 0.99, 1),
+            shadow=(0.0, 0.0, 0.0, 0.7),
+            align=TextNode.ACenter,
+            mayChange=True,
+        )
+        self._hud_speed = OnscreenText(
+            text="",
+            parent=self.a2dBottomRight,
+            pos=(-0.06, 0.14),
+            scale=0.1,
+            fg=(0.96, 0.97, 0.99, 1),
+            shadow=(0.0, 0.0, 0.0, 0.75),
+            align=TextNode.ARight,
+            mayChange=True,
+        )
+        self._hud_speed_unit = OnscreenText(
+            text="km/h",
+            parent=self.a2dBottomRight,
+            pos=(-0.06, 0.06),
+            scale=0.045,
+            fg=(0.85, 0.88, 0.92, 1),
+            shadow=(0.0, 0.0, 0.0, 0.7),
+            align=TextNode.ARight,
+            mayChange=False,
+        )
+        self._hud_place.hide()
+        self._hud_street.hide()
+        self._hud_speed.hide()
+        self._hud_speed_unit.hide()
+        # Clock: top-centre on the map, bottom-left in C (drive) mode.
+        self._hud_clock = OnscreenText(
+            text=self._day_cycle.clock_text(),
+            parent=self.a2dTopCenter,
+            pos=(0.0, -0.08),
+            scale=0.065,
+            fg=(0.96, 0.97, 0.99, 1),
+            shadow=(0.0, 0.0, 0.0, 0.7),
+            align=TextNode.ACenter,
+            mayChange=True,
+        )
+        self._hud_clock_text = ""
+        self._layout_clock_hud()
         self._update_camera()
 
         self.accept("escape", sys.exit)
+        self.accept("c", self._toggle_car_mode)
         self.accept("space", self._cycle_car_focus)
         self.accept("backspace", self._clear_district_selection)
         self.accept("s", self._select_surrey)
+        self.accept("l", self._select_district_of_langley)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
         self.accept("mouse1", self._start_drag)
@@ -895,6 +1326,8 @@ class CityApp(ShowBase):
         self.taskMgr.add(self._drag_task, "orbit-drag")
         self.taskMgr.add(self._pan_task, "camera-pan")
         self.taskMgr.add(self._follow_focus_task, "follow-car-focus")
+        self.taskMgr.add(self._car_hud_task, "car-hud")
+        self.taskMgr.add(self._day_cycle_task, "day-night-cycle")
         if not self.screenshot_path:
             self.fps_text = OnscreenText(
                 text="",
@@ -915,6 +1348,81 @@ class CityApp(ShowBase):
         self._fps_slot = slot
         self.fps_text.setText(f"FPS: {self.clock.getAverageFrameRate():.0f}")
         return task.cont
+
+    def _layout_clock_hud(self) -> None:
+        """Map mode: top centre. C mode: bottom left (street name keeps the top)."""
+        if not hasattr(self, "_hud_clock"):
+            return
+        if self._car_mode:
+            self._hud_clock.reparentTo(self.a2dBottomLeft)
+            self._hud_clock.setPos(0.05, 0.1)
+            self._hud_clock.setAlign(TextNode.ALeft)
+        else:
+            self._hud_clock.reparentTo(self.a2dTopCenter)
+            self._hud_clock.setPos(0.0, -0.08)
+            self._hud_clock.setAlign(TextNode.ACenter)
+
+    def _day_cycle_task(self, task):
+        self._day_cycle.update(self.clock.getDt())
+        self._apply_day_cycle(self._day_cycle.sample())
+        return task.cont
+
+    def _apply_day_cycle(self, sample, *, force_sky: bool = False) -> None:
+        """Push cycle sample into lights, clear colour, sky dome, and clock."""
+        self._vehicle_lights_on = sample.vehicle_lights_on
+        ar, ag, ab = sample.ambient
+        self._ambient_light.setColor((ar, ag, ab, 1))
+        sr, sg, sb = sample.sun_color
+        self._sun_light.setColor((sr, sg, sb, 1))
+        self._sun_np.setHpr(*sample.sun_hpr)
+        fr, fg, fb = sample.fill_color
+        self._fill_light.setColor((fr, fg, fb, 1))
+        self._fill_np.setHpr(*sample.fill_hpr)
+        br, bg, bb = sample.background
+        self.setBackgroundColor(br, bg, bb, 1)
+
+        # Rebuild the dome when the palette moves enough — cheap 8×24 mesh.
+        sky_key = (
+            round(sample.zenith[0], 3),
+            round(sample.zenith[1], 3),
+            round(sample.zenith[2], 3),
+            round(sample.horizon_cool[0], 3),
+            round(sample.horizon_cool[1], 3),
+            round(sample.horizon_cool[2], 3),
+            round(sample.horizon_warm[0], 3),
+            round(sample.horizon_warm[1], 3),
+            round(sample.horizon_warm[2], 3),
+            round(sample.sun_phi_deg, 1),
+        )
+        if force_sky or sky_key != self._sky_key:
+            self._sky_key = sky_key
+            if self._sky_geom is not None:
+                self._sky_geom.removeNode()
+            # Stronger horizon glow during warm sunrise/sunset keys.
+            warm = sample.horizon_warm
+            glow = 0.18 + 0.35 * max(0.0, warm[0] - warm[2])
+            self._sky_geom = self._sky_root.attachNewNode(
+                make_sky_dome(
+                    zenith=sample.zenith,
+                    horizon_cool=sample.horizon_cool,
+                    horizon_warm=sample.horizon_warm,
+                    sun_phi_deg=sample.sun_phi_deg,
+                    glow_strength=glow,
+                )
+            )
+            self._sky_geom.setBin("background", 0)
+            self._sky_geom.setDepthWrite(False)
+            self._sky_geom.setDepthTest(False)
+            self._sky_geom.setLightOff()
+
+        if hasattr(self, "_hud_clock") and sample.clock_text != self._hud_clock_text:
+            self._hud_clock_text = sample.clock_text
+            self._hud_clock.setText(sample.clock_text)
+
+        # Player car only runs its update loop in C mode — sync night lamps here.
+        player = getattr(self, "_player_car", None)
+        if player is not None and not getattr(self, "_car_mode", False):
+            player._refresh_lamps(braking=False, reversing=False)
 
     def _fleet_task(self, task):
         # One spatial/corridor index for the whole fleet, then each car updates.
@@ -937,15 +1445,232 @@ class CityApp(ShowBase):
                 car.car.show()
         return task.cont
 
-    def _car_look_at(self, car: CarController) -> list[float]:
+    def _focusable_cars(self) -> list:
+        """Player car first, then AI fleet — Space cycles through these."""
+        cars: list = []
+        if self._player_car is not None:
+            cars.append(self._player_car)
+        cars.extend(self._cars)
+        return cars
+
+    def _car_look_at(self, car) -> list[float]:
         return [car._car_pos[0], car._car_pos[1], car._car_z + 0.5]
+
+    def _toggle_car_mode(self) -> None:
+        """C: enter/exit third-person drive mode on the green player car."""
+        if self._player_car is None:
+            return
+        if self._car_mode:
+            self._exit_car_mode()
+        else:
+            self._enter_car_mode()
+
+    def _enter_car_mode(self) -> None:
+        self._car_mode = True
+        self._clear_district_selection()
+        self._focus_index = -1
+        self.dragging = False
+        self._map_look_at = list(self.look_at)
+        self._map_distance = self.distance
+        self._map_heading = self.heading
+        self._map_pitch = self.pitch
+        self._chase_yaw_offset = 0.0
+        self._hud_place_text = ""
+        self._hud_street_text = ""
+        self._hud_speed_text = ""
+        # World-space arterial titles clutter the chase cam; HUD keeps the name.
+        self._highway_labels.hide()
+        self._hud_place.show()
+        self._hud_street.show()
+        self._hud_speed.show()
+        self._hud_speed_unit.show()
+        self._layout_clock_hud()
+        self._refresh_car_hud(force=True)
+        self._update_chase_camera()
+
+    def _exit_car_mode(self) -> None:
+        self._car_mode = False
+        self.dragging = False
+        self._highway_labels.show()
+        self._hud_place.hide()
+        self._hud_street.hide()
+        self._hud_speed.hide()
+        self._hud_speed_unit.hide()
+        self._hud_place.setText("")
+        self._hud_street.setText("")
+        self._hud_speed.setText("")
+        self._layout_clock_hud()
+        self.look_at = list(self._map_look_at)
+        self.distance = self._map_distance
+        self.heading = self._map_heading
+        self.pitch = self._map_pitch
+        self._update_camera()
+
+    @staticmethod
+    def _build_segment_grid(
+        segments: list, *, xy_offset: int, cell: float
+    ) -> dict[tuple[int, int], list[int]]:
+        """Hash segment indices by AABB cells for nearby queries."""
+        grid: dict[tuple[int, int], list[int]] = defaultdict(list)
+        if cell <= 0.0:
+            return grid
+        for idx, seg in enumerate(segments):
+            ax = float(seg[xy_offset])
+            ay = float(seg[xy_offset + 1])
+            bx = float(seg[xy_offset + 2])
+            by = float(seg[xy_offset + 3])
+            half_w = float(seg[-1])
+            pad = half_w + 1.0
+            i0 = int(math.floor((min(ax, bx) - pad) / cell))
+            i1 = int(math.floor((max(ax, bx) + pad) / cell))
+            j0 = int(math.floor((min(ay, by) - pad) / cell))
+            j1 = int(math.floor((max(ay, by) + pad) / cell))
+            for i in range(i0, i1 + 1):
+                for j in range(j0, j1 + 1):
+                    grid[(i, j)].append(idx)
+        return grid
+
+    def _nearby_segment_indices(
+        self,
+        grid: dict[tuple[int, int], list[int]],
+        x: float,
+        y: float,
+        radius: float,
+        cell: float,
+    ) -> list[int]:
+        if not grid or cell <= 0.0:
+            return []
+        i0 = int(math.floor((x - radius) / cell))
+        i1 = int(math.floor((x + radius) / cell))
+        j0 = int(math.floor((y - radius) / cell))
+        j1 = int(math.floor((y + radius) / cell))
+        seen: set[int] = set()
+        out: list[int] = []
+        for i in range(i0, i1 + 1):
+            for j in range(j0, j1 + 1):
+                for idx in grid.get((i, j), ()):
+                    if idx not in seen:
+                        seen.add(idx)
+                        out.append(idx)
+        return out
+
+    def nearby_barriers(
+        self, x: float, y: float, radius: float
+    ) -> list[tuple[float, float, float, float, float]]:
+        idxs = self._nearby_segment_indices(
+            getattr(self, "_barrier_grid", {}),
+            x,
+            y,
+            radius,
+            getattr(self, "_barrier_cell", _SEG_CELL),
+        )
+        barriers = getattr(self, "_solid_barriers", None) or []
+        return [barriers[i] for i in idxs]
+
+    def nearby_roads(
+        self, x: float, y: float, radius: float
+    ) -> list[tuple[str, float, float, float, float, float]]:
+        idxs = self._nearby_segment_indices(
+            getattr(self, "_road_grid", {}),
+            x,
+            y,
+            radius,
+            getattr(self, "_road_cell", _SEG_CELL),
+        )
+        roads = getattr(self, "_named_roads", None) or []
+        return [roads[i] for i in idxs]
+
+    def _location_at(self, x: float, y: float) -> str:
+        """Neighborhood + municipality for car HUD, e.g. 'Newton, Surrey'."""
+        for key, area, city in _LOCATION_AREAS:
+            district = self._districts.get(key)
+            if district is None:
+                continue
+            if self._point_in_ring(district["ring"], x, y):
+                return f"{area}, {city}"
+        return "Unknown area"
+
+    def _street_at(self, x: float, y: float) -> str:
+        """Nearest arterial name if the car is on/near its pavement."""
+        best_name = ""
+        best_d2 = float("inf")
+        for name, ax, ay, bx, by, half_w in self.nearby_roads(x, y, 40.0):
+            d2, _qx, _qy = _dist2_point_segment(x, y, ax, ay, bx, by)
+            # Stay within the ribbon plus a small shoulder so lane offset still counts.
+            limit = half_w + 2.5
+            if d2 <= limit * limit and d2 < best_d2:
+                best_d2 = d2
+                best_name = name
+        return best_name or "Off road"
+
+    def _refresh_speedometer(self, *, force: bool = False) -> None:
+        if self._player_car is None:
+            return
+        kmh = int(round(abs(self._player_car._car_speed) * self._speed_to_kmh))
+        text = str(kmh)
+        if force or text != self._hud_speed_text:
+            self._hud_speed_text = text
+            self._hud_speed.setText(text)
+
+    def _refresh_car_hud(self, *, force: bool = False) -> None:
+        if self._player_car is None:
+            return
+        x, y = self._player_car._car_pos[0], self._player_car._car_pos[1]
+        place = self._location_at(x, y)
+        street = self._street_at(x, y)
+        if force or place != self._hud_place_text:
+            self._hud_place_text = place
+            self._hud_place.setText(place)
+        if force or street != self._hud_street_text:
+            self._hud_street_text = street
+            self._hud_street.setText(street)
+        self._refresh_speedometer(force=force)
+
+    def _car_hud_task(self, task):
+        if not self._car_mode:
+            return task.cont
+        # Speed updates snappier; place/street can lag a bit.
+        speed_slot = int(task.time * 12.0)
+        if speed_slot != getattr(self, "_hud_speed_slot", -1):
+            self._hud_speed_slot = speed_slot
+            self._refresh_speedometer()
+        slot = int(task.time * 4.0)
+        if slot == getattr(self, "_hud_slot", -1):
+            return task.cont
+        self._hud_slot = slot
+        self._refresh_car_hud()
+        return task.cont
+
+    def _update_chase_camera(self) -> None:
+        """Fortnite-style chase: behind + above the car, optional mouse yaw offset."""
+        car = self._player_car
+        if car is None:
+            return
+        rad = math.radians(car._car_heading + self._chase_yaw_offset)
+        fx = math.cos(rad)
+        fy = math.sin(rad)
+        px, py = car._car_pos[0], car._car_pos[1]
+        pz = car._car_z
+        self.camera.setPos(
+            px - fx * self._chase_back,
+            py - fy * self._chase_back,
+            pz + self._chase_height,
+        )
+        look_x = px + fx * self._chase_look_ahead
+        look_y = py + fy * self._chase_look_ahead
+        look_z = pz + self._chase_look_z
+        self.camera.lookAt(look_x, look_y, look_z)
+        self.look_at = [look_x, look_y, look_z]
 
     def _cycle_car_focus(self) -> None:
         """Space: zoom to next car; after the last car, restore the city overview."""
-        if not self._cars:
+        if self._car_mode:
+            return
+        cars = self._focusable_cars()
+        if not cars:
             return
         self._focus_index += 1
-        if self._focus_index >= len(self._cars):
+        if self._focus_index >= len(cars):
             self._focus_index = -1
             self.look_at = list(self._default_look_at)
             self.distance = self._default_distance
@@ -954,7 +1679,7 @@ class CityApp(ShowBase):
             self._update_camera()
             return
 
-        car = self._cars[self._focus_index]
+        car = cars[self._focus_index]
         self.look_at = self._car_look_at(car)
         self.distance = min(
             self.max_distance,
@@ -965,12 +1690,35 @@ class CityApp(ShowBase):
         self._update_camera()
 
     def _follow_focus_task(self, task):
-        if 0 <= self._focus_index < len(self._cars):
-            self.look_at = self._car_look_at(self._cars[self._focus_index])
+        if self._car_mode:
+            self._update_chase_camera()
+            return task.cont
+        cars = self._focusable_cars()
+        if 0 <= self._focus_index < len(cars):
+            self.look_at = self._car_look_at(cars[self._focus_index])
             self._update_camera()
         return task.cont
 
+    def _player_drive_task(self, task):
+        """C mode: WASD drive; left/right arrows for slight heading trim."""
+        if not self._car_mode or self._player_car is None:
+            return task.cont
+        mw = self.mouseWatcherNode
+        self._player_car.update(
+            self.clock.getDt(),
+            gas=mw.is_button_down(KeyboardButton.ascii_key("w")),
+            brake=mw.is_button_down(KeyboardButton.ascii_key("s")),
+            steer_left=mw.is_button_down(KeyboardButton.ascii_key("a")),
+            steer_right=mw.is_button_down(KeyboardButton.ascii_key("d")),
+            nudge_left=mw.is_button_down(KeyboardButton.left()),
+            nudge_right=mw.is_button_down(KeyboardButton.right()),
+        )
+        return task.cont
+
     def _update_camera(self) -> None:
+        if self._car_mode:
+            self._update_chase_camera()
+            return
         pitch = math.radians(self.pitch)
         heading = math.radians(self.heading)
         cos_pitch = math.cos(pitch)
@@ -993,6 +1741,11 @@ class CityApp(ShowBase):
                 label.setScale(district["label_scale"] * zoom)
 
     def _zoom(self, factor: float) -> None:
+        if self._car_mode:
+            self._chase_back = min(22.0, max(4.0, self._chase_back * factor))
+            self._chase_height = min(10.0, max(1.5, self._chase_height * factor))
+            self._update_chase_camera()
+            return
         self.distance = min(
             self.max_distance,
             max(self.min_distance, self.distance * factor),
@@ -1098,10 +1851,20 @@ class CityApp(ShowBase):
             label.hide()
 
     def _select_surrey(self) -> None:
-        """Hotkey: outline Greater Surrey (excludes North Delta and White Rock Centre)."""
+        """S: outline Greater Surrey (disabled in C / car mode)."""
+        if self._car_mode:
+            return
         self._select_district("surrey")
 
+    def _select_district_of_langley(self) -> None:
+        """L: outline District of Langley (disabled in C / car mode)."""
+        if self._car_mode:
+            return
+        self._select_district("district_of_langley")
+
     def _try_select_district(self) -> None:
+        if self._car_mode:
+            return
         hit = self._ground_hit_xy()
         if hit is None:
             return
@@ -1126,7 +1889,8 @@ class CityApp(ShowBase):
     def _end_drag(self) -> None:
         was_click = self.dragging and not self._drag_moved
         self.dragging = False
-        if was_click:
+        # District pick is map-only; car mode keeps mouse for chase orbit.
+        if was_click and not self._car_mode:
             self._try_select_district()
 
     def _drag_task(self, task):
@@ -1139,35 +1903,37 @@ class CityApp(ShowBase):
             ):
                 self._drag_moved = True
             if self._drag_moved:
-                self.heading -= (x - self.last_x) * 120.0
-                self.pitch = max(
-                    -85.0, min(85.0, self.pitch + (y - self.last_y) * 90.0)
-                )
-                self._update_camera()
+                dx = x - self.last_x
+                dy = y - self.last_y
+                if self._car_mode:
+                    # Orbit chase yaw; nudge height like a light pitch look.
+                    self._chase_yaw_offset -= dx * 120.0
+                    self._chase_height = max(
+                        1.2, min(12.0, self._chase_height + dy * 6.0)
+                    )
+                    self._update_chase_camera()
+                else:
+                    self.heading -= dx * 120.0
+                    self.pitch = max(-85.0, min(85.0, self.pitch + dy * 90.0))
+                    self._update_camera()
             self.last_x = x
             self.last_y = y
         return task.cont
 
     def _pan_task(self, task):
-        """WASD / arrows: pan look_at on the ground plane relative to heading."""
+        """Arrow keys: pan look_at on the ground plane (disabled in C mode)."""
+        if self._car_mode:
+            return task.cont
         mw = self.mouseWatcherNode
         forward = 0.0
         right = 0.0
-        if mw.is_button_down(KeyboardButton.ascii_key("w")) or mw.is_button_down(
-            KeyboardButton.up()
-        ):
+        if mw.is_button_down(KeyboardButton.up()):
             forward += 1.0
-        if mw.is_button_down(KeyboardButton.ascii_key("s")) or mw.is_button_down(
-            KeyboardButton.down()
-        ):
+        if mw.is_button_down(KeyboardButton.down()):
             forward -= 1.0
-        if mw.is_button_down(KeyboardButton.ascii_key("d")) or mw.is_button_down(
-            KeyboardButton.right()
-        ):
+        if mw.is_button_down(KeyboardButton.right()):
             right += 1.0
-        if mw.is_button_down(KeyboardButton.ascii_key("a")) or mw.is_button_down(
-            KeyboardButton.left()
-        ):
+        if mw.is_button_down(KeyboardButton.left()):
             right -= 1.0
         if forward == 0.0 and right == 0.0:
             return task.cont

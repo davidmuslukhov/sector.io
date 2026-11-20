@@ -9,7 +9,7 @@ from collections import defaultdict
 from panda3d.core import LVector3
 
 from city.materials import car_material
-from city.mesh import car_template
+from city.mesh import _dist2_point_segment, car_template
 
 # Body length along travel; bumper gap when queued or following.
 # Centre-to-centre spacing is length + gap so bodies never touch.
@@ -30,6 +30,41 @@ _EXIT_STREAM_CAP = 3
 _FLEET_LANES: dict[tuple, list] = {}
 _FLEET_QUEUES: dict[tuple, list] = {}
 _FLEET_CELLS: dict[tuple[int, int], list] = {}
+
+# Lamp colourScale: unlit plastic vs full emission read.
+_LAMP_OFF = 0.1
+_LAMP_ON = 1.0
+
+
+def _apply_drive_lamps(
+    headlights: dict[str, object],
+    taillights: dict[str, object],
+    *,
+    night: bool,
+    braking: bool,
+    reversing: bool,
+    signal_side: str | None = None,
+    signal_lit: bool = True,
+) -> None:
+    """Headlights follow night; tails also light for brake/reverse; blinkers dim."""
+    head_on = night
+    tail_on = night or braking or reversing
+    for side in ("left", "right"):
+        head_scale = _LAMP_ON if head_on else _LAMP_OFF
+        tail_scale = _LAMP_ON if tail_on else _LAMP_OFF
+        if signal_side == side:
+            if signal_lit:
+                head_scale = _LAMP_ON
+                tail_scale = _LAMP_ON
+            else:
+                head_scale = _LAMP_OFF
+                tail_scale = _LAMP_OFF
+        for lamp, scale in (
+            (headlights.get(side), head_scale),
+            (taillights.get(side), tail_scale),
+        ):
+            if lamp is not None and not lamp.isEmpty():
+                lamp.setColorScale(scale, scale, scale, 1)
 
 
 class CarController:
@@ -68,16 +103,16 @@ class CarController:
                 car_material("body"),
                 car_material("body", body_colour),
             )
-        self._car_lights = {
-            "left": [
-                self.car.find("**/headlight-left"),
-                self.car.find("**/taillight-left"),
-            ],
-            "right": [
-                self.car.find("**/headlight-right"),
-                self.car.find("**/taillight-right"),
-            ],
+        self._car_headlights = {
+            "left": self.car.find("**/headlight-left"),
+            "right": self.car.find("**/headlight-right"),
         }
+        self._car_taillights = {
+            "left": self.car.find("**/taillight-left"),
+            "right": self.car.find("**/taillight-right"),
+        }
+        self._car_braking = False
+        self._car_lamp_applied: tuple | None = None
         # Merge body+detail into one GeomNode; leave lamps free for blinkers.
         detail = self.car.find("**/detail")
         if not body.isEmpty() and not detail.isEmpty():
@@ -193,9 +228,9 @@ class CarController:
         self._nb_stop = self._car_approach_stop()
         self._nb_slot = self._nb_stop
         self._nb_hold: tuple[float, float] | None = None
-        self._car_signal_applied: tuple[str | None, bool] | None = None
+        self._car_signal_applied: tuple | None = None
         self._place_car()
-        self._car_apply_signals(None, True)
+        self._car_refresh_lamps()
         if self not in self.fleet:
             self.fleet.append(self)
 
@@ -1786,36 +1821,49 @@ class CarController:
             return "right"
         return None
 
-    def _car_apply_signals(self, side: str | None, lit: bool) -> None:
-        """Dim the signalling side when ``lit`` is false; other lamps stay on."""
-        key = (side, lit)
-        if getattr(self, "_car_signal_applied", None) == key:
+    def _car_refresh_lamps(self) -> None:
+        """Apply night / brake / reverse / blinker state to head and tail lamps."""
+        night = bool(getattr(self.app, "_vehicle_lights_on", False))
+        braking = bool(getattr(self, "_car_braking", False))
+        reversing = self._car_speed < -0.05
+        side = self._car_signal
+        if side is None:
+            lit = True
+        else:
+            lit = (int(self._car_blink_t / self._car_blink_period) % 2) == 0
+        key = (night, braking, reversing, side, lit)
+        if self._car_lamp_applied == key:
             return
+        self._car_lamp_applied = key
         self._car_signal_applied = key
-        for name, lamps in self._car_lights.items():
-            if side is not None and name == side and not lit:
-                scale = 0.12
-            else:
-                scale = 1.0
-            for lamp in lamps:
-                if not lamp.isEmpty():
-                    lamp.setColorScale(scale, scale, scale, 1)
+        _apply_drive_lamps(
+            self._car_headlights,
+            self._car_taillights,
+            night=night,
+            braking=braking,
+            reversing=reversing,
+            signal_side=side,
+            signal_lit=lit,
+        )
+
+    def _car_apply_signals(self, side: str | None, lit: bool) -> None:
+        """Compatibility wrapper: blinker side is owned by ``_car_signal``."""
+        del side, lit
+        self._car_refresh_lamps()
 
     def _car_update_signals(self, dt: float) -> None:
         """Blink the pending turn side, or restore steady lamps when idle."""
-        if self._car_signal is None:
-            self._car_apply_signals(None, True)
-            return
-        self._car_blink_t += dt
-        lit = (int(self._car_blink_t / self._car_blink_period) % 2) == 0
-        self._car_apply_signals(self._car_signal, lit)
+        if self._car_signal is not None:
+            self._car_blink_t += dt
+        self._car_refresh_lamps()
 
     def _car_clear_signals(self) -> None:
         self._car_signal = None
         self._car_pending_dir = None
         self._car_blink_t = 0.0
+        self._car_lamp_applied = None
         self._car_signal_applied = None
-        self._car_apply_signals(None, True)
+        self._car_refresh_lamps()
 
     def _car_arm_turn_signal(
         self,
@@ -2978,9 +3026,17 @@ class CarController:
         # Exit-queue slots sit on the pitched arterial at flat grade — restick.
         self._car_apply_arterial_pose()
         self._place_car()
+        # Firm decel (not gentle cruise slew) lights the brake lamps.
+        dt = max(getattr(self, "_car_tick_dt", 0.016), 1e-6)
+        before = getattr(self, "_car_speed_before", self._car_speed)
+        decel = (before - self._car_speed) / dt
+        self._car_braking = decel > max(self._car_cruise_slew * 1.5, 3.0)
+        self._car_refresh_lamps()
 
     def _car_task(self, task):
         dt = min(self.clock.getDt(), 0.05)
+        self._car_tick_dt = dt
+        self._car_speed_before = self._car_speed
         # Targeting uses last tick's neighbor cache; we rescan once at the end.
         if self._car_on_highway and self._car_state == "drive":
             self._car_update_lane_change(dt)
@@ -3380,3 +3436,298 @@ class CarController:
             self._car_update_signals(dt)
         self._car_finish_frame()
         return task.cont
+
+
+class PlayerCar:
+    """Keyboard-driven car: W gas, S brake, A/D steer. Free drive (no AI path)."""
+
+    _BODY_HALF_Z = 0.5
+    # World units ≈ m/s; HUD uses ×3.6 so this tops out at 100 km/h.
+    _MAX_SPEED = 100.0 / 3.6
+    _MAX_REVERSE = 50.0 / 3.6
+    _OFF_ROAD_SPEED = 0.5  # fraction of max when not on an arterial
+    _REVERSE_HOLD = 0.5  # seconds of S at standstill before reverse
+    _ACCEL = 22.0
+    _BRAKE = 38.0
+    _COAST = 5.0
+    _STEER_RATE = 140.0  # deg/s at full speed (A/D)
+    _NUDGE_RATE = 35.0  # deg/s slight trim (arrow keys)
+    # Collision disc around the body centre (half-width + bumper fudge).
+    _HIT_RADIUS = 0.85
+    # Match CityApp._street_at shoulder so HUD "Off road" agrees with this.
+    _ROAD_SHOULDER = 2.5
+
+    def __init__(
+        self,
+        app,
+        road_top: float,
+        x: float,
+        y: float,
+        *,
+        heading: float = 90.0,
+        body_colour: tuple[float, float, float] = (0.16, 0.62, 0.28),
+    ) -> None:
+        self.app = app
+        parent = getattr(app, "_fleet_root", None) or app.render
+        self.car = car_template().copyTo(parent)
+        body = self.car.find("**/body")
+        if not body.isEmpty():
+            body.replaceMaterial(
+                car_material("body"),
+                car_material("body", body_colour),
+            )
+        detail = self.car.find("**/detail")
+        if not body.isEmpty() and not detail.isEmpty():
+            static = self.car.attachNewNode("static")
+            body.wrtReparentTo(static)
+            detail.wrtReparentTo(static)
+            static.flattenStrong()
+
+        self._car_headlights = {
+            "left": self.car.find("**/headlight-left"),
+            "right": self.car.find("**/headlight-right"),
+        }
+        self._car_taillights = {
+            "left": self.car.find("**/taillight-left"),
+            "right": self.car.find("**/taillight-right"),
+        }
+        self._car_lamp_applied: tuple | None = None
+
+        self._car_surface_z = road_top
+        self._car_body_half_z = self._BODY_HALF_Z
+        self._car_z = road_top + self._BODY_HALF_Z
+        self._car_pos = [float(x), float(y)]
+        self._car_heading = float(heading)
+        self._car_speed = 0.0  # signed: + forward, − reverse
+        self._brake_hold_t = 0.0
+        self._place()
+        self._refresh_lamps(braking=False, reversing=False)
+
+    def _place(self) -> None:
+        self.car.setHpr(self._car_heading, 0.0, 0.0)
+        self._car_z = self._car_surface_z + self._car_body_half_z
+        self.car.setPos(self._car_pos[0], self._car_pos[1], self._car_z)
+
+    def _nearby_barriers(self, px: float, py: float):
+        nearby = getattr(self.app, "nearby_barriers", None)
+        if nearby is None:
+            return getattr(self.app, "_solid_barriers", None) or ()
+        # A couple of cells around the car is enough for contact + substeps.
+        return nearby(px, py, self._HIT_RADIUS + 4.0)
+
+    def _deepest_barrier_hit(
+        self,
+        px: float,
+        py: float,
+        vx: float,
+        vy: float,
+        barriers,
+    ) -> tuple[float, float, float] | None:
+        """Worst overlap as (nx, ny, penetration). Normal points out of the wall."""
+        if not barriers:
+            return None
+        radius = self._HIT_RADIUS
+        best: tuple[float, float, float] | None = None
+        for ax, ay, bx, by, half_w in barriers:
+            min_dist = half_w + radius
+            d2, qx, qy = _dist2_point_segment(px, py, ax, ay, bx, by)
+            if d2 >= min_dist * min_dist:
+                continue
+            dist = math.sqrt(max(d2, 0.0))
+            sx, sy = bx - ax, by - ay
+            sl = math.hypot(sx, sy) or 1.0
+            # Unit segment normal (left of A→B); we'll flip to oppose inbound motion.
+            n0x, n0y = -sy / sl, sx / sl
+            if dist > 1e-5:
+                nx = (px - qx) / dist
+                ny = (py - qy) / dist
+            else:
+                nx, ny = n0x, n0y
+            # Deep inside or on the centreline: prefer the side we came from so
+            # we don't pop out the far face (the old "teleport" behaviour).
+            if dist < half_w and (vx * vx + vy * vy) > 1e-10:
+                nx, ny = n0x, n0y
+                if vx * nx + vy * ny > 0.0:
+                    nx, ny = -nx, -ny
+            pen = min_dist - dist
+            if best is None or pen > best[2]:
+                best = (nx, ny, pen)
+        return best
+
+    def _separate_barriers(self, vx: float, vy: float) -> tuple[float, float]:
+        """Push out by penetration only. Returns last contact normal, or (0, 0)."""
+        hit_nx = 0.0
+        hit_ny = 0.0
+        # Cap so a bad frame can't fling the car across the road.
+        max_push = self._HIT_RADIUS + 0.35
+        barriers = self._nearby_barriers(self._car_pos[0], self._car_pos[1])
+        for _ in range(2):
+            hit = self._deepest_barrier_hit(
+                self._car_pos[0], self._car_pos[1], vx, vy, barriers
+            )
+            if hit is None:
+                break
+            nx, ny, pen = hit
+            if pen <= 1e-6:
+                break
+            pen = min(pen, max_push)
+            self._car_pos[0] += nx * pen
+            self._car_pos[1] += ny * pen
+            hit_nx, hit_ny = nx, ny
+        return hit_nx, hit_ny
+
+    def _on_road(self) -> bool:
+        """True if the car is on/near a named arterial pavement."""
+        px, py = self._car_pos[0], self._car_pos[1]
+        nearby = getattr(self.app, "nearby_roads", None)
+        if nearby is None:
+            roads = getattr(self.app, "_named_roads", None) or ()
+            if not roads:
+                return True  # no road data → don't penalize
+        else:
+            roads = nearby(px, py, 40.0)
+        for _name, ax, ay, bx, by, half_w in roads:
+            d2, _qx, _qy = _dist2_point_segment(px, py, ax, ay, bx, by)
+            limit = half_w + self._ROAD_SHOULDER
+            if d2 <= limit * limit:
+                return True
+        return False
+
+    def update(
+        self,
+        dt: float,
+        *,
+        gas: bool,
+        brake: bool,
+        steer_left: bool,
+        steer_right: bool,
+        nudge_left: bool = False,
+        nudge_right: bool = False,
+    ) -> None:
+        if dt <= 0.0:
+            return
+
+        steer = 0.0
+        if steer_left:
+            steer += 1.0
+        if steer_right:
+            steer -= 1.0
+        nudge = 0.0
+        if nudge_left:
+            nudge += 1.0
+        if nudge_right:
+            nudge -= 1.0
+        if (steer != 0.0 or nudge != 0.0) and abs(self._car_speed) > 0.05:
+            blend = max(0.25, min(1.0, abs(self._car_speed) / self._MAX_SPEED))
+            # Reverse: same wheel input, opposite yaw so A still feels "left".
+            yaw_sign = -1.0 if self._car_speed < 0.0 else 1.0
+            if steer != 0.0:
+                self._car_heading += (
+                    steer * yaw_sign * self._STEER_RATE * blend * dt
+                )
+            elif nudge != 0.0:
+                self._car_heading += (
+                    nudge * yaw_sign * self._NUDGE_RATE * blend * dt
+                )
+
+        on_road = self._on_road()
+        road_scale = 1.0 if on_road else self._OFF_ROAD_SPEED
+        max_speed = self._MAX_SPEED * road_scale
+        max_reverse = self._MAX_REVERSE * road_scale
+
+        stopped = abs(self._car_speed) < 0.05
+        if stopped:
+            self._car_speed = 0.0
+        if brake and not gas and stopped:
+            self._brake_hold_t += dt
+        elif self._car_speed >= 0.0:
+            self._brake_hold_t = 0.0
+        # While already reversing, keep the hold "latched" so S stays reverse.
+        if self._car_speed < 0.0:
+            self._brake_hold_t = self._REVERSE_HOLD
+
+        if gas and not brake:
+            self._car_speed = min(max_speed, self._car_speed + self._ACCEL * dt)
+        elif brake and not gas:
+            if self._car_speed > 0.0:
+                self._car_speed = max(0.0, self._car_speed - self._BRAKE * dt)
+            elif self._brake_hold_t >= self._REVERSE_HOLD:
+                self._car_speed = max(
+                    -max_reverse, self._car_speed - self._ACCEL * dt
+                )
+        elif gas and brake:
+            # Both pedals: scrub toward a stop.
+            if self._car_speed > 0.0:
+                self._car_speed = max(0.0, self._car_speed - self._BRAKE * dt)
+            elif self._car_speed < 0.0:
+                self._car_speed = min(0.0, self._car_speed + self._BRAKE * dt)
+        elif self._car_speed > 0.0:
+            self._car_speed = max(0.0, self._car_speed - self._COAST * dt)
+        elif self._car_speed < 0.0:
+            self._car_speed = min(0.0, self._car_speed + self._COAST * dt)
+
+        rad = math.radians(self._car_heading)
+        fx = math.cos(rad)
+        fy = math.sin(rad)
+        hit_nx = 0.0
+        hit_ny = 0.0
+        if abs(self._car_speed) > 0.0:
+            travel = self._car_speed * dt
+            # Substep so thin fences can't be tunnelled (which used to fling the car).
+            step_len = 0.25
+            n_steps = max(1, min(8, int(math.ceil(abs(travel) / step_len))))
+            sx = fx * travel / n_steps
+            sy = fy * travel / n_steps
+            for _ in range(n_steps):
+                self._car_pos[0] += sx
+                self._car_pos[1] += sy
+                nx, ny = self._separate_barriers(sx, sy)
+                if nx != 0.0 or ny != 0.0:
+                    hit_nx, hit_ny = nx, ny
+        else:
+            hit_nx, hit_ny = self._separate_barriers(fx, fy)
+
+        # Immovable wall: strip speed into the surface, keep wheel heading.
+        if hit_nx != 0.0 or hit_ny != 0.0:
+            vx = fx * self._car_speed
+            vy = fy * self._car_speed
+            into = vx * hit_nx + vy * hit_ny
+            if into < 0.0:
+                vx -= into * hit_nx
+                vy -= into * hit_ny
+                # Keep signed speed along the car's forward axis.
+                self._car_speed = vx * fx + vy * fy
+                head_on = (
+                    (1.0 if self._car_speed >= 0.0 else -1.0) * (fx * hit_nx + fy * hit_ny)
+                )
+                if head_on < -0.8:
+                    self._car_speed *= 0.35
+                else:
+                    self._car_speed *= 0.97
+                if abs(self._car_speed) < 0.08:
+                    self._car_speed = 0.0
+
+        # Leaving pavement at speed: re-check once after the move.
+        if not self._on_road():
+            fwd = self._MAX_SPEED * self._OFF_ROAD_SPEED
+            rev = self._MAX_REVERSE * self._OFF_ROAD_SPEED
+            self._car_speed = max(-rev, min(fwd, self._car_speed))
+        self._place()
+        reversing = self._car_speed < -0.05
+        # S while moving forward / stopped = brake lamps; reverse uses tails too.
+        braking = bool(brake) and not reversing
+        self._refresh_lamps(braking=braking, reversing=reversing)
+
+    def _refresh_lamps(self, *, braking: bool, reversing: bool) -> None:
+        night = bool(getattr(self.app, "_vehicle_lights_on", False))
+        key = (night, braking, reversing)
+        if self._car_lamp_applied == key:
+            return
+        self._car_lamp_applied = key
+        _apply_drive_lamps(
+            self._car_headlights,
+            self._car_taillights,
+            night=night,
+            braking=braking,
+            reversing=reversing,
+        )

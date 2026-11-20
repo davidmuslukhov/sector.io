@@ -18,7 +18,6 @@ _MARK_MATERIAL: Material | None = None
 _CENTERLINE_MATERIAL: Material | None = None
 _FOLIAGE_MATERIAL: Material | None = None
 _BARK_MATERIAL: Material | None = None
-_LAMP_MATERIALS: dict[str, Material] = {}
 _SQUARE_MATERIALS: dict[float, Material] = {}
 _BROWN_MATERIALS: dict[float, Material] = {}
 _SIGNAL_MATERIALS: dict[str, Material] = {}
@@ -56,14 +55,15 @@ def concrete_material(lightness: float = 1.0) -> Material:
     cached = _CONCRETE_MATERIALS.get(lightness)
     if cached is not None:
         return cached
-    ambient = tuple(channel * lightness for channel in (0.28, 0.27, 0.25))
-    diffuse = tuple(channel * lightness for channel in (0.6, 0.58, 0.54))
-    specular = tuple(channel * lightness for channel in (0.16, 0.16, 0.15))
+    # Slightly brighter so thin walls still read as solid under side lighting.
+    ambient = tuple(channel * lightness for channel in (0.34, 0.33, 0.31))
+    diffuse = tuple(channel * lightness for channel in (0.72, 0.7, 0.66))
+    specular = tuple(channel * lightness for channel in (0.12, 0.12, 0.11))
     material = Material()
     material.setAmbient((*ambient, 1))
     material.setDiffuse((*diffuse, 1))
     material.setSpecular((*specular, 1))
-    material.setShininess(8)
+    material.setShininess(6)
     _CONCRETE_MATERIALS[lightness] = material
     return material
 
@@ -153,27 +153,6 @@ def bark_material() -> Material:
         material.setShininess(4)
         _BARK_MATERIAL = material
     return _BARK_MATERIAL
-
-
-def lamp_material(name: str) -> Material:
-    """Street-lamp pole metal or warm glowing head."""
-    cached = _LAMP_MATERIALS.get(name)
-    if cached is not None:
-        return cached
-    material = Material()
-    if name == "head":
-        material.setAmbient((0.45, 0.4, 0.28, 1))
-        material.setDiffuse((0.95, 0.88, 0.65, 1))
-        material.setSpecular((0.5, 0.45, 0.3, 1))
-        material.setShininess(32)
-        material.setEmission((0.55, 0.48, 0.28, 1))
-    else:
-        material.setAmbient((0.08, 0.08, 0.09, 1))
-        material.setDiffuse((0.18, 0.18, 0.2, 1))
-        material.setSpecular((0.25, 0.25, 0.28, 1))
-        material.setShininess(20)
-    _LAMP_MATERIALS[name] = material
-    return material
 
 
 def sidewalk_material() -> Material:

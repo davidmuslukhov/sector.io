@@ -33,7 +33,6 @@ from city.mesh import (
     box_instance,
     chamfer_box_instance,
     factory_template,
-    lamp_template,
     make_annulus_sector,
     make_gable_roof,
     make_pyramid,
@@ -531,10 +530,13 @@ class SceneBuilders:
         block_size: tuple[float, float, float],
     ) -> None:
         """Mast post with a wider base flange up to traffic-light height."""
-        floor = block_size[2]
+        floor = block_size[2] * 0.45  # ~45% of original fixture size; height fixed
         rod_thin = floor * 0.06
-        rod_z = road_top + 8.0
-        post_h = rod_z - road_top
+        arm_thick = floor * 0.1
+        # Top of post seats into the crossbar so the joint has no visible gap.
+        rod_z = road_top + 5.0
+        post_top = rod_z + arm_thick / 2
+        post_h = post_top - road_top
         trim = signal_material("trim")
         housing = signal_material("housing")
         base_h = floor * 0.2
@@ -557,9 +559,9 @@ class SceneBuilders:
         face_x: float,
         face_y: float,
     ) -> None:
-        """Signal hung under a mast arm: backboard, yellow head, visored lenses."""
-        floor = block_size[2]
-        rod_z = road_top + 8.0
+        """Crossbar between curb posts at (x0,y0) and (x1,y1); head hangs from it."""
+        floor = block_size[2] * 0.45  # ~45% of original head/arm size; height fixed
+        rod_z = road_top + 5.0
         box_w = floor * 0.42
         box_d = floor * 0.22
         box_h = floor * 1.35
@@ -567,26 +569,33 @@ class SceneBuilders:
         lamp_depth = floor * 0.05
         gap = floor * 0.08
         rod_thin = floor * 0.06
+        # Arm is a bit deeper than the post so the joint reads as attached.
+        arm_thick = floor * 0.1
         housing = signal_material("housing")
         trim = signal_material("trim")
 
         along_x = abs(x1 - x0) >= abs(y1 - y0)
         # Mast along X faces N/S traffic; mast along Y faces E/W.
         axis = "ns" if along_x else "ew"
-        rod_len = abs(x1 - x0) if along_x else abs(y1 - y0)
+        # Overlap each post so the bar clearly seats on both poles.
+        overlap = rod_thin * 1.5
+        rod_len = (abs(x1 - x0) if along_x else abs(y1 - y0)) + 2.0 * overlap
         mid_x = (x0 + x1) / 2
         mid_y = (y0 + y1) / 2
         if along_x:
-            rod = box_instance(self.city, rod_len, rod_thin, rod_thin)
+            rod = box_instance(self.city, rod_len, arm_thick, arm_thick)
         else:
-            rod = box_instance(self.city, rod_thin, rod_len, rod_thin)
+            rod = box_instance(self.city, arm_thick, rod_len, arm_thick)
         rod.setPos(mid_x, mid_y, rod_z)
         rod.setMaterial(housing, 1)
 
-        # Hang from the underside of the mast arm, facing the intersection.
+        # Hang over the right-hand lanes (near the far post on a span).
+        tip_t = 0.72
+        hang_x = x0 + (x1 - x0) * tip_t
+        hang_y = y0 + (y1 - y0) * tip_t
         hang = floor * 0.2
         root = self.city.attachNewNode("traffic-light")
-        root.setPos(mid_x, mid_y, rod_z - rod_thin / 2 - hang - box_h / 2)
+        root.setPos(hang_x, hang_y, rod_z - arm_thick / 2 - hang - box_h / 2)
         root.lookAt(face_x, face_y, root.getZ())
 
         # Short drop pipe from the arm into the head.
@@ -810,18 +819,6 @@ class SceneBuilders:
                     tree.setPos(hx + 1.6, hy + 1.1, road_z + 0.05)
                     tree.setH((crow * 37 + ccol * 19) % 360)
                     tree.setScale(0.85 + 0.12 * ((crow + ccol) % 3))
-        # Street lamps along the lot edges, spaced to avoid a forest of poles.
-        lamp_z = road_z + 0.05
-        if southern_road:
-            for t in (0.25, 0.75):
-                lamp = lamp_template().copyTo(self.city)
-                lamp.setPos(west + (east - west) * t, south - 0.35, lamp_z)
-                lamp.setH(90.0)
-        if northern_road:
-            for t in (0.25, 0.75):
-                lamp = lamp_template().copyTo(self.city)
-                lamp.setPos(west + (east - west) * t, north + 0.35, lamp_z)
-                lamp.setH(-90.0)
 
     def _add_house(
         self,
