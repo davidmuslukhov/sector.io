@@ -48,15 +48,42 @@ from city.signals import TrafficLightController
 # Readable names for arterial YAML keys (world-space map labels).
 HIGHWAY_LABELS = {
     "hwy17": "Hwy 17",
+    "hwy17a": "Hwy 17A",
     "hwy1": "Hwy 1",
     "fraser": "Fraser Hwy",
     "hwy15": "Hwy 15",
     "hwy10": "88 Ave",
     "hwy99": "Hwy 99",
+    "hwy91": "Hwy 91",
     "hwy8": "Hwy 10",
+    "ladner_trunk": "Ladner Trunk Road",
+    "no_2_rd": "No. 2 Rd",
+    "no_3_rd": "No. 3 Rd",
+    "no_4_rd": "No. 4 Rd",
+    "steveston_hwy": "Steveston Hwy",
+    "williams_rd": "Williams Rd",
+    "francis_rd": "Francis Rd",
+    "blundell_rd": "Blundell Rd",
+    "bridgeport_rd": "Bridgeport Rd",
+    "no_1_rd": "No. 1 Rd",
+    "westminster_hwy": "Westminster Hwy",
+    "oak_st": "Oak St",
+    "granville_st": "Granville St",
+    "cambie_st": "Cambie St",
+    "main_st": "Main St",
+    "knight_st": "Knight St",
+    "boundary_rd": "Boundary Rd",
+    "sw_marine": "SW Marine Drive",
+    "ave_49": "49th Ave",
+    "ave_41": "41st Ave",
+    "king_edward": "King Edward Blvd",
+    "broadway": "Broadway",
+    "hastings_st": "Hastings St",
+    "kingsway": "Kingsway",
     "king_george": "King George Blvd",
     "scott_120": "120 St",
     "st_120_s": "120 St",
+    "st_56": "56 St",
     "ave_72": "72 Ave",
     "ave_96": "96 Ave",
     "ave_102": "102 Ave",
@@ -67,6 +94,7 @@ HIGHWAY_LABELS = {
     "ave_28": "28 Ave",
     "ave_16": "16 Ave",
     "ave_0": "0 Ave",
+    "ave_0_delta": "0 Ave",
     "whalley_blvd": "Whalley Blvd",
     "university_dr": "University Dr",
     "marine_dr": "Marine Dr",
@@ -87,10 +115,12 @@ HIGHWAY_LABELS = {
 SIDE_BORDER_ROUTES = frozenset(
     {
         "hwy17",
+        "hwy17a",
         "hwy1",
         "fraser",
         "hwy15",
         "hwy99",
+        "hwy91",
         "hwy8",
         "hwy10",
         "king_george",
@@ -116,6 +146,16 @@ _LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
     ("cloverdale", "Cloverdale", "Surrey"),
     ("south_surrey", "South Surrey", "Surrey"),
     ("north_delta", "North Delta", "Delta"),
+    ("ladner", "Ladner", "Delta"),
+    ("tsawwassen", "Tsawwassen", "Delta"),
+    ("bridgeport", "Bridgeport", "Richmond"),
+    ("seaforth", "Seaforth", "Richmond"),
+    ("steveston", "Steveston", "Richmond"),
+    ("brighouse", "Brighouse", "Richmond"),
+    ("cambie", "Cambie", "Richmond"),
+    ("broadmoor", "Broadmoor", "Richmond"),
+    ("east_richmond", "East Richmond", "Richmond"),
+    ("vancouver", "Vancouver", "Vancouver"),
     ("port_kells", "Port Kells", "Langley"),
     ("walnut_grove", "Walnut Grove", "Langley"),
     ("fort_langley", "Fort Langley", "Langley"),
@@ -375,20 +415,129 @@ class CityApp(ShowBase):
             },
             "north_delta": {
                 "title": "North Delta",
-                # West of 120 St to the river side of Hwy 17 (both flanks), Hwy 99 south curb.
+                # West of 120 St to Hwy 17 (Hwy 10 / Hwy 99 junction), Hwy 99 south curb.
                 "ring": (
                     (14.0, 175.0),
                     (-90.0, 175.0),
                     (-101.8, 122.4),
                     (-116.8, 42.1),
                     (-131.9, -48.6),
-                    (-142.0, -167.5),
+                    (-190.0, -50.0),
+                    (-190.0, -167.5),
                     (26.0, -167.5),
                     (24.0, -70.0),
                     (22.0, -20.0),
                     (20.0, 30.0),
                     (18.0, 78.0),
                     (16.0, 120.0),
+                ),
+                "bright": None,
+            },
+            "ladner": {
+                "title": "Ladner",
+                # Hwy 99 → Ladner Trunk → Hwy 17 west arm → back.
+                "ring": (
+                    (-520.0, -160.0),
+                    (-350.0, -160.0),
+                    (-270.0, -160.0),
+                    (-190.0, -160.0),
+                    (-190.0, -190.0),
+                    (-220.0, -260.0),
+                    (-270.0, -310.0),
+                    (-350.0, -320.0),
+                    (-520.0, -320.0),
+                ),
+                "bright": None,
+            },
+            "tsawwassen": {
+                "title": "Tsawwassen",
+                # South of Hwy 17 → 56 St / 17A → 0 Ave (south curb, both lanes).
+                "ring": (
+                    (-520.0, -320.0),
+                    (-350.0, -320.0),
+                    (-270.0, -310.0),
+                    (-260.0, -482.0),
+                    (-420.0, -482.0),
+                ),
+                "bright": None,
+            },
+            "bridgeport": {
+                "title": "Bridgeport",
+                # Purple: north of Bridgeport Rd (YVR not included); Hwy 99 leaves
+                # at Bridgeport toward Granville and is not part of this ring.
+                "ring": (
+                    (-1050.0, 550.0),
+                    (-620.0, 550.0),
+                    (-620.0, 700.0),
+                    (-1050.0, 700.0),
+                ),
+                "bright": None,
+            },
+            "seaforth": {
+                "title": "Seaforth",
+                # Green: No. 1 → No. 2, Bridgeport → Francis.
+                "ring": (
+                    (-915.0, 550.0),
+                    (-817.0, 550.0),
+                    (-817.0, 215.0),
+                    (-915.0, 215.0),
+                ),
+                "bright": None,
+            },
+            "steveston": {
+                "title": "Steveston",
+                # Blue: No. 1 → No. 2, Francis → Steveston Hwy.
+                "ring": (
+                    (-915.0, 215.0),
+                    (-817.0, 215.0),
+                    (-817.0, 75.0),
+                    (-915.0, 75.0),
+                ),
+                "bright": None,
+            },
+            "brighouse": {
+                "title": "Brighouse",
+                # Red: No. 2 → No. 3, Bridgeport → Francis.
+                "ring": (
+                    (-817.0, 550.0),
+                    (-718.0, 550.0),
+                    (-718.0, 215.0),
+                    (-817.0, 215.0),
+                ),
+                "bright": None,
+            },
+            "cambie": {
+                "title": "Cambie",
+                # Orange: No. 3 → Hwy 99, Bridgeport → Francis (covers Blundell strip).
+                "ring": (
+                    (-718.0, 550.0),
+                    (-620.0, 550.0),
+                    (-620.0, 215.0),
+                    (-718.0, 215.0),
+                ),
+                "bright": None,
+            },
+            "broadmoor": {
+                "title": "Broadmoor",
+                # Brown: No. 2 → Hwy 99, Francis → Steveston Hwy.
+                "ring": (
+                    (-817.0, 215.0),
+                    (-620.0, 215.0),
+                    (-620.0, 75.0),
+                    (-817.0, 75.0),
+                ),
+                "bright": None,
+            },
+            "east_richmond": {
+                "title": "East Richmond",
+                # Yellow: Hwy 99 → No. 4, Bridgeport → Steveston Hwy.
+                "ring": (
+                    (-620.0, 550.0),
+                    (-522.0, 550.0),
+                    (-480.0, 550.0),
+                    (-480.0, 75.0),
+                    (-522.0, 75.0),
+                    (-620.0, 75.0),
                 ),
                 "bright": None,
             },
@@ -662,6 +811,70 @@ class CityApp(ShowBase):
                     (610.0, -18.0),
                     (610.0, 78.0),
                     (610.0, 212.5),
+                ),
+                "bright": None,
+                "hotkey_only": True,
+            },
+            "delta": {
+                "title": "Delta",
+                # Outer outline of North Delta + Ladner + Tsawwassen.
+                "ring": (
+                    (14.0, 175.0),
+                    (-90.0, 175.0),
+                    (-101.8, 122.4),
+                    (-116.8, 42.1),
+                    (-131.9, -48.6),
+                    (-190.0, -50.0),
+                    (-620.0, 75.0),
+                    (-560.0, -40.0),
+                    (-480.0, -100.0),
+                    (-400.0, -140.0),
+                    (-350.0, -160.0),
+                    (-520.0, -160.0),
+                    (-520.0, -320.0),
+                    (-420.0, -482.0),
+                    (-260.0, -482.0),
+                    (-270.0, -310.0),
+                    (-220.0, -260.0),
+                    (-190.0, -190.0),
+                    (-190.0, -167.5),
+                    (26.0, -167.5),
+                    (24.0, -70.0),
+                    (22.0, -20.0),
+                    (20.0, 30.0),
+                    (18.0, 78.0),
+                    (16.0, 120.0),
+                ),
+                "bright": None,
+                "hotkey_only": True,
+            },
+            "richmond": {
+                "title": "Richmond",
+                # Outer outline of Bridgeport + Seaforth + Steveston + Brighouse +
+                # Cambie + Broadmoor + East Richmond. Sea Island / YVR excluded.
+                # Hwy 99 bridge to Granville leaves at Bridgeport (not in ring).
+                "ring": (
+                    (-915.0, 75.0),
+                    (-480.0, 75.0),
+                    (-480.0, 550.0),
+                    (-620.0, 550.0),
+                    (-620.0, 700.0),
+                    (-1050.0, 700.0),
+                    (-1050.0, 550.0),
+                    (-915.0, 550.0),
+                ),
+                "bright": None,
+                "hotkey_only": True,
+            },
+            "vancouver": {
+                "title": "Vancouver",
+                # City proper: SW Marine → Boundary → Burrard waterfront → west tip.
+                # UBC / Endowment Lands excluded (west of x=-920).
+                "ring": (
+                    (-920.0, 820.0),
+                    (-120.0, 820.0),
+                    (-120.0, 1280.0),
+                    (-920.0, 1280.0),
                 ),
                 "bright": None,
                 "hotkey_only": True,
@@ -1252,6 +1465,7 @@ class CityApp(ShowBase):
         self._hud_place_text = ""
         self._hud_street_text = ""
         self._hud_speed_text = ""
+        self._hud_compass_text = ""
         # World units ≈ metres; 3.6 → km/h for the car-mode speedometer.
         self._speed_to_kmh = 3.6
         self._hud_place = OnscreenText(
@@ -1272,6 +1486,17 @@ class CityApp(ShowBase):
             fg=(0.96, 0.97, 0.99, 1),
             shadow=(0.0, 0.0, 0.0, 0.7),
             align=TextNode.ACenter,
+            mayChange=True,
+        )
+        # C mode: cardinal above the speedometer (world Y = north).
+        self._hud_compass = OnscreenText(
+            text="",
+            parent=self.a2dBottomRight,
+            pos=(-0.06, 0.28),
+            scale=0.07,
+            fg=(0.96, 0.97, 0.99, 1),
+            shadow=(0.0, 0.0, 0.0, 0.75),
+            align=TextNode.ARight,
             mayChange=True,
         )
         self._hud_speed = OnscreenText(
@@ -1296,6 +1521,7 @@ class CityApp(ShowBase):
         )
         self._hud_place.hide()
         self._hud_street.hide()
+        self._hud_compass.hide()
         self._hud_speed.hide()
         self._hud_speed_unit.hide()
         # Clock: top-centre on the map, bottom-left in C (drive) mode.
@@ -1319,6 +1545,9 @@ class CityApp(ShowBase):
         self.accept("backspace", self._clear_district_selection)
         self.accept("s", self._select_surrey)
         self.accept("l", self._select_district_of_langley)
+        self.accept("e", self._select_delta)
+        self.accept("r", self._select_richmond)
+        self.accept("v", self._select_vancouver)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
         self.accept("mouse1", self._start_drag)
@@ -1478,10 +1707,12 @@ class CityApp(ShowBase):
         self._hud_place_text = ""
         self._hud_street_text = ""
         self._hud_speed_text = ""
+        self._hud_compass_text = ""
         # World-space arterial titles clutter the chase cam; HUD keeps the name.
         self._highway_labels.hide()
         self._hud_place.show()
         self._hud_street.show()
+        self._hud_compass.show()
         self._hud_speed.show()
         self._hud_speed_unit.show()
         self._layout_clock_hud()
@@ -1494,10 +1725,12 @@ class CityApp(ShowBase):
         self._highway_labels.show()
         self._hud_place.hide()
         self._hud_street.hide()
+        self._hud_compass.hide()
         self._hud_speed.hide()
         self._hud_speed_unit.hide()
         self._hud_place.setText("")
         self._hud_street.setText("")
+        self._hud_compass.setText("")
         self._hud_speed.setText("")
         self._layout_clock_hud()
         self.look_at = list(self._map_look_at)
@@ -1603,6 +1836,13 @@ class CityApp(ShowBase):
                 best_name = name
         return best_name or "Off road"
 
+    @staticmethod
+    def _compass_from_heading(heading_deg: float) -> str:
+        """Cardinal label from car yaw (0° = +X east, 90° = +Y north)."""
+        bearing = (90.0 - heading_deg) % 360.0
+        dirs = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+        return dirs[int((bearing + 22.5) // 45.0) % 8]
+
     def _refresh_speedometer(self, *, force: bool = False) -> None:
         if self._player_car is None:
             return
@@ -1611,6 +1851,14 @@ class CityApp(ShowBase):
         if force or text != self._hud_speed_text:
             self._hud_speed_text = text
             self._hud_speed.setText(text)
+
+    def _refresh_compass(self, *, force: bool = False) -> None:
+        if self._player_car is None:
+            return
+        text = self._compass_from_heading(self._player_car._car_heading)
+        if force or text != self._hud_compass_text:
+            self._hud_compass_text = text
+            self._hud_compass.setText(text)
 
     def _refresh_car_hud(self, *, force: bool = False) -> None:
         if self._player_car is None:
@@ -1624,16 +1872,18 @@ class CityApp(ShowBase):
         if force or street != self._hud_street_text:
             self._hud_street_text = street
             self._hud_street.setText(street)
+        self._refresh_compass(force=force)
         self._refresh_speedometer(force=force)
 
     def _car_hud_task(self, task):
         if not self._car_mode:
             return task.cont
-        # Speed updates snappier; place/street can lag a bit.
+        # Speed / compass update snappier; place/street can lag a bit.
         speed_slot = int(task.time * 12.0)
         if speed_slot != getattr(self, "_hud_speed_slot", -1):
             self._hud_speed_slot = speed_slot
             self._refresh_speedometer()
+            self._refresh_compass()
         slot = int(task.time * 4.0)
         if slot == getattr(self, "_hud_slot", -1):
             return task.cont
@@ -1861,6 +2111,24 @@ class CityApp(ShowBase):
         if self._car_mode:
             return
         self._select_district("district_of_langley")
+
+    def _select_delta(self) -> None:
+        """E: outline Delta (disabled in C / car mode)."""
+        if self._car_mode:
+            return
+        self._select_district("delta")
+
+    def _select_richmond(self) -> None:
+        """R: outline Richmond / Lulu Island, no YVR (disabled in C / car mode)."""
+        if self._car_mode:
+            return
+        self._select_district("richmond")
+
+    def _select_vancouver(self) -> None:
+        """V: outline Vancouver city proper, no UEL (disabled in C / car mode)."""
+        if self._car_mode:
+            return
+        self._select_district("vancouver")
 
     def _try_select_district(self) -> None:
         if self._car_mode:

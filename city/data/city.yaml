@@ -1,7 +1,9 @@
-# Surrey / Langley, BC — arterial highways + local residential street fabric.
+# Surrey / Langley / Delta / Richmond / Vancouver, BC — arterial highways + local streets.
 # World XY: X=east, Y=north. Schematic but oriented like the real map.
-# Provincial: Hwy 1, 10, 15, 17, 99. Major arterials: Fraser Hwy, 88 Ave,
+# Provincial: Hwy 1, 10, 15, 17, 17A, 91, 99. Major arterials: Fraser Hwy, 88 Ave,
 # King George Blvd, Scott Rd / 120 St. Surrey–Langley border is 196 St.
+# Richmond is Lulu Island only (Sea Island / YVR excluded).
+# Vancouver is city proper north of the North Arm (UBC / Endowment Lands excluded).
 
 lot:
   block_size: [5.0, 5.0, 2.0]
@@ -23,9 +25,16 @@ highway:
 
 # Control polylines [x, y]. Catmull-Rom smoothing turns these into continuous curves.
 highways:
-  # South Fraser Perimeter Rd — river bend (SW→N→E), T into Hwy 15.
+  # Hwy 17 — west approach across 56 St / 17A, curve north at Ladner Trunk
+  # east end / Hwy 99, then Hwy 10 → SFPR east.
   hwy17:
-    - [-130, -180]
+    - [-520, -320]
+    - [-420, -320]
+    - [-350, -320]
+    - [-270, -310]
+    - [-220, -260]
+    - [-190, -190]
+    - [-190, -50]
     - [-120, -50]
     - [-105, 40]
     - [-90, 120]
@@ -111,9 +120,30 @@ highways:
     - [1122, 78]
     - [1250, 78]
 
-  # Hwy 99 — W–E, then SE; crosses King George at a shallow acute angle (both continue).
+  # Hwy 99 — Granville @ SW Marine → Bridgeport stem (x≈-620) → Massey → Delta.
+  # Richmond shifted −200x / −50y. No.1–4 / Hwy 99: -915 / -817 / -718 / -620 / -522.
+  # E–W: Steveston 75 → … → Hwy 91 425 → Bridgeport 550.
+  # North tip curves NW from Bridgeport into Granville (not Oak).
   hwy99:
-    - [-185, -160]
+    - [-720, 820]
+    - [-710, 760]
+    - [-690, 710]
+    - [-660, 650]
+    - [-635, 590]
+    - [-620, 550]
+    - [-620, 425]
+    - [-620, 355]
+    - [-620, 285]
+    - [-620, 215]
+    - [-620, 145]
+    - [-620, 75]
+    # Massey curve leaves Richmond at Steveston Hwy — no Richmond roads south of y=75.
+    - [-560, -40]
+    - [-480, -100]
+    - [-400, -140]
+    - [-350, -160]
+    - [-270, -160]
+    - [-190, -160]
     - [-130, -160]
     - [-40, -160]
     - [40, -160]
@@ -125,8 +155,283 @@ highways:
     - [430, -395]
     - [517, -477]
 
-  # Hwy 10 — continuous west→east through King George to a T at Hwy 15.
+  # Hwy 91 — E–W from Hwy 99 east across No. 4 / East Richmond.
+  hwy91:
+    - [-620, 425]
+    - [-522, 425]
+    - [-420, 425]
+    - [-320, 425]
+
+  # Bridgeport Rd — E–W at y=550 across No. 1–3 to Hwy 99 (west over water).
+  bridgeport_rd:
+    lanes: 4
+    points:
+      - [-1050, 550]
+      - [-915, 550]
+      - [-817, 550]
+      - [-718, 550]
+      - [-620, 550]
+
+  # No. 2 Rd — x=-817 (Bridgeport → Steveston Hwy).
+  no_2_rd:
+    lanes: 4
+    points:
+      - [-817, 550]
+      - [-817, 425]
+      - [-817, 355]
+      - [-817, 285]
+      - [-817, 215]
+      - [-817, 145]
+      - [-817, 75]
+
+  # No. 3 Rd — x=-718 (Bridgeport → Steveston Hwy).
+  no_3_rd:
+    lanes: 4
+    points:
+      - [-718, 550]
+      - [-718, 425]
+      - [-718, 355]
+      - [-718, 285]
+      - [-718, 215]
+      - [-718, 145]
+      - [-718, 75]
+
+  # No. 4 Rd — x=-522 (Bridgeport → Steveston Hwy).
+  no_4_rd:
+    lanes: 4
+    points:
+      - [-522, 550]
+      - [-522, 425]
+      - [-522, 355]
+      - [-522, 285]
+      - [-522, 215]
+      - [-522, 145]
+      - [-522, 75]
+
+  # Steveston Hwy — E–W at y=75 across No. 1–4.
+  steveston_hwy:
+    lanes: 4
+    points:
+      - [-925, 75]
+      - [-915, 75]
+      - [-817, 75]
+      - [-718, 75]
+      - [-620, 75]
+      - [-522, 75]
+
+  # --- Vancouver (north of Richmond / North Arm; UEL excluded) ---
+  # Oak St — SW Marine north only (Hwy 99 joins Granville, not Oak).
+  # N–S: Granville −720 / Oak −620 / Cambie −520 / Main −420 / Knight −270 /
+  #       Boundary −120.
+  # E–W: SW Marine 820 / 49th 890 / 41st 960 / King Edward 1030 / Broadway 1100 /
+  #       Hastings 1240; N–S tips at y=1280. Kingsway: Main@Broadway → Boundary@41st.
+  oak_st:
+    lanes: 4
+    points:
+      - [-620, 820]
+      - [-620, 890]
+      - [-620, 960]
+      - [-620, 1030]
+      - [-620, 1100]
+      - [-620, 1240]
+      - [-620, 1280]
+
+  # Granville St — Hwy 99 @ SW Marine north to Burrard waterfront.
+  granville_st:
+    lanes: 4
+    points:
+      - [-720, 820]
+      - [-720, 890]
+      - [-720, 960]
+      - [-720, 1030]
+      - [-720, 1100]
+      - [-720, 1240]
+      - [-720, 1280]
+
+  # Cambie St — SW Marine north to Burrard waterfront.
+  cambie_st:
+    lanes: 4
+    points:
+      - [-520, 820]
+      - [-520, 890]
+      - [-520, 960]
+      - [-520, 1030]
+      - [-520, 1100]
+      - [-520, 1240]
+      - [-520, 1280]
+
+  # Main St — SW Marine north to Burrard waterfront.
+  main_st:
+    lanes: 4
+    points:
+      - [-420, 820]
+      - [-420, 890]
+      - [-420, 960]
+      - [-420, 1030]
+      - [-420, 1100]
+      - [-420, 1240]
+      - [-420, 1280]
+
+  # Knight St — between Main and Boundary, SW Marine to waterfront.
+  knight_st:
+    lanes: 4
+    points:
+      - [-270, 820]
+      - [-270, 890]
+      - [-270, 960]
+      - [-270, 1030]
+      - [-270, 1100]
+      - [-270, 1240]
+      - [-270, 1280]
+
+  # Boundary Rd — Vancouver–Burnaby east edge.
+  boundary_rd:
+    lanes: 4
+    points:
+      - [-120, 820]
+      - [-120, 890]
+      - [-120, 960]
+      - [-120, 1030]
+      - [-120, 1100]
+      - [-120, 1240]
+      - [-120, 1280]
+
+  # SW Marine Drive — Vancouver south edge (North Arm), west tip to Boundary.
+  sw_marine:
+    lanes: 4
+    points:
+      - [-920, 820]
+      - [-720, 820]
+      - [-620, 820]
+      - [-520, 820]
+      - [-420, 820]
+      - [-270, 820]
+      - [-120, 820]
+
+  # 49th Ave — E–W between SW Marine and 41st.
+  ave_49:
+    lanes: 4
+    points:
+      - [-920, 890]
+      - [-720, 890]
+      - [-620, 890]
+      - [-520, 890]
+      - [-420, 890]
+      - [-270, 890]
+      - [-120, 890]
+
+  # 41st Ave — E–W across Vancouver.
+  ave_41:
+    lanes: 4
+    points:
+      - [-920, 960]
+      - [-720, 960]
+      - [-620, 960]
+      - [-520, 960]
+      - [-420, 960]
+      - [-270, 960]
+      - [-120, 960]
+
+  # King Edward Blvd — E–W between 41st and Broadway.
+  king_edward:
+    lanes: 4
+    points:
+      - [-920, 1030]
+      - [-720, 1030]
+      - [-620, 1030]
+      - [-520, 1030]
+      - [-420, 1030]
+      - [-270, 1030]
+      - [-120, 1030]
+
+  # Broadway — E–W across Vancouver.
+  broadway:
+    lanes: 4
+    points:
+      - [-920, 1100]
+      - [-720, 1100]
+      - [-620, 1100]
+      - [-520, 1100]
+      - [-420, 1100]
+      - [-270, 1100]
+      - [-120, 1100]
+
+  # Hastings St — E–W near the north waterfront.
+  hastings_st:
+    lanes: 4
+    points:
+      - [-920, 1240]
+      - [-720, 1240]
+      - [-620, 1240]
+      - [-520, 1240]
+      - [-420, 1240]
+      - [-270, 1240]
+      - [-120, 1240]
+
+  # Kingsway — SE from Main @ Broadway to Boundary @ 41st (crosses Knight).
+  kingsway:
+    lanes: 4
+    points:
+      - [-420, 1100]
+      - [-270, 1030]
+      - [-120, 960]
+
+  # Williams Rd — E–W at y=145.
+  williams_rd:
+    lanes: 4
+    points:
+      - [-915, 145]
+      - [-817, 145]
+      - [-718, 145]
+      - [-620, 145]
+      - [-522, 145]
+
+  # Francis Rd — E–W at y=215.
+  francis_rd:
+    lanes: 4
+    points:
+      - [-915, 215]
+      - [-817, 215]
+      - [-718, 215]
+      - [-620, 215]
+      - [-522, 215]
+
+  # Blundell Rd — E–W at y=285.
+  blundell_rd:
+    lanes: 4
+    points:
+      - [-915, 285]
+      - [-817, 285]
+      - [-718, 285]
+      - [-620, 285]
+      - [-522, 285]
+
+  # No. 1 Rd — x=-915 (Bridgeport → Steveston Hwy).
+  no_1_rd:
+    lanes: 4
+    points:
+      - [-915, 550]
+      - [-915, 425]
+      - [-915, 355]
+      - [-915, 285]
+      - [-915, 215]
+      - [-915, 145]
+      - [-915, 75]
+
+  # Westminster Hwy — E–W at y=355 across No. 1–4.
+  westminster_hwy:
+    lanes: 4
+    points:
+      - [-915, 355]
+      - [-817, 355]
+      - [-718, 355]
+      - [-620, 355]
+      - [-522, 355]
+      - [-480, 360]
+
+  # Hwy 10 — meets Hwy 17, then east to Hwy 15.
   hwy8:
+    - [-190, -50]
     - [-120, -50]
     - [20, -50]
     - [90, -50]
@@ -136,6 +441,29 @@ highways:
     - [285, -35]
     - [380, -35]
     - [480, -35]
+
+  # Ladner Trunk Road — west of 56 St east to Hwy 17 (30 units south of Hwy 99).
+  ladner_trunk:
+    lanes: 4
+    points:
+      - [-480, -190]
+      - [-420, -190]
+      - [-350, -190]
+      - [-270, -190]
+      - [-190, -190]
+
+  # Hwy 17A — Hwy 99 south to Hwy 17 (4 lanes).
+  hwy17a:
+    - [-270, -160]
+    - [-270, -310]
+
+  # 56 St — west of Hwy 17A, Ladner Trunk south to 0 Ave (4 lanes).
+  st_56:
+    lanes: 4
+    points:
+      - [-350, -190]
+      - [-350, -320]
+      - [-350, -477]
 
   # King George — N–S then SE; crosses Hwy 99 (~27°), continues south parallel to Hwy 99; T at 0 Ave.
   king_george:
@@ -385,6 +713,16 @@ highways:
       - [1250, -400]
 
   # 0 Ave — from Marine Dr join east; T-junctions with 152 St, King George, Hwy 99 (4 lanes).
+  # 0 Ave (Delta) — west tip to 10 units east of Hwy 17A; not joined to Surrey.
+  ave_0_delta:
+    lanes: 4
+    points:
+      - [-420, -477]
+      - [-350, -477]
+      - [-270, -477]
+      - [-260, -477]
+
+  # 0 Ave — Surrey / Langley only (gap west of Marine Dr / 120 St).
   ave_0:
     lanes: 4
     points:
