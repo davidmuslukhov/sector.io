@@ -221,67 +221,120 @@ highways:
 
   # --- Vancouver (north of Richmond / North Arm; UEL excluded) ---
   # Oak St — SW Marine north only (Hwy 99 joins Granville, not Oak).
-  # N–S: Granville −720 / Oak −620 / Cambie −520 / Main −420 / Knight −270 /
-  #       Boundary −120.
-  # E–W: SW Marine 820 / 49th 890 / 41st 960 / King Edward 1030 / Broadway 1100 /
-  #       Hastings 1240; N–S tips at y=1280. Kingsway: Main@Broadway → Boundary@41st.
+  # South of Broadway: cardinal N–S / E–W.
+  #   N–S: Burrard −820 / Granville −770 / Main −720 / Oak −620 / Cambie −520 /
+  #         Fraser −420 / Knight −270 / Boundary −120.
+  #   E–W: SW Marine 820 / 49th 890 / 41st 960 / King Edward 1030 / Broadway 1100.
+  # Downtown (sketch): Burrard + Granville + Main + Cambie bend NE off the grid;
+  # Georgia + Davie are NW–SE diagonals (Davie ends at Granville); Hastings is
+  # E–W across the top (y=1230). Kingsway: Main → Boundary (purple SE wave).
   oak_st:
     lanes: 4
     points:
       - [-620, 820]
       - [-620, 890]
       - [-620, 960]
+      - [-620, 1004]
       - [-620, 1030]
       - [-620, 1100]
-      - [-620, 1240]
-      - [-620, 1280]
+      # Oak does not enter the downtown angled grid.
+      - [-620, 1140]
 
-  # Granville St — Hwy 99 @ SW Marine north to Burrard waterfront.
+  # Burrard St — same NE-bend family; shaft at −820 (west of Granville).
+  # Cardinal to Broadway, then curves NE and tips on Hastings.
+  burrard_st:
+    lanes: 4
+    points:
+      - [-820, 820]
+      - [-820, 890]
+      - [-820, 960]
+      - [-820, 1030]
+      - [-820, 1100]
+      - [-820, 1120]
+      - [-810, 1145]
+      - [-800, 1160]
+      - [-790, 1180]
+      - [-782, 1195]
+      - [-766, 1210]
+      - [-750, 1230]
+
+  # Granville St — between Burrard (−820) and Main (−720); same NE bend.
   granville_st:
+    lanes: 4
+    points:
+      - [-770, 820]
+      - [-770, 890]
+      - [-770, 960]
+      - [-770, 1030]
+      - [-770, 1100]
+      - [-770, 1120]
+      - [-760, 1145]
+      - [-748, 1165]
+      - [-732, 1185]
+      - [-715, 1205]
+      - [-700, 1230]
+
+  # Main St — cardinal to Broadway, then curves NE across the downtown
+  # diagonals and tips on Hastings (east of Granville).
+  main_st:
     lanes: 4
     points:
       - [-720, 820]
       - [-720, 890]
       - [-720, 960]
       - [-720, 1030]
+      - [-720, 1059]
       - [-720, 1100]
-      - [-720, 1240]
-      - [-720, 1280]
+      - [-720, 1120]
+      - [-710, 1145]
+      - [-698, 1152]
+      - [-682, 1175]
+      - [-665, 1200]
+      - [-650, 1230]
 
-  # Cambie St — SW Marine north to Burrard waterfront.
+  # Cambie St — cardinal to Broadway, then curves NE and tips on Hastings
+  # (east of Main).
   cambie_st:
     lanes: 4
     points:
       - [-520, 820]
       - [-520, 890]
       - [-520, 960]
+      - [-520, 998]
       - [-520, 1030]
       - [-520, 1100]
-      - [-520, 1240]
-      - [-520, 1280]
+      - [-520, 1120]
+      - [-512, 1145]
+      - [-499, 1155]
+      - [-480, 1190]
+      - [-465, 1210]
+      - [-455, 1230]
 
-  # Main St — SW Marine north to Burrard waterfront.
-  main_st:
+  # Fraser St — SW Marine north to waterfront (east of Cambie).
+  fraser_st:
     lanes: 4
     points:
       - [-420, 820]
       - [-420, 890]
       - [-420, 960]
+      - [-420, 995]
       - [-420, 1030]
       - [-420, 1100]
-      - [-420, 1240]
+      - [-420, 1155]
+      - [-420, 1230]
       - [-420, 1280]
 
-  # Knight St — between Main and Boundary, SW Marine to waterfront.
+  # Knight St — between Fraser and Boundary, SW Marine to waterfront.
   knight_st:
     lanes: 4
     points:
       - [-270, 820]
       - [-270, 890]
+      - [-270, 957]
       - [-270, 960]
       - [-270, 1030]
       - [-270, 1100]
-      - [-270, 1240]
+      - [-270, 1230]
       - [-270, 1280]
 
   # Boundary Rd — Vancouver–Burnaby east edge.
@@ -291,9 +344,10 @@ highways:
       - [-120, 820]
       - [-120, 890]
       - [-120, 960]
+      - [-120, 961]
       - [-120, 1030]
       - [-120, 1100]
-      - [-120, 1240]
+      - [-120, 1230]
       - [-120, 1280]
 
   # SW Marine Drive — Vancouver south edge (North Arm), west tip to Boundary.
@@ -301,6 +355,8 @@ highways:
     lanes: 4
     points:
       - [-920, 820]
+      - [-820, 820]
+      - [-770, 820]
       - [-720, 820]
       - [-620, 820]
       - [-520, 820]
@@ -313,6 +369,8 @@ highways:
     lanes: 4
     points:
       - [-920, 890]
+      - [-820, 890]
+      - [-770, 890]
       - [-720, 890]
       - [-620, 890]
       - [-520, 890]
@@ -325,6 +383,8 @@ highways:
     lanes: 4
     points:
       - [-920, 960]
+      - [-820, 960]
+      - [-770, 960]
       - [-720, 960]
       - [-620, 960]
       - [-520, 960]
@@ -337,6 +397,8 @@ highways:
     lanes: 4
     points:
       - [-920, 1030]
+      - [-820, 1030]
+      - [-770, 1030]
       - [-720, 1030]
       - [-620, 1030]
       - [-520, 1030]
@@ -344,11 +406,13 @@ highways:
       - [-270, 1030]
       - [-120, 1030]
 
-  # Broadway — E–W across Vancouver.
+  # Broadway — E–W across Vancouver (Fairview; south of downtown bend).
   broadway:
     lanes: 4
     points:
       - [-920, 1100]
+      - [-820, 1100]
+      - [-770, 1100]
       - [-720, 1100]
       - [-620, 1100]
       - [-520, 1100]
@@ -356,25 +420,71 @@ highways:
       - [-270, 1100]
       - [-120, 1100]
 
-  # Hastings St — E–W near the north waterfront.
+  # --- Downtown Vancouver (sketch overlay) ---
+  # Burrard / Granville / Main / Cambie = parallel N–S shafts that bend NE.
+  # Georgia / Davie = NW–SE diagonals; Davie ends at Granville.
+  # Hastings = E–W across the top.
+  # Georgia St — NW–SE diagonal; levels toward Fraser.
+  georgia_st:
+    lanes: 4
+    points:
+      - [-860, 1260]
+      - [-830, 1240]
+      - [-800, 1220]
+      - [-782, 1195]
+      - [-732, 1185]
+      - [-682, 1175]
+      - [-620, 1162]
+      - [-540, 1155]
+      - [-499, 1155]
+      - [-420, 1155]
+
+  # Davie St — NW–SE diagonal; ends at Granville.
+  davie_st:
+    lanes: 4
+    points:
+      - [-860, 1225]
+      - [-830, 1205]
+      - [-790, 1180]
+      - [-748, 1165]
+
+  # Hastings St (green) — E–W across the top of downtown through Boundary.
   hastings_st:
     lanes: 4
     points:
-      - [-920, 1240]
-      - [-720, 1240]
-      - [-620, 1240]
-      - [-520, 1240]
-      - [-420, 1240]
-      - [-270, 1240]
-      - [-120, 1240]
+      - [-850, 1230]
+      - [-750, 1230]
+      - [-700, 1230]
+      - [-650, 1230]
+      - [-455, 1230]
+      - [-420, 1230]
+      - [-270, 1230]
+      - [-120, 1230]
 
-  # Kingsway — SE from Main @ Broadway to Boundary @ 41st (crosses Knight).
+  # Kingsway — purple SE wave: Main → Oak → Cambie → Fraser → Knight → Boundary.
   kingsway:
     lanes: 4
     points:
-      - [-420, 1100]
-      - [-270, 1030]
-      - [-120, 960]
+      - [-720, 1059]
+      - [-700, 1063]
+      - [-678, 1047]
+      - [-654, 1025]
+      - [-631, 1008]
+      - [-620, 1004]
+      - [-581, 999]
+      - [-547, 997]
+      - [-520, 998]
+      - [-485, 996]
+      - [-443, 996]
+      - [-420, 995]
+      - [-378, 987]
+      - [-334, 968]
+      - [-309, 959]
+      - [-270, 957]
+      - [-227, 955]
+      - [-182, 954]
+      - [-137, 959]
+      - [-120, 961]
 
   # Williams Rd — E–W at y=145.
   williams_rd:

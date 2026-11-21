@@ -71,6 +71,7 @@ HIGHWAY_LABELS = {
     "granville_st": "Granville St",
     "cambie_st": "Cambie St",
     "main_st": "Main St",
+    "fraser_st": "Fraser St",
     "knight_st": "Knight St",
     "boundary_rd": "Boundary Rd",
     "sw_marine": "SW Marine Drive",
@@ -78,6 +79,9 @@ HIGHWAY_LABELS = {
     "ave_41": "41st Ave",
     "king_edward": "King Edward Blvd",
     "broadway": "Broadway",
+    "burrard_st": "Burrard St",
+    "georgia_st": "Georgia St",
+    "davie_st": "Davie St",
     "hastings_st": "Hastings St",
     "kingsway": "Kingsway",
     "king_george": "King George Blvd",
@@ -155,6 +159,7 @@ _LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
     ("cambie", "Cambie", "Richmond"),
     ("broadmoor", "Broadmoor", "Richmond"),
     ("east_richmond", "East Richmond", "Richmond"),
+    ("downtown_vancouver", "Downtown Vancouver", "Vancouver"),
     ("vancouver", "Vancouver", "Vancouver"),
     ("port_kells", "Port Kells", "Langley"),
     ("walnut_grove", "Walnut Grove", "Langley"),
@@ -866,10 +871,23 @@ class CityApp(ShowBase):
                 "bright": None,
                 "hotkey_only": True,
             },
+            "downtown_vancouver": {
+                "title": "Downtown Vancouver",
+                # Peninsula north of Broadway: Burrard/Granville/Main/Cambie
+                # bends + Georgia/Davie diagonals + Hastings across the top.
+                "ring": (
+                    (-880.0, 1120.0),
+                    (-420.0, 1120.0),
+                    (-420.0, 1280.0),
+                    (-880.0, 1280.0),
+                ),
+                "bright": None,
+            },
             "vancouver": {
                 "title": "Vancouver",
                 # City proper: SW Marine → Boundary → Burrard waterfront → west tip.
                 # UBC / Endowment Lands excluded (west of x=-920).
+                # Sub-area: Downtown Vancouver (clickable).
                 "ring": (
                     (-920.0, 820.0),
                     (-120.0, 820.0),
