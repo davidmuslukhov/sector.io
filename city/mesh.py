@@ -688,7 +688,9 @@ def _crossing_clear_radius(
     right-angle junction so barriers don't clip through the skewed pad.
     """
     sin_a = max(0.22, min(1.0, abs(sin_angle)))
-    return (other_w * 0.5) / sin_a + own_w * 0.35 + 3.0
+    # Pad scales with ribbon width so thin 2× roads don't open huge voids.
+    pad = max(0.12, max(own_w, other_w) * 0.55)
+    return (other_w * 0.5) / sin_a + own_w * 0.35 + pad
 
 
 def _arms_for_arterial_at(
@@ -700,7 +702,7 @@ def _arms_for_arterial_at(
     """Outward unit arms along ``pts`` at junction (jx, jy)."""
     if len(pts) < 2:
         return []
-    tip = max(3.0, width * 0.45)
+    tip = max(0.45, width * 0.9)
     tip2 = (tip * 2.5) ** 2
     best = None
     for i in range(len(pts) - 1):

@@ -11,18 +11,26 @@ from panda3d.core import LVector3
 from city.materials import car_material
 from city.mesh import _dist2_point_segment, car_template
 
+# 2× geographic plate: 26.4 units = 1 km. Driving speeds stay in m/s for the HUD;
+# motion is converted to world units with this factor.
+_UNITS_PER_M = 26.4 / 1000.0
+# Template footprint ≈ 2.0 × 1.0; scale so a sedan (~1.8 m wide) fits a ~0.13 lane.
+_CAR_WORLD_SCALE = 1.8 * _UNITS_PER_M
+# On-road shoulder beyond ribbon half-width (PlayerCar + HUD street detect).
+ROAD_SHOULDER = 0.08
+
 # Body length along travel; bumper gap when queued or following.
 # Centre-to-centre spacing is length + gap so bodies never touch.
-_CAR_LENGTH = 2.0
-_CAR_WIDTH = 1.0
-_CAR_GAP = 1.0
+_CAR_LENGTH = 2.0 * _CAR_WORLD_SCALE
+_CAR_WIDTH = 1.0 * _CAR_WORLD_SCALE
+_CAR_GAP = 1.0 * _CAR_WORLD_SCALE
 _CAR_FOLLOW = _CAR_LENGTH + _CAR_GAP
-# Hard overlap radius (above body length so 2×1 boxes never clip at angles).
-_CAR_TOUCH = 2.25
-# Same-lane lateral tolerance (road is 5 wide; right-lane centre ± a bit).
-_CAR_LANE_TOL = 1.6
+# Hard overlap radius (above body length so boxes never clip at angles).
+_CAR_TOUCH = 2.25 * _CAR_WORLD_SCALE
+# Same-lane lateral tolerance (right-lane centre ± a bit).
+_CAR_LANE_TOL = 1.6 * _CAR_WORLD_SCALE
 # Spatial hash for collision candidates; larger than touch so one-frame drift stays covered.
-_CAR_CELL = 4.0
+_CAR_CELL = max(0.5, 4.0 * _CAR_WORLD_SCALE)
 # Max cars already on one diamond exit (ramp + gateway) before highway skips the off-ramp.
 _EXIT_STREAM_CAP = 3
 
@@ -91,11 +99,12 @@ class CarController:
         start_dir: tuple[int, int] = (1, 0),
         body_colour: tuple[float, float, float] = (0.22, 0.48, 0.72),
     ) -> None:
-        """Blocky 2×1×1 car on the road grid, long axis along travel."""
-        size = (_CAR_LENGTH, 1.0, 1.0)
+        """Blocky car on the road grid, long axis along travel."""
+        size = (_CAR_LENGTH, _CAR_WIDTH, _CAR_WORLD_SCALE)
         # Prefer a shared fleet root so the scene graph stays shallow.
         parent = getattr(self.app, "_fleet_root", None) or self.render
         self.car = car_template().copyTo(parent)
+        self.car.setScale(_CAR_WORLD_SCALE)
         # Flatten bakes paint onto geom state; replace it so each car keeps a unique colour.
         body = self.car.find("**/body")
         if not body.isEmpty():
@@ -3439,23 +3448,27 @@ class CarController:
 
 
 class PlayerCar:
-    """Keyboard-driven car: W gas, S brake, A/D steer. Free drive (no AI path)."""
+    """Keyboard-driven car: W gas, S brake, A/D steer; ↑/↓ set cruise limit."""
 
-    _BODY_HALF_Z = 0.5
-    # World units ≈ m/s; HUD uses ×3.6 so this tops out at 100 km/h.
-    _MAX_SPEED = 100.0 / 3.6
+    # Template body half-height before world scale.
+    _BODY_HALF_Z = 0.5 * _CAR_WORLD_SCALE
+    # Speeds in m/s; HUD uses ×3.6 → km/h. Motion converts via _UNITS_PER_M.
+    _SPEED_BASE_KMH = 100.0
+    _SPEED_MIN_KMH = 0.0
+    _SPEED_MAX_KMH = 300.0
+    _SPEED_STEP_KMH = 10.0
     _MAX_REVERSE = 50.0 / 3.6
-    _OFF_ROAD_SPEED = 0.5  # fraction of max when not on an arterial
+    _OFF_ROAD_SPEED = 0.5  # fraction of limit when not on an arterial
     _REVERSE_HOLD = 0.5  # seconds of S at standstill before reverse
     _ACCEL = 22.0
     _BRAKE = 38.0
     _COAST = 5.0
     _STEER_RATE = 140.0  # deg/s at full speed (A/D)
-    _NUDGE_RATE = 35.0  # deg/s slight trim (arrow keys)
+    _NUDGE_RATE = 35.0  # deg/s slight trim (left/right arrows)
     # Collision disc around the body centre (half-width + bumper fudge).
-    _HIT_RADIUS = 0.85
+    _HIT_RADIUS = 0.85 * _CAR_WORLD_SCALE
     # Match CityApp._street_at shoulder so HUD "Off road" agrees with this.
-    _ROAD_SHOULDER = 2.5
+    _ROAD_SHOULDER = ROAD_SHOULDER
 
     def __init__(
         self,
@@ -3470,6 +3483,7 @@ class PlayerCar:
         self.app = app
         parent = getattr(app, "_fleet_root", None) or app.render
         self.car = car_template().copyTo(parent)
+        self.car.setScale(_CAR_WORLD_SCALE)
         body = self.car.find("**/body")
         if not body.isEmpty():
             body.replaceMaterial(
@@ -3499,9 +3513,21 @@ class PlayerCar:
         self._car_pos = [float(x), float(y)]
         self._car_heading = float(heading)
         self._car_speed = 0.0  # signed: + forward, − reverse
+        self._speed_limit_kmh = self._SPEED_BASE_KMH
         self._brake_hold_t = 0.0
         self._place()
         self._refresh_lamps(braking=False, reversing=False)
+
+    def bump_speed_limit(self, delta_kmh: float) -> None:
+        """Raise/lower the forward cruise cap by a fixed step (clamped)."""
+        self._speed_limit_kmh = min(
+            self._SPEED_MAX_KMH,
+            max(self._SPEED_MIN_KMH, self._speed_limit_kmh + delta_kmh),
+        )
+
+    @property
+    def _max_speed_ms(self) -> float:
+        return self._speed_limit_kmh / 3.6
 
     def _place(self) -> None:
         self.car.setHpr(self._car_heading, 0.0, 0.0)
@@ -3559,7 +3585,7 @@ class PlayerCar:
         hit_nx = 0.0
         hit_ny = 0.0
         # Cap so a bad frame can't fling the car across the road.
-        max_push = self._HIT_RADIUS + 0.35
+        max_push = self._HIT_RADIUS + 0.02
         barriers = self._nearby_barriers(self._car_pos[0], self._car_pos[1])
         for _ in range(2):
             hit = self._deepest_barrier_hit(
@@ -3585,7 +3611,7 @@ class PlayerCar:
             if not roads:
                 return True  # no road data → don't penalize
         else:
-            roads = nearby(px, py, 40.0)
+            roads = nearby(px, py, 2.0)
         for _name, ax, ay, bx, by, half_w in roads:
             d2, _qx, _qy = _dist2_point_segment(px, py, ax, ay, bx, by)
             limit = half_w + self._ROAD_SHOULDER
@@ -3617,8 +3643,9 @@ class PlayerCar:
             nudge += 1.0
         if nudge_right:
             nudge -= 1.0
+        steer_ref = max(self._SPEED_MAX_KMH / 3.6, 1e-3)
         if (steer != 0.0 or nudge != 0.0) and abs(self._car_speed) > 0.05:
-            blend = max(0.25, min(1.0, abs(self._car_speed) / self._MAX_SPEED))
+            blend = max(0.25, min(1.0, abs(self._car_speed) / steer_ref))
             # Reverse: same wheel input, opposite yaw so A still feels "left".
             yaw_sign = -1.0 if self._car_speed < 0.0 else 1.0
             if steer != 0.0:
@@ -3632,7 +3659,7 @@ class PlayerCar:
 
         on_road = self._on_road()
         road_scale = 1.0 if on_road else self._OFF_ROAD_SPEED
-        max_speed = self._MAX_SPEED * road_scale
+        max_speed = self._max_speed_ms * road_scale
         max_reverse = self._MAX_REVERSE * road_scale
 
         stopped = abs(self._car_speed) < 0.05
@@ -3661,6 +3688,9 @@ class PlayerCar:
                 self._car_speed = max(0.0, self._car_speed - self._BRAKE * dt)
             elif self._car_speed < 0.0:
                 self._car_speed = min(0.0, self._car_speed + self._BRAKE * dt)
+        elif self._car_speed > max_speed:
+            # Limit was lowered under the current speed — brake down to it.
+            self._car_speed = max(max_speed, self._car_speed - self._BRAKE * dt)
         elif self._car_speed > 0.0:
             self._car_speed = max(0.0, self._car_speed - self._COAST * dt)
         elif self._car_speed < 0.0:
@@ -3672,10 +3702,11 @@ class PlayerCar:
         hit_nx = 0.0
         hit_ny = 0.0
         if abs(self._car_speed) > 0.0:
-            travel = self._car_speed * dt
+            # Speeds are m/s; convert travel into 2× world units.
+            travel = self._car_speed * dt * _UNITS_PER_M
             # Substep so thin fences can't be tunnelled (which used to fling the car).
-            step_len = 0.25
-            n_steps = max(1, min(8, int(math.ceil(abs(travel) / step_len))))
+            step_len = max(0.01, 0.25 * _CAR_WORLD_SCALE)
+            n_steps = max(1, min(12, int(math.ceil(abs(travel) / step_len))))
             sx = fx * travel / n_steps
             sy = fy * travel / n_steps
             for _ in range(n_steps):
@@ -3709,7 +3740,7 @@ class PlayerCar:
 
         # Leaving pavement at speed: re-check once after the move.
         if not self._on_road():
-            fwd = self._MAX_SPEED * self._OFF_ROAD_SPEED
+            fwd = self._max_speed_ms * self._OFF_ROAD_SPEED
             rev = self._MAX_REVERSE * self._OFF_ROAD_SPEED
             self._car_speed = max(-rev, min(fwd, self._car_speed))
         self._place()

@@ -68,6 +68,7 @@ class HighwayRoute:
     name: str
     points: tuple[tuple[float, float], ...]
     lanes: int
+    z_offset: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -306,11 +307,12 @@ class CityPlan:
         lane_width = self.road_width / 2
         highway_width = self.highway_lanes * lane_width
         road_thickness = 0.1
-        road_z = -self.block_size[2] / 2 + road_thickness / 2
+        # Coplanar road network at Z = 0 (minor thickness only).
+        road_z = 0.0
         bridge_clearance = self.barrier_h + 2.8
         bridge_z = road_z + bridge_clearance
-        # Chaikin + Catmull-Rom → dense samples for a continuous ribbon edge.
-        sample_spacing = max(2.0, highway_width * 0.18)
+        # Chaikin + Catmull-Rom → ~25–30 samples per control span (no faceting).
+        sample_spacing = max(1.4, highway_width * 1.2)
 
         arterials: list[dict[str, Any]] = []
         xs: list[float] = []
@@ -318,10 +320,23 @@ class CityPlan:
         for route in self.highway_routes:
             lanes = max(2, int(route.lanes))
             width = lanes * lane_width
-            spacing = max(2.0, width * 0.18)
-            smooth = tuple(
-                _smooth_polyline(_chaikin(route.points, iterations=2), spacing)
-            )
+            control = route.points
+            bent = not _is_axis_aligned(control)
+            refined = _chaikin(control, iterations=2) if bent else control
+            # Size spacing from original control chords so each curve gets ~28 segs.
+            if bent and len(control) >= 2:
+                chords = [
+                    math.hypot(
+                        control[i + 1][0] - control[i][0],
+                        control[i + 1][1] - control[i][1],
+                    )
+                    for i in range(len(control) - 1)
+                ]
+                mean_chord = sum(chords) / len(chords)
+                spacing = max(0.9, mean_chord / 28.0)
+            else:
+                spacing = max(1.4, width * 1.2)
+            smooth = tuple(_smooth_polyline(refined, spacing))
             arterials.append(
                 {
                     "name": route.name,
@@ -330,6 +345,7 @@ class CityPlan:
                     "axis": "poly",
                     "lanes": lanes,
                     "width": width,
+                    "z_offset": float(route.z_offset),
                 }
             )
             for x, y in smooth:
@@ -373,7 +389,7 @@ class CityPlan:
         """Local residential ribbons — narrower than highways, same smoothing."""
         street_width = self.road_width
         road_thickness = 0.1
-        road_z = -self.block_size[2] / 2 + road_thickness / 2
+        road_z = 0.0
         sample_spacing = max(0.9, street_width * 0.18)
         default_bulb = street_width * 1.55
         routes: list[dict[str, Any]] = []
@@ -646,10 +662,13 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     highway_routes: list[HighwayRoute] = []
     for name, entry in raw_highways.items():
         lanes = highway_lanes
+        z_offset = 0.0
         if isinstance(entry, dict):
             pts = entry.get("points", [])
             if entry.get("lanes") is not None:
                 lanes = int(entry["lanes"])
+            if entry.get("z_offset") is not None:
+                z_offset = float(entry["z_offset"])
         else:
             pts = entry
         if not isinstance(pts, list) or len(pts) < 2:
@@ -661,6 +680,7 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
                 name=str(name),
                 points=tuple((float(p[0]), float(p[1])) for p in pts),
                 lanes=lanes,
+                z_offset=z_offset,
             )
         )
 

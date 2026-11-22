@@ -21,18 +21,15 @@ from direct.gui.OnscreenText import OnscreenText
 from direct.showbase.ShowBase import ShowBase
 
 from city.builders import SceneBuilders
-from city.car import CarController, PlayerCar
+from city.car import ROAD_SHOULDER, CarController, PlayerCar
 from city.daycycle import SUNRISE_SECONDS, DayNightCycle
 from city.districts import (
     CITY_CENTRE_BLOCKS,
     DISTRICT_DEFS,
     HIGHWAY_LABELS,
     LOCATION_AREAS,
-    SIDE_BORDER_ROUTES,
 )
 from city.materials import (
-    BLOCK_SHADES,
-    block_material,
     concrete_material,
     lawn_material,
     mark_material,
@@ -49,14 +46,12 @@ from city.mesh import (
     z_cylinder_instance,
 )
 from city.plan import default_city_plan
-from city.signals import TrafficLightController
-
 # Spatial hash cell size for barrier / road lookups (car-mode hot path).
-_SEG_CELL = 10.0
-# Barrier prism length target — smoothed samples are ~2 units; coarsen for FPS.
-_BARRIER_SPAN = 4.5
-# Drop leftover stubs between nearby crossings (e.g. Fraser × 58 Ave near 224 St).
-_BARRIER_MIN_RUN = 16.0
+_SEG_CELL = 4.0
+# Barrier prism length target — thin 2× ribbons; coarsen lightly for FPS.
+_BARRIER_SPAN = 1.2
+# Drop leftover stubs between nearby crossings.
+_BARRIER_MIN_RUN = 2.5
 
 
 class CityApp(ShowBase):
@@ -77,6 +72,7 @@ class CityApp(ShowBase):
         arterials = list(hwy["arterials"])
 
         self._build_neighborhoods(plan)
+        # Buildings, water, and bridges stripped — roads + green baseplate.
         self._build_city_centre(plan, road_z, arterials)
         self._build_districts(road_z, road_thickness)
         self._build_highways(plan, hwy, arterials, road_z, road_thickness, road_top)
@@ -134,118 +130,11 @@ class CityApp(ShowBase):
                         houses_across=lot.houses_across,
                         houses_deep=lot.houses_deep,
                     )
-        # Demo house on the NE plate; skyscrapers stay in the circled Whalley blocks.
-        SceneBuilders(self.city, plan, self.render)._add_house(
-            560.0, 400.0, brick=0.68, chimney=True
-        )
-
     def _build_city_centre(self, plan, road_z: float, arterials: list) -> None:
-        block_size = plan.block_size
-        # Road corridors for tower sight checks: (ax, ay, bx, by, half_width).
-        road_segs: list[tuple[float, float, float, float, float]] = []
-        for route in arterials:
-            pts = list(route.get("control_points") or route.get("points") or ())
-            half_w = float(route.get("width") or 0.0) * 0.5
-            for i in range(len(pts) - 1):
-                road_segs.append(
-                    (pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], half_w)
-                )
-
-        def tower_sees_road(
-            tx: float,
-            ty: float,
-            half: float,
-            others: list[tuple[float, float]],
-            *,
-            max_dist: float = 48.0,
-            step: float = 1.0,
-        ) -> bool:
-            """True if a cardinal ray hits pavement before another tower."""
-            for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
-                dist = half + 0.05
-                while dist < max_dist:
-                    px = tx + dx * dist
-                    py = ty + dy * dist
-                    blocked = False
-                    for ox, oy in others:
-                        if abs(px - ox) <= half and abs(py - oy) <= half:
-                            blocked = True
-                            break
-                    if blocked:
-                        break
-                    for ax, ay, bx, by, hw in road_segs:
-                        d2, _qx, _qy = _dist2_point_segment(px, py, ax, ay, bx, by)
-                        if d2 <= hw * hw:
-                            return True
-                    dist += step
-            return False
-
+        # Placeholder Whalley tower blocks removed for the 2× road-network pass.
+        del plan, road_z, arterials
         self.city_centre_blocks = CITY_CENTRE_BLOCKS
         self.city_centre = self.city.attachNewNode("city-centre")
-        cc = SceneBuilders(self.city_centre, plan, self.render)
-        pad_mat = concrete_material(0.32)
-        pad_thickness = 0.14
-        for west, east, south, north in self.city_centre_blocks:
-            pad = box_instance(
-                self.city_centre,
-                east - west,
-                north - south,
-                pad_thickness,
-            )
-            pad.setPos(
-                (west + east) * 0.5,
-                (south + north) * 0.5,
-                road_z - 0.02,
-            )
-            pad.setMaterial(pad_mat, 1)
-
-        footprints = ("rect", "round", "tri")
-        tower_pitch = block_size[0] + plan.tower_gap + 0.6
-        tower_half = block_size[0] * 0.5
-        floor_hi = plan.floor_max + 6
-        candidates: list[tuple[float, float, int, str, float, int]] = []
-        for west, east, south, north in self.city_centre_blocks:
-            cols = max(2, min(3, int((east - west) / tower_pitch)))
-            rows = max(2, min(4, int((north - south) / tower_pitch)))
-            for row in range(rows):
-                for col in range(cols):
-                    x = west + (col + 0.5) * (east - west) / cols
-                    y = south + (row + 0.5) * (north - south) / rows
-                    seed = abs(int(x * 17 + y * 31))
-                    x += ((seed % 7) - 3) * 0.12
-                    y += ((seed % 5) - 2) * 0.12
-                    mid_lo = max(plan.floor_min, 14)
-                    mid_hi = max(mid_lo + 4, plan.floor_max - 2)
-                    tall_lo = mid_hi + 1
-                    tall_hi = floor_hi
-                    roll = (seed * 13 + seed // 5) % 100
-                    if roll < 40:
-                        span = max(1, tall_hi - tall_lo + 1)
-                        floors = tall_lo + ((seed * 7) % span)
-                    else:
-                        span = max(1, mid_hi - mid_lo + 1)
-                        floors = mid_lo + ((seed * 11) % span)
-                    footprint = footprints[seed % 3]
-                    heading = (seed % 9 - 4) * 5.0 if footprint == "tri" else 0.0
-                    candidates.append((x, y, floors, footprint, heading, seed))
-
-        positions = [(x, y) for x, y, *_rest in candidates]
-        kept: list[tuple[float, float, int, str, float, int]] = []
-        for i, (x, y, floors, footprint, heading, seed) in enumerate(candidates):
-            others = positions[:i] + positions[i + 1 :]
-            if tower_sees_road(x, y, tower_half, others):
-                kept.append((x, y, floors, footprint, heading, seed))
-        for x, y, floors, footprint, heading, seed in kept:
-            cc._add_stack(
-                x,
-                y,
-                floors,
-                block_size,
-                block_material(BLOCK_SHADES[seed % len(BLOCK_SHADES)]),
-                footprint=footprint,
-                heading=heading,
-                doors=("-y",),
-            )
 
     def _build_districts(self, road_z: float, road_thickness: float) -> None:
         self._ground_z = road_z
@@ -256,6 +145,8 @@ class CityApp(ShowBase):
             district = {
                 "title": spec["title"],
                 "ring": spec["ring"],
+                "bbox": spec.get("bbox"),
+                "anchor": spec.get("anchor"),
                 "bright": bright_nodes.get(spec.get("bright_key")),
                 "hotkey_only": bool(spec.get("hotkey_only")),
             }
@@ -294,11 +185,13 @@ class CityApp(ShowBase):
         ) -> None:
             if len(pts) < 2 or lanes < 2:
                 return
-            mark_len = 4.5
-            mark_w = 0.35
-            mark_h = 0.04
-            mark_gap = 5.5
+            mark_len = max(0.35, lane_width * 1.1)
+            mark_w = max(0.04, lane_width * 0.18)
+            mark_h = 0.004
+            mark_gap = mark_len * 1.2
             period = mark_len + mark_gap
+            # Sit flush on the deck: box centre at half thickness above road top.
+            mark_z = z_top + mark_h / 2
             centre_divider = lanes // 2
             dist = [0.0]
             for i in range(len(pts) - 1):
@@ -345,7 +238,7 @@ class CityApp(ShowBase):
                             continue
                         offset = -width / 2 + divider * lane_width
                         mark = box_instance(self.highway, mark_len, mark_w, mark_h)
-                        mark.setPos(x + px * offset, y + py * offset, z_top + 0.02)
+                        mark.setPos(x + px * offset, y + py * offset, mark_z)
                         mark.setH(heading)
                         mark.setMaterial(mark_paint, 1)
                 s += period
@@ -353,9 +246,9 @@ class CityApp(ShowBase):
         self._highway_labels = self.render.attachNewNode("highway_labels")
         labels_root = self._highway_labels
         self._highway_label_nodes: list = []
-        self._label_base_scale = max(36.0, highway_width * 2.8)
+        self._label_base_scale = max(2.4, highway_width * 4.5)
         self._label_ref_distance = 1.0
-        crossing_gaps, junctions = arterial_topology(arterials)
+        crossing_gaps, _junctions = arterial_topology(arterials)
         self._named_roads: list[tuple[str, float, float, float, float, float]] = []
         self._solid_barriers: list[tuple[float, float, float, float, float]] = []
 
@@ -414,11 +307,14 @@ class CityApp(ShowBase):
             route_lanes = int(arterial.get("lanes", plan.highway_lanes))
             route_width = float(arterial.get("width", highway_width))
             name = str(arterial.get("name", ""))
+            z_off = float(arterial.get("z_offset", 0.0))
+            route_z = road_z + z_off
+            route_top = road_top + z_off
             median_gaps = list(crossing_gaps.get(name, []))
             deck = self.highway.attachNewNode(
                 make_highway_ribbon(pts, route_width, road_thickness)
             )
-            deck.setPos(0.0, 0.0, road_z)
+            deck.setPos(0.0, 0.0, route_z)
             deck.setMaterial(road_mat, 1)
             if route_lanes > 2:
                 if plan.barrier_w > 0.0 and plan.barrier_h > 0.0:
@@ -427,9 +323,10 @@ class CityApp(ShowBase):
                             piece,
                             plan.barrier_w,
                             plan.barrier_h,
-                            road_top + plan.barrier_h / 2,
+                            route_top + plan.barrier_h / 2,
                         )
-                if name in SIDE_BORDER_ROUTES and plan.fence_w > 0.0 and plan.fence_h > 0.0:
+                # Side fences only on 6-lane arterials (not 2-/4-lane roads).
+                if route_lanes >= 6 and plan.fence_w > 0.0 and plan.fence_h > 0.0:
                     edge = route_width / 2 + plan.fence_w / 2
                     fence_gaps = [(x, y, radius + edge) for x, y, radius in median_gaps]
                     for side in (-1.0, 1.0):
@@ -439,20 +336,34 @@ class CityApp(ShowBase):
                                 piece,
                                 plan.fence_w,
                                 plan.fence_h,
-                                road_top + plan.fence_h / 2,
+                                route_top + plan.fence_h / 2,
                             )
             paint_route_marks(
                 pts,
-                road_top,
+                route_top,
                 lanes=route_lanes,
                 width=route_width,
                 mark_gaps=median_gaps,
             )
 
-            title = HIGHWAY_LABELS.get(name, name.replace("_", " ").title())
+            title = HIGHWAY_LABELS.get(name)
+            if title is None:
+                # Urban fill / anonymous collectors stay unlabeled.
+                if name.startswith(("wg_", "wb_", "lc_", "ag_", "sw_fill_")):
+                    title = ""
+                elif name.endswith(("_w", "_e")) and name.startswith(
+                    ("ave_", "col_ave_")
+                ):
+                    # ALR-split avenue halves share one label family.
+                    title = HIGHWAY_LABELS.get(name.rsplit("_", 1)[0], "")
+                    if not title:
+                        base = name.rsplit("_", 1)[0]
+                        title = base.replace("_", " ").title()
+                else:
+                    title = name.replace("_", " ").title()
             if title:
                 half_w = route_width * 0.5
-                road_pts = coarsen_polyline(pts, 5.0)
+                road_pts = coarsen_polyline(pts, 1.5)
                 for i in range(len(road_pts) - 1):
                     self._named_roads.append(
                         (
@@ -474,7 +385,7 @@ class CityApp(ShowBase):
             text.setShadow(0.06, 0.06)
             text.setShadowColor(0.05, 0.06, 0.08, 0.9)
             pivot = labels_root.attachNewNode(f"hwy-label-pivot-{name}")
-            pivot.setPos(mid[0], mid[1], road_top + 4.0)
+            pivot.setPos(mid[0], mid[1], road_top + 0.55)
             label = pivot.attachNewNode(text)
             label.setScale(self._label_base_scale)
             label.setBillboardPointEye()
@@ -491,55 +402,8 @@ class CityApp(ShowBase):
             self._named_roads, xy_offset=1, cell=self._road_cell
         )
 
+        # Traffic lights disabled for the road-network pass.
         self._signals = None
-        self._signals_root = self.city.attachNewNode("traffic-signals")
-        signal_builders = SceneBuilders(self._signals_root, plan, self.render)
-        signal_count = 0
-        for junction in junctions:
-            if "hwy1" in junction["roads"]:
-                continue
-            jx = float(junction["x"])
-            jy = float(junction["y"])
-            half = float(junction["half"])
-            posts: dict[tuple[float, float], tuple[float, float]] = {}
-            spans: list[tuple[float, float, float, float]] = []
-            arms = list(junction["arms"])
-            for ox, oy in arms:
-                has_opposite = any(dx * ox + dy * oy <= -0.85 for dx, dy in arms)
-                if has_opposite:
-                    place_ox, place_oy = ox, oy
-                else:
-                    place_ox, place_oy = -ox, -oy
-                edge_x = jx + place_ox * half
-                edge_y = jy + place_oy * half
-                px, py = -place_oy, place_ox
-                ax = edge_x + px * half
-                ay = edge_y + py * half
-                bx = edge_x - px * half
-                by = edge_y - py * half
-                posts[(round(ax, 3), round(ay, 3))] = (ax, ay)
-                posts[(round(bx, 3), round(by, 3))] = (bx, by)
-                spans.append((ax, ay, bx, by))
-            for post_x, post_y in posts.values():
-                signal_builders._add_signal_post(post_x, post_y, road_top, plan.block_size)
-            for ax, ay, bx, by in spans:
-                signal_builders._add_traffic_light(
-                    ax,
-                    ay,
-                    bx,
-                    by,
-                    road_top,
-                    plan.block_size,
-                    face_x=jx,
-                    face_y=jy,
-                )
-                signal_count += 1
-        if signal_count > 0:
-            self._signals_root.flattenStrong()
-            self._signals = TrafficLightController(self)
-            self.taskMgr.add(self._signals.update, "traffic-lights")
-        else:
-            self._signals_root.removeNode()
 
         for key, district in self._districts.items():
             ring = district["ring"]
@@ -550,13 +414,15 @@ class CityApp(ShowBase):
             text.setShadow(0.05, 0.05)
             text.setShadowColor(0.08, 0.02, 0.02, 0.75)
             pivot = self.render.attachNewNode(f"district-label-pivot-{key}")
-            pivot.setPos(
-                sum(p[0] for p in ring) / len(ring),
-                sum(p[1] for p in ring) / len(ring),
-                road_top + 6.0,
-            )
+            anchor = district.get("anchor")
+            if anchor is not None:
+                label_x, label_y = anchor
+            else:
+                label_x = sum(p[0] for p in ring) / len(ring)
+                label_y = sum(p[1] for p in ring) / len(ring)
+            pivot.setPos(label_x, label_y, road_top + 6.0)
             label = pivot.attachNewNode(text)
-            label_scale = self._label_base_scale * 1.15
+            label_scale = self._label_base_scale * 4.0
             label.setScale(label_scale)
             label.setBillboardPointEye()
             label.setDepthTest(False)
@@ -591,9 +457,10 @@ class CityApp(ShowBase):
             deck.setMaterial(road_mat, 1)
             mark_len = 2.5
             mark_w = 0.2
-            mark_h = 0.04
+            mark_h = 0.004
             mark_gap = 4.0
             period = mark_len + mark_gap
+            mark_z = road_top + mark_h / 2
             tip_clear = street_width * 1.1
             dist = [0.0]
             for i in range(len(pts) - 1):
@@ -621,7 +488,7 @@ class CityApp(ShowBase):
                     y = y0 + dy * t
                     heading = math.degrees(math.atan2(uy, ux))
                     mark = box_instance(self.streets, mark_len, mark_w, mark_h)
-                    mark.setPos(x, y, road_top + 0.02)
+                    mark.setPos(x, y, mark_z)
                     mark.setH(heading)
                     mark.setMaterial(mark_paint, 1)
                     s += period
@@ -635,7 +502,7 @@ class CityApp(ShowBase):
 
     def _build_ground(self, hwy: dict, road_z: float) -> None:
         lawn_mat = lawn_material()
-        ground_pad = 80.0
+        ground_pad = 40.0
         self._ground = box_instance(
             self.render,
             (hwy["bounds_east"] - hwy["bounds_west"]) + ground_pad,
@@ -677,50 +544,23 @@ class CityApp(ShowBase):
         self._car = None
         self._player_car: PlayerCar | None = None
         self._fleet_root = self.render.attachNewNode("fleet")
-        fraser = next((a for a in arterials if a.get("name") == "fraser"), None)
-        if fraser is not None and len(fraser.get("points") or ()) >= 2:
-            lane_pts = offset_polyline(
-                list(fraser["points"]),
-                -float(fraser["width"]) / 4,
-            )
-            loop = [(x, y, road_top) for x, y in lane_pts]
-            car = CarController(self, self._cars)
-            car.setup(
-                road_top,
-                plan.west_road_full0,
-                plan.south_road_full0,
-                plan.stride_x,
-                plan.stride_y,
-                plan.cols,
-                plan.rows,
-                start_h=0,
-                start_v=0,
-                start_dir=(1, 0),
-                body_colour=(0.22, 0.48, 0.72),
-            )
-            car._car_diamonds = []
-            car._car_loop_path = loop
-            car._car_pos = [loop[0][0], loop[0][1]]
-            car._car_set_surface_z(loop[0][2])
-            car._car_begin_path(list(loop), kind="arterial_loop")
-            car._place_car()
-            self._car = car
-            self.taskMgr.add(self._fleet_task, "fleet")
 
+        # Green player car on King George Blvd at Whalley (right lane, southbound).
         king = next((a for a in arterials if a.get("name") == "king_george"), None)
         if king is not None:
             kg_w = float(king.get("width", plan.road_width))
             self._player_car = PlayerCar(
                 self,
                 road_top,
-                155.0 + kg_w / 4.0,
-                227.0,
-                heading=90.0,
+                -kg_w / 4.0,
+                -1.5,
+                heading=-90.0,
                 body_colour=(0.16, 0.62, 0.28),
             )
             self.taskMgr.add(self._player_drive_task, "player-drive")
 
     def _setup_camera(self, plan, road_z: float) -> None:
+        del plan
         hwy = self._hwy
         left = hwy["bounds_west"]
         right = hwy["bounds_east"]
@@ -743,6 +583,9 @@ class CityApp(ShowBase):
         self.distance = max(fit_x, fit_y) * 1.2
         self.min_distance = 2.0
         self.max_distance = max(200.0, self.distance * 2.5)
+        # Full Ferry tip → UBC / Ironworkers / 276 St regional span.
+        self.camLens.setFar(4500.0)
+        self.camLens.setNear(0.05)
         self._label_ref_distance = self.distance
         self.dragging = False
         self._drag_moved = False
@@ -766,12 +609,13 @@ class CityApp(ShowBase):
         self._default_heading = self.heading
         self._default_pitch = self.pitch
         self._focus_index = -1
-        self._car_focus_distance = 14.0
+        # Chase / focus distances sized for the scaled 2× sedan (~0.05 wide).
+        self._car_focus_distance = 1.2
         self._car_mode = False
-        self._chase_back = 8.5
-        self._chase_height = 3.4
-        self._chase_look_ahead = 2.0
-        self._chase_look_z = 1.0
+        self._chase_back = 0.7
+        self._chase_height = 0.28
+        self._chase_look_ahead = 0.15
+        self._chase_look_z = 0.06
         self._chase_yaw_offset = 0.0
         self._map_look_at = list(self.look_at)
         self._map_distance = self.distance
@@ -863,8 +707,12 @@ class CityApp(ShowBase):
         self.accept("e", self._select_delta)
         self.accept("r", self._select_richmond)
         self.accept("v", self._select_vancouver)
+        self.accept("b", self._select_burnaby)
+        self.accept("n", self._select_new_westminster)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
+        self.accept("arrow_up", self._bump_player_speed_limit, [10.0])
+        self.accept("arrow_down", self._bump_player_speed_limit, [-10.0])
         self.accept("mouse1", self._start_drag)
         self.accept("mouse1-up", self._end_drag)
         self.taskMgr.add(self._drag_task, "orbit-drag")
@@ -1142,10 +990,10 @@ class CityApp(ShowBase):
         """Nearest arterial name if the car is on/near its pavement."""
         best_name = ""
         best_d2 = float("inf")
-        for name, ax, ay, bx, by, half_w in self.nearby_roads(x, y, 40.0):
+        for name, ax, ay, bx, by, half_w in self.nearby_roads(x, y, 2.0):
             d2, _qx, _qy = _dist2_point_segment(x, y, ax, ay, bx, by)
             # Stay within the ribbon plus a small shoulder so lane offset still counts.
-            limit = half_w + 2.5
+            limit = half_w + ROAD_SHOULDER
             if d2 <= limit * limit and d2 < best_d2:
                 best_d2 = d2
                 best_name = name
@@ -1264,8 +1112,14 @@ class CityApp(ShowBase):
             self._update_camera()
         return task.cont
 
+    def _bump_player_speed_limit(self, delta_kmh: float) -> None:
+        """↑/↓: nudge forward cruise cap by 10 km/h (0–300), car mode only."""
+        if not self._car_mode or self._player_car is None:
+            return
+        self._player_car.bump_speed_limit(delta_kmh)
+
     def _player_drive_task(self, task):
-        """C mode: WASD drive; left/right arrows for slight heading trim."""
+        """C mode: WASD drive; ←/→ trim heading; ↑/↓ set cruise limit."""
         if not self._car_mode or self._player_car is None:
             return task.cont
         mw = self.mouseWatcherNode
@@ -1307,8 +1161,8 @@ class CityApp(ShowBase):
 
     def _zoom(self, factor: float) -> None:
         if self._car_mode:
-            self._chase_back = min(22.0, max(4.0, self._chase_back * factor))
-            self._chase_height = min(10.0, max(1.5, self._chase_height * factor))
+            self._chase_back = min(2.5, max(0.25, self._chase_back * factor))
+            self._chase_height = min(1.2, max(0.08, self._chase_height * factor))
             self._update_chase_camera()
             return
         self.distance = min(
@@ -1387,6 +1241,8 @@ class CityApp(ShowBase):
         )
 
     def _select_district(self, key: str) -> None:
+        if key not in self._districts:
+            return
         if self._selected_district == key:
             return
         self._clear_district_selection()
@@ -1445,6 +1301,18 @@ class CityApp(ShowBase):
             return
         self._select_district("vancouver")
 
+    def _select_burnaby(self) -> None:
+        """B: outline Burnaby east of Boundary Rd (disabled in C / car mode)."""
+        if self._car_mode:
+            return
+        self._select_district("burnaby")
+
+    def _select_new_westminster(self) -> None:
+        """N: outline New Westminster (disabled in C / car mode)."""
+        if self._car_mode:
+            return
+        self._select_district("new_westminster")
+
     def _try_select_district(self) -> None:
         if self._car_mode:
             return
@@ -1492,7 +1360,7 @@ class CityApp(ShowBase):
                     # Orbit chase yaw; nudge height like a light pitch look.
                     self._chase_yaw_offset -= dx * 120.0
                     self._chase_height = max(
-                        1.2, min(12.0, self._chase_height + dy * 6.0)
+                        0.08, min(1.2, self._chase_height + dy * 0.45)
                     )
                     self._update_chase_camera()
                 else:

@@ -9,6 +9,7 @@ _CONCRETE_MATERIALS: dict[float, Material] = {}
 _FACTORY_MATERIALS: dict[float, Material] = {}
 _ROAD_MATERIAL: Material | None = None
 _LAWN_MATERIAL: Material | None = None
+_WATER_MATERIAL: Material | None = None
 _SIDEWALK_MATERIAL: Material | None = None
 _CURB_MATERIAL: Material | None = None
 _ROOF_MATERIAL: Material | None = None
@@ -109,6 +110,20 @@ def lawn_material() -> Material:
         material.setShininess(2)
         _LAWN_MATERIAL = material
     return _LAWN_MATERIAL
+
+
+def water_material() -> Material:
+    """Fraser / Mud Bay water — cool blue readable even under dim sunrise light."""
+    global _WATER_MATERIAL
+    if _WATER_MATERIAL is None:
+        material = Material()
+        material.setAmbient((0.12, 0.28, 0.42, 1))
+        material.setDiffuse((0.18, 0.48, 0.72, 1))
+        material.setSpecular((0.35, 0.5, 0.62, 1))
+        material.setShininess(64)
+        material.setEmission((0.02, 0.06, 0.1, 1))
+        _WATER_MATERIAL = material
+    return _WATER_MATERIAL
 
 
 _FOLIAGE_VARIANTS: dict[int, Material] = {}
