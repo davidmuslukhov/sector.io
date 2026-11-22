@@ -3,7 +3,7 @@
 # Provincial: Hwy 1, 10, 15, 17, 17A, 91, 99. Major arterials: Fraser Hwy, 88 Ave,
 # King George Blvd, Scott Rd / 120 St. Surrey–Langley border is 196 St.
 # Richmond is Lulu Island only (Sea Island / YVR excluded).
-# Vancouver is city proper north of the North Arm (UBC / Endowment Lands excluded).
+# Vancouver is north of the North Arm, including Point Grey / UBC.
 
 lot:
   block_size: [5.0, 5.0, 2.0]
@@ -123,13 +123,13 @@ highways:
   # Hwy 99 — Granville @ SW Marine → Bridgeport stem (x≈-620) → Massey → Delta.
   # Richmond shifted −200x / −50y. No.1–4 / Hwy 99: -915 / -817 / -718 / -620 / -522.
   # E–W: Steveston 75 → … → Hwy 91 425 → Bridgeport 550.
-  # North tip curves NW from Bridgeport into Granville (not Oak).
+  # North tip curves NW from Bridgeport into Granville (not Main / Oak).
   hwy99:
-    - [-720, 820]
-    - [-710, 760]
-    - [-690, 710]
-    - [-660, 650]
-    - [-635, 590]
+    - [-770, 820]
+    - [-750, 760]
+    - [-720, 710]
+    - [-680, 650]
+    - [-645, 590]
     - [-620, 550]
     - [-620, 425]
     - [-620, 355]
@@ -219,15 +219,17 @@ highways:
       - [-620, 75]
       - [-522, 75]
 
-  # --- Vancouver (north of Richmond / North Arm; UEL excluded) ---
+  # --- Vancouver (north of Richmond / North Arm; includes Point Grey / UBC) ---
   # Oak St — SW Marine north only (Hwy 99 joins Granville, not Oak).
   # South of Broadway: cardinal N–S / E–W.
-  #   N–S: Burrard −820 / Granville −770 / Main −720 / Oak −620 / Cambie −520 /
+  #   N–S: Blanca −1100 / Alma|Dunbar −1000 / MacDonald −920 / Arbutus −870 /
+  #         Burrard −820 / Granville −770 / Main −720 / Oak −620 / Cambie −520 /
   #         Fraser −420 / Knight −270 / Boundary −120.
   #   E–W: SW Marine 820 / 49th 890 / 41st 960 / King Edward 1030 / Broadway 1100.
   # Downtown (sketch): Burrard + Granville + Main + Cambie bend NE off the grid;
   # Georgia + Davie are NW–SE diagonals (Davie ends at Granville); Hastings is
-  # E–W across the top (y=1230). Kingsway: Main → Boundary (purple SE wave).
+  # E–W east of Granville, then slants NW like Georgia west of Granville.
+  # Kingsway: Main → Boundary (purple SE wave).
   oak_st:
     lanes: 4
     points:
@@ -241,7 +243,7 @@ highways:
       - [-620, 1140]
 
   # Burrard St — same NE-bend family; shaft at −820 (west of Granville).
-  # Cardinal to Broadway, then curves NE and tips on Hastings.
+  # Cardinal to Broadway, then curves NE and tips on slanted Hastings.
   burrard_st:
     lanes: 4
     points:
@@ -256,7 +258,8 @@ highways:
       - [-790, 1180]
       - [-782, 1195]
       - [-766, 1210]
-      - [-750, 1230]
+      - [-758, 1235]
+      - [-750, 1260]
 
   # Granville St — between Burrard (−820) and Main (−720); same NE bend.
   granville_st:
@@ -350,11 +353,19 @@ highways:
       - [-120, 1230]
       - [-120, 1280]
 
-  # SW Marine Drive — Vancouver south edge (North Arm), west tip to Boundary.
+  # SW Marine Drive — Vancouver south edge (North Arm) west through Point Grey
+  # / UBC, then Boundary. West tip meets NW Marine at the Point Grey tip.
   sw_marine:
     lanes: 4
     points:
+      - [-1220, 980]
+      - [-1212, 960]
+      - [-1180, 880]
+      - [-1120, 820]
+      - [-1100, 820]
+      - [-1000, 820]
       - [-920, 820]
+      - [-870, 820]
       - [-820, 820]
       - [-770, 820]
       - [-720, 820]
@@ -364,11 +375,15 @@ highways:
       - [-270, 820]
       - [-120, 820]
 
-  # 49th Ave — E–W between SW Marine and 41st.
+  # 49th Ave — E–W between SW Marine and 41st (into UBC).
   ave_49:
     lanes: 4
     points:
+      - [-1180, 890]
+      - [-1100, 890]
+      - [-1000, 890]
       - [-920, 890]
+      - [-870, 890]
       - [-820, 890]
       - [-770, 890]
       - [-720, 890]
@@ -378,11 +393,15 @@ highways:
       - [-270, 890]
       - [-120, 890]
 
-  # 41st Ave — E–W across Vancouver.
+  # 41st Ave — E–W across Vancouver; west tip T’s into SW Marine (Point Grey).
   ave_41:
     lanes: 4
     points:
+      - [-1212, 960]
+      - [-1100, 960]
+      - [-1000, 960]
       - [-920, 960]
+      - [-870, 960]
       - [-820, 960]
       - [-770, 960]
       - [-720, 960]
@@ -392,11 +411,15 @@ highways:
       - [-270, 960]
       - [-120, 960]
 
-  # King Edward Blvd — E–W between 41st and Broadway.
+  # King Edward Blvd — E–W between 41st and Broadway (into UBC).
   king_edward:
     lanes: 4
     points:
+      - [-1220, 1030]
+      - [-1100, 1030]
+      - [-1000, 1030]
       - [-920, 1030]
+      - [-870, 1030]
       - [-820, 1030]
       - [-770, 1030]
       - [-720, 1030]
@@ -406,11 +429,15 @@ highways:
       - [-270, 1030]
       - [-120, 1030]
 
-  # Broadway — E–W across Vancouver (Fairview; south of downtown bend).
+  # Broadway — E–W across Vancouver into UBC (Fairview; south of downtown bend).
   broadway:
     lanes: 4
     points:
+      - [-1180, 1100]
+      - [-1100, 1100]
+      - [-1000, 1100]
       - [-920, 1100]
+      - [-870, 1100]
       - [-820, 1100]
       - [-770, 1100]
       - [-720, 1100]
@@ -420,10 +447,87 @@ highways:
       - [-270, 1100]
       - [-120, 1100]
 
+  # --- Point Grey / UBC (west of Burrard) ---
+  # Blanca St — east edge of UBC campus (was Wesbrook Mall); SW Marine → NW Marine.
+  blanca_st:
+    lanes: 4
+    points:
+      - [-1100, 820]
+      - [-1100, 890]
+      - [-1100, 960]
+      - [-1100, 1030]
+      - [-1100, 1065]
+      - [-1100, 1100]
+      - [-1100, 1168]
+
+  # University Blvd — E–W campus approach; ends at Blanca (not into the city grid).
+  university_blvd:
+    lanes: 4
+    points:
+      - [-1220, 1065]
+      - [-1160, 1065]
+      - [-1100, 1065]
+
+  # Alma St — N–S north of King Edward (Point Grey); King Edward → NW Marine.
+  alma_st:
+    lanes: 4
+    points:
+      - [-1000, 1030]
+      - [-1000, 1065]
+      - [-1000, 1100]
+      - [-1000, 1168]
+
+  # Dunbar St — N–S south of King Edward; King Edward → SW Marine.
+  dunbar_st:
+    lanes: 4
+    points:
+      - [-1000, 1030]
+      - [-1000, 960]
+      - [-1000, 890]
+      - [-1000, 820]
+
+  # MacDonald St — N–S between Dunbar/Alma and Arbutus.
+  macdonald_st:
+    lanes: 4
+    points:
+      - [-920, 820]
+      - [-920, 890]
+      - [-920, 960]
+      - [-920, 1030]
+      - [-920, 1065]
+      - [-920, 1100]
+      - [-920, 1160]
+
+  # Arbutus St — N–S between MacDonald and Burrard.
+  arbutus_st:
+    lanes: 4
+    points:
+      - [-870, 820]
+      - [-870, 890]
+      - [-870, 960]
+      - [-870, 1030]
+      - [-870, 1100]
+      - [-870, 1140]
+
+  # NW Marine Drive — Point Grey north shore; joins SW Marine at the west tip.
+  # Orange: keep the north shelf continuous past Blanca / Alma, then into the city.
+  nw_marine:
+    lanes: 4
+    points:
+      - [-1220, 980]
+      - [-1180, 1080]
+      - [-1120, 1140]
+      - [-1100, 1168]
+      - [-1000, 1168]
+      - [-960, 1168]
+      - [-920, 1160]
+      - [-880, 1140]
+      - [-860, 1125]
+
   # --- Downtown Vancouver (sketch overlay) ---
   # Burrard / Granville / Main / Cambie = parallel N–S shafts that bend NE.
   # Georgia / Davie = NW–SE diagonals; Davie ends at Granville.
-  # Hastings = E–W across the top.
+  # Hastings = E–W east of Granville; west of Granville slants NW like Georgia.
   # Georgia St — NW–SE diagonal; levels toward Fraser.
   georgia_st:
     lanes: 4
@@ -448,12 +552,15 @@ highways:
       - [-790, 1180]
       - [-748, 1165]
 
-  # Hastings St (green) — E–W across the top of downtown through Boundary.
+  # Hastings St — flat E–W from Granville through Boundary; NW slant west of
+  # Granville (same rise family as Georgia west of Granville).
   hastings_st:
     lanes: 4
     points:
-      - [-850, 1230]
-      - [-750, 1230]
+      - [-860, 1320]
+      - [-830, 1305]
+      - [-800, 1285]
+      - [-750, 1260]
       - [-700, 1230]
       - [-650, 1230]
       - [-455, 1230]

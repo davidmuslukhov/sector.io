@@ -310,7 +310,7 @@ class CityPlan:
         bridge_clearance = self.barrier_h + 2.8
         bridge_z = road_z + bridge_clearance
         # Chaikin + Catmull-Rom → dense samples for a continuous ribbon edge.
-        sample_spacing = max(1.25, highway_width * 0.12)
+        sample_spacing = max(2.0, highway_width * 0.18)
 
         arterials: list[dict[str, Any]] = []
         xs: list[float] = []
@@ -318,7 +318,7 @@ class CityPlan:
         for route in self.highway_routes:
             lanes = max(2, int(route.lanes))
             width = lanes * lane_width
-            spacing = max(1.25, width * 0.12)
+            spacing = max(2.0, width * 0.18)
             smooth = tuple(
                 _smooth_polyline(_chaikin(route.points, iterations=2), spacing)
             )

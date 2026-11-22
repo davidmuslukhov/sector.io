@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 
 from panda3d.core import (
     Geom,
@@ -646,6 +647,50 @@ def _polyline_length(pts: list[tuple[float, float]]) -> float:
     return total
 
 
+def _dist2_point_segment(
+    px: float,
+    py: float,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+) -> tuple[float, float, float]:
+    """Return ``(dist2, qx, qy)`` for the closest point on segment AB to P."""
+    abx = bx - ax
+    aby = by - ay
+    denom = abx * abx + aby * aby
+    if denom < 1e-12:
+        return (px - ax) * (px - ax) + (py - ay) * (py - ay), ax, ay
+    t = ((px - ax) * abx + (py - ay) * aby) / denom
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    qx = ax + abx * t
+    qy = ay + aby * t
+    dx = px - qx
+    dy = py - qy
+    return dx * dx + dy * dy, qx, qy
+
+
+def _seg_unit(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    length = math.hypot(dx, dy) or 1.0
+    return dx / length, dy / length
+
+
+def _crossing_clear_radius(
+    own_w: float,
+    other_w: float,
+    sin_angle: float,
+) -> float:
+    """Median/mark opening radius that clears the other ribbon at this angle.
+
+    Shallow crossings (Fraser Hwy × 88 Ave) need a much larger disc than a
+    right-angle junction so barriers don't clip through the skewed pad.
+    """
+    sin_a = max(0.22, min(1.0, abs(sin_angle)))
+    return (other_w * 0.5) / sin_a + own_w * 0.35 + 3.0
+
+
 def _arms_for_arterial_at(
     pts: list[tuple[float, float]],
     width: float,
@@ -697,71 +742,174 @@ def _dedup_arm_dirs(
     return out
 
 
-def arterial_junctions(
+# Segment record: arterial index, segment index, endpoints, unit tangent.
+_Seg = tuple[int, int, float, float, float, float, float, float]
+
+
+def _arterial_segment_index(
     arterials: list[dict],
+    *,
+    cell: float = 40.0,
+) -> tuple[
+    list[tuple[str, float, list[tuple[float, float]]]],
+    list[_Seg],
+    dict[tuple[int, int], list[int]],
+    float,
+]:
+    """Build named arterials, flat segment list, and a spatial hash of segments."""
+    routes: list[tuple[str, float, list[tuple[float, float]]]] = []
+    segs: list[_Seg] = []
+    grid: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for ai, arterial in enumerate(arterials):
+        name = str(arterial.get("name", ""))
+        pts = list(arterial.get("points") or ())
+        width = float(arterial.get("width") or 0.0)
+        routes.append((name, width, pts))
+        if len(pts) < 2 or not name:
+            continue
+        for si in range(len(pts) - 1):
+            ax, ay = pts[si]
+            bx, by = pts[si + 1]
+            ux, uy = _seg_unit(pts[si], pts[si + 1])
+            idx = len(segs)
+            segs.append((ai, si, ax, ay, bx, by, ux, uy))
+            i0 = int(math.floor(min(ax, bx) / cell))
+            i1 = int(math.floor(max(ax, bx) / cell))
+            j0 = int(math.floor(min(ay, by) / cell))
+            j1 = int(math.floor(max(ay, by) / cell))
+            for ci in range(i0, i1 + 1):
+                for cj in range(j0, j1 + 1):
+                    grid[(ci, cj)].append(idx)
+    return routes, segs, grid, cell
+
+
+def _nearby_segment_ids(
+    grid: dict[tuple[int, int], list[int]],
+    cell: float,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    *,
+    pad: float = 0.0,
+) -> list[int]:
+    """Unique segment indices whose cells overlap the padded AABB."""
+    i0 = int(math.floor((min(x0, x1) - pad) / cell))
+    i1 = int(math.floor((max(x0, x1) + pad) / cell))
+    j0 = int(math.floor((min(y0, y1) - pad) / cell))
+    j1 = int(math.floor((max(y0, y1) + pad) / cell))
+    seen: set[int] = set()
+    out: list[int] = []
+    for ci in range(i0, i1 + 1):
+        for cj in range(j0, j1 + 1):
+            for idx in grid.get((ci, cj), ()):
+                if idx not in seen:
+                    seen.add(idx)
+                    out.append(idx)
+    return out
+
+
+def _iter_arterial_pair_hits(
+    arterials: list[dict],
+) -> list[tuple[str, str, float, float, float, float, float]]:
+    """Crossings and T-tips as ``(a, b, x, y, a_w, b_w, sin_angle)``.
+
+    Dense Chaikin polylines make naive segment×segment scans take minutes; a
+    spatial hash keeps this near-linear in total segment count.
+    """
+    routes, segs, grid, cell = _arterial_segment_index(arterials)
+    hits: list[tuple[str, str, float, float, float, float, float]] = []
+    # Pairs that already have a proper segment intersection (skip tip snap).
+    crossed: set[tuple[int, int]] = set()
+
+    for idx, (ai, _si, ax, ay, bx, by, aux, auy) in enumerate(segs):
+        a_name, a_w, _a_pts = routes[ai]
+        for other in _nearby_segment_ids(grid, cell, ax, ay, bx, by):
+            if other <= idx:
+                continue
+            bi, _sj, cx, cy, dx, dy, bux, buy = segs[other]
+            if bi == ai:
+                continue
+            hit = _seg_intersection((ax, ay), (bx, by), (cx, cy), (dx, dy))
+            if hit is None:
+                continue
+            b_name, b_w, _b_pts = routes[bi]
+            pair = (ai, bi) if ai < bi else (bi, ai)
+            crossed.add(pair)
+            sin_a = abs(aux * buy - auy * bux)
+            hits.append((a_name, b_name, hit[0], hit[1], a_w, b_w, sin_a))
+
+    # T-tips / near-miss ends: snap each endpoint onto nearby foreign segments.
+    for ai, (a_name, a_w, a_pts) in enumerate(routes):
+        if len(a_pts) < 2 or not a_name:
+            continue
+        query_pad = max(2.5, 0.35 * a_w) + 8.0
+        for tip_i, tip in ((0, a_pts[0]), (-1, a_pts[-1])):
+            best_by_road: dict[int, tuple[float, float, float, int]] = {}
+            for other in _nearby_segment_ids(
+                grid, cell, tip[0], tip[1], tip[0], tip[1], pad=query_pad
+            ):
+                bi, sj, cx, cy, dx, dy, _bux, _buy = segs[other]
+                if bi == ai:
+                    continue
+                pair = (ai, bi) if ai < bi else (bi, ai)
+                if pair in crossed:
+                    continue
+                _b_name, b_w, _b_pts = routes[bi]
+                tip_tol = max(2.5, 0.35 * max(a_w, b_w))
+                d2, qx, qy = _dist2_point_segment(tip[0], tip[1], cx, cy, dx, dy)
+                if d2 > tip_tol * tip_tol:
+                    continue
+                prev = best_by_road.get(bi)
+                if prev is None or d2 < prev[0]:
+                    best_by_road[bi] = (d2, qx, qy, sj)
+            if tip_i == 0:
+                aux, auy = _seg_unit(a_pts[0], a_pts[1])
+            else:
+                aux, auy = _seg_unit(a_pts[-2], a_pts[-1])
+            for bi, (_d2, qx, qy, sj) in best_by_road.items():
+                b_name, b_w, b_pts = routes[bi]
+                bux, buy = _seg_unit(b_pts[sj], b_pts[sj + 1])
+                hits.append(
+                    (a_name, b_name, qx, qy, a_w, b_w, abs(aux * buy - auy * bux))
+                )
+    return hits
+
+
+def _gaps_from_pair_hits(
+    arterials: list[dict],
+    pair_hits: list[tuple[str, str, float, float, float, float, float]],
+) -> dict[str, list[tuple[float, float, float]]]:
+    hits: dict[str, list[tuple[float, float, float]]] = {
+        str(a.get("name", "")): [] for a in arterials
+    }
+
+    def add_hit(
+        name: str, x: float, y: float, radius: float, *, merge: float = 4.0
+    ) -> None:
+        bucket = hits[name]
+        for i, (hx, hy, hr) in enumerate(bucket):
+            if (hx - x) * (hx - x) + (hy - y) * (hy - y) <= merge * merge:
+                bucket[i] = (0.5 * (hx + x), 0.5 * (hy + y), max(hr, radius))
+                return
+        bucket.append((x, y, radius))
+
+    for a_name, b_name, x, y, a_w, b_w, sin_a in pair_hits:
+        add_hit(a_name, x, y, _crossing_clear_radius(a_w, b_w, sin_a))
+        add_hit(b_name, x, y, _crossing_clear_radius(b_w, a_w, sin_a))
+    return hits
+
+
+def _junctions_from_pair_hits(
+    arterials: list[dict],
+    pair_hits: list[tuple[str, str, float, float, float, float, float]],
     *,
     merge: float = 8.0,
 ) -> list[dict]:
-    """3-/4-way arterial junctions with outward arm directions.
-
-    Each entry: ``x``, ``y``, ``roads`` (frozenset), ``arms`` (outward unit
-    vectors), ``half`` (intersection half-size for mast placement).
-    """
-    raw: list[tuple[float, float, str, str]] = []
-
-    def tip_record(
-        stem_pts: list[tuple[float, float]],
-        through_pts: list[tuple[float, float]],
-        stem_name: str,
-        through_name: str,
-        stem_w: float,
-        through_w: float,
-    ) -> None:
-        tip_tol = max(2.5, 0.35 * max(stem_w, through_w))
-        tip_tol2 = tip_tol * tip_tol
-        for tip in (stem_pts[0], stem_pts[-1]):
-            best = None
-            for bi in range(len(through_pts) - 1):
-                d2, qx, qy = _dist2_point_segment(
-                    tip[0],
-                    tip[1],
-                    through_pts[bi][0],
-                    through_pts[bi][1],
-                    through_pts[bi + 1][0],
-                    through_pts[bi + 1][1],
-                )
-                if d2 <= tip_tol2 and (best is None or d2 < best[0]):
-                    best = (d2, qx, qy)
-            if best is not None:
-                raw.append((best[1], best[2], stem_name, through_name))
-
-    for i, a in enumerate(arterials):
-        a_pts = list(a.get("points") or ())
-        a_name = str(a.get("name", ""))
-        a_w = float(a.get("width") or 0.0)
-        if len(a_pts) < 2 or not a_name:
-            continue
-        for b in arterials[i + 1 :]:
-            b_pts = list(b.get("points") or ())
-            b_name = str(b.get("name", ""))
-            b_w = float(b.get("width") or 0.0)
-            if len(b_pts) < 2 or not b_name:
-                continue
-            found = False
-            for ai in range(len(a_pts) - 1):
-                for bi in range(len(b_pts) - 1):
-                    hit = _seg_intersection(
-                        a_pts[ai], a_pts[ai + 1], b_pts[bi], b_pts[bi + 1]
-                    )
-                    if hit is None:
-                        continue
-                    found = True
-                    raw.append((hit[0], hit[1], a_name, b_name))
-            if found:
-                continue
-            tip_record(a_pts, b_pts, a_name, b_name, a_w, b_w)
-            tip_record(b_pts, a_pts, b_name, a_name, b_w, a_w)
-
+    raw = [
+        (x, y, a_name, b_name)
+        for a_name, b_name, x, y, _a_w, _b_w, _sin in pair_hits
+    ]
     merge2 = merge * merge
     clusters: list[dict] = []
     for x, y, a_name, b_name in raw:
@@ -819,48 +967,30 @@ def arterial_junctions(
     return junctions
 
 
-def _dist2_point_segment(
-    px: float,
-    py: float,
-    ax: float,
-    ay: float,
-    bx: float,
-    by: float,
-) -> tuple[float, float, float]:
-    """Return ``(dist2, qx, qy)`` for the closest point on segment AB to P."""
-    abx = bx - ax
-    aby = by - ay
-    denom = abx * abx + aby * aby
-    if denom < 1e-12:
-        return (px - ax) * (px - ax) + (py - ay) * (py - ay), ax, ay
-    t = ((px - ax) * abx + (py - ay) * aby) / denom
-    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-    qx = ax + abx * t
-    qy = ay + aby * t
-    dx = px - qx
-    dy = py - qy
-    return dx * dx + dy * dy, qx, qy
+def arterial_topology(
+    arterials: list[dict],
+    *,
+    merge: float = 8.0,
+) -> tuple[dict[str, list[tuple[float, float, float]]], list[dict]]:
+    """Crossing gap discs and 3-/4-way junctions from one spatial pass."""
+    pair_hits = _iter_arterial_pair_hits(arterials)
+    return (
+        _gaps_from_pair_hits(arterials, pair_hits),
+        _junctions_from_pair_hits(arterials, pair_hits, merge=merge),
+    )
 
 
-def _seg_unit(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
-    dx = b[0] - a[0]
-    dy = b[1] - a[1]
-    length = math.hypot(dx, dy) or 1.0
-    return dx / length, dy / length
+def arterial_junctions(
+    arterials: list[dict],
+    *,
+    merge: float = 8.0,
+) -> list[dict]:
+    """3-/4-way arterial junctions with outward arm directions.
 
-
-def _crossing_clear_radius(
-    own_w: float,
-    other_w: float,
-    sin_angle: float,
-) -> float:
-    """Median/mark opening radius that clears the other ribbon at this angle.
-
-    Shallow crossings (Fraser Hwy × 88 Ave) need a much larger disc than a
-    right-angle junction so barriers don't clip through the skewed pad.
+    Each entry: ``x``, ``y``, ``roads`` (frozenset), ``arms`` (outward unit
+    vectors), ``half`` (intersection half-size for mast placement).
     """
-    sin_a = max(0.22, min(1.0, abs(sin_angle)))
-    return (other_w * 0.5) / sin_a + own_w * 0.35 + 3.0
+    return arterial_topology(arterials, merge=merge)[1]
 
 
 def arterial_crossing_gaps(
@@ -871,102 +1001,7 @@ def arterial_crossing_gaps(
     ``clear_radius`` already accounts for both paved widths and the crossing
     angle — use it directly for median / mark gaps (add edge offset for fences).
     """
-    hits: dict[str, list[tuple[float, float, float]]] = {
-        str(a.get("name", "")): [] for a in arterials
-    }
-
-    def add_hit(
-        name: str, x: float, y: float, radius: float, *, merge: float = 4.0
-    ) -> None:
-        """Keep one disc per junction; keep the larger opening."""
-        bucket = hits[name]
-        for i, (hx, hy, hr) in enumerate(bucket):
-            if (hx - x) * (hx - x) + (hy - y) * (hy - y) <= merge * merge:
-                bucket[i] = (0.5 * (hx + x), 0.5 * (hy + y), max(hr, radius))
-                return
-        bucket.append((x, y, radius))
-
-    def record(
-        a_name: str,
-        b_name: str,
-        x: float,
-        y: float,
-        a_w: float,
-        b_w: float,
-        sin_angle: float,
-    ) -> None:
-        add_hit(a_name, x, y, _crossing_clear_radius(a_w, b_w, sin_angle))
-        add_hit(b_name, x, y, _crossing_clear_radius(b_w, a_w, sin_angle))
-
-    for i, a in enumerate(arterials):
-        a_pts = list(a.get("points") or ())
-        a_name = str(a.get("name", ""))
-        a_w = float(a.get("width") or 0.0)
-        if len(a_pts) < 2 or not a_name:
-            continue
-        for b in arterials[i + 1 :]:
-            b_pts = list(b.get("points") or ())
-            b_name = str(b.get("name", ""))
-            b_w = float(b.get("width") or 0.0)
-            if len(b_pts) < 2 or not b_name:
-                continue
-            found = False
-            for ai in range(len(a_pts) - 1):
-                for bi in range(len(b_pts) - 1):
-                    hit = _seg_intersection(
-                        a_pts[ai], a_pts[ai + 1], b_pts[bi], b_pts[bi + 1]
-                    )
-                    if hit is None:
-                        continue
-                    found = True
-                    aux, auy = _seg_unit(a_pts[ai], a_pts[ai + 1])
-                    bux, buy = _seg_unit(b_pts[bi], b_pts[bi + 1])
-                    sin_a = abs(aux * buy - auy * bux)
-                    record(a_name, b_name, hit[0], hit[1], a_w, b_w, sin_a)
-            if found:
-                continue
-            # T-tips / near-miss shared ends after smoothing: snap endpoint→segment.
-            tip_tol = max(2.5, 0.35 * max(a_w, b_w))
-            tip_tol2 = tip_tol * tip_tol
-            # T junctions are ~90° locally; use a healthy sin floor via helper.
-            for tip in (a_pts[0], a_pts[-1]):
-                best = None
-                best_bi = 0
-                for bi in range(len(b_pts) - 1):
-                    d2, qx, qy = _dist2_point_segment(
-                        tip[0], tip[1], b_pts[bi][0], b_pts[bi][1], b_pts[bi + 1][0], b_pts[bi + 1][1]
-                    )
-                    if d2 <= tip_tol2 and (best is None or d2 < best[0]):
-                        best = (d2, qx, qy)
-                        best_bi = bi
-                if best is not None:
-                    _d2, qx, qy = best
-                    # Approach tangent of the stem vs through-road segment.
-                    if tip is a_pts[0]:
-                        aux, auy = _seg_unit(a_pts[0], a_pts[1])
-                    else:
-                        aux, auy = _seg_unit(a_pts[-2], a_pts[-1])
-                    bux, buy = _seg_unit(b_pts[best_bi], b_pts[best_bi + 1])
-                    record(a_name, b_name, qx, qy, a_w, b_w, abs(aux * buy - auy * bux))
-            for tip in (b_pts[0], b_pts[-1]):
-                best = None
-                best_ai = 0
-                for ai in range(len(a_pts) - 1):
-                    d2, qx, qy = _dist2_point_segment(
-                        tip[0], tip[1], a_pts[ai][0], a_pts[ai][1], a_pts[ai + 1][0], a_pts[ai + 1][1]
-                    )
-                    if d2 <= tip_tol2 and (best is None or d2 < best[0]):
-                        best = (d2, qx, qy)
-                        best_ai = ai
-                if best is not None:
-                    _d2, qx, qy = best
-                    if tip is b_pts[0]:
-                        bux, buy = _seg_unit(b_pts[0], b_pts[1])
-                    else:
-                        bux, buy = _seg_unit(b_pts[-2], b_pts[-1])
-                    aux, auy = _seg_unit(a_pts[best_ai], a_pts[best_ai + 1])
-                    record(a_name, b_name, qx, qy, a_w, b_w, abs(aux * buy - auy * bux))
-    return hits
+    return arterial_topology(arterials)[0]
 
 
 def _point_in_gaps(

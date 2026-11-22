@@ -23,6 +23,13 @@ from direct.showbase.ShowBase import ShowBase
 from city.builders import SceneBuilders
 from city.car import CarController, PlayerCar
 from city.daycycle import SUNRISE_SECONDS, DayNightCycle
+from city.districts import (
+    CITY_CENTRE_BLOCKS,
+    DISTRICT_DEFS,
+    HIGHWAY_LABELS,
+    LOCATION_AREAS,
+    SIDE_BORDER_ROUTES,
+)
 from city.materials import (
     BLOCK_SHADES,
     block_material,
@@ -33,8 +40,7 @@ from city.materials import (
 )
 from city.mesh import (
     _dist2_point_segment,
-    arterial_crossing_gaps,
-    arterial_junctions,
+    arterial_topology,
     box_instance,
     make_highway_ribbon,
     make_sky_dome,
@@ -45,132 +51,12 @@ from city.mesh import (
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
 
-# Readable names for arterial YAML keys (world-space map labels).
-HIGHWAY_LABELS = {
-    "hwy17": "Hwy 17",
-    "hwy17a": "Hwy 17A",
-    "hwy1": "Hwy 1",
-    "fraser": "Fraser Hwy",
-    "hwy15": "Hwy 15",
-    "hwy10": "88 Ave",
-    "hwy99": "Hwy 99",
-    "hwy91": "Hwy 91",
-    "hwy8": "Hwy 10",
-    "ladner_trunk": "Ladner Trunk Road",
-    "no_2_rd": "No. 2 Rd",
-    "no_3_rd": "No. 3 Rd",
-    "no_4_rd": "No. 4 Rd",
-    "steveston_hwy": "Steveston Hwy",
-    "williams_rd": "Williams Rd",
-    "francis_rd": "Francis Rd",
-    "blundell_rd": "Blundell Rd",
-    "bridgeport_rd": "Bridgeport Rd",
-    "no_1_rd": "No. 1 Rd",
-    "westminster_hwy": "Westminster Hwy",
-    "oak_st": "Oak St",
-    "granville_st": "Granville St",
-    "cambie_st": "Cambie St",
-    "main_st": "Main St",
-    "fraser_st": "Fraser St",
-    "knight_st": "Knight St",
-    "boundary_rd": "Boundary Rd",
-    "sw_marine": "SW Marine Drive",
-    "ave_49": "49th Ave",
-    "ave_41": "41st Ave",
-    "king_edward": "King Edward Blvd",
-    "broadway": "Broadway",
-    "burrard_st": "Burrard St",
-    "georgia_st": "Georgia St",
-    "davie_st": "Davie St",
-    "hastings_st": "Hastings St",
-    "kingsway": "Kingsway",
-    "king_george": "King George Blvd",
-    "scott_120": "120 St",
-    "st_120_s": "120 St",
-    "st_56": "56 St",
-    "ave_72": "72 Ave",
-    "ave_96": "96 Ave",
-    "ave_102": "102 Ave",
-    "ave_102_e": "102 Ave",
-    "ave_108": "108 Ave",
-    "ave_114": "114 Ave",
-    "ave_58": "58 Ave",
-    "ave_28": "28 Ave",
-    "ave_16": "16 Ave",
-    "ave_0": "0 Ave",
-    "ave_0_delta": "0 Ave",
-    "whalley_blvd": "Whalley Blvd",
-    "university_dr": "University Dr",
-    "marine_dr": "Marine Dr",
-    "st_128": "128 St",
-    "st_136": "136 St",
-    "st_140": "140 St",
-    "st_152": "152 St",
-    "st_196": "196 St",
-    "st_200": "200 St",
-    "st_208": "208 St",
-    "st_224": "224 St",
-    "st_248": "248 St",
-    "st_260": "260 St",
-    "st_276": "276 St",
-}
-
-# Thin side fences: provincial highways plus Fraser, 88 Ave, and King George.
-SIDE_BORDER_ROUTES = frozenset(
-    {
-        "hwy17",
-        "hwy17a",
-        "hwy1",
-        "fraser",
-        "hwy15",
-        "hwy99",
-        "hwy91",
-        "hwy8",
-        "hwy10",
-        "king_george",
-    }
-)
-
 # Spatial hash cell size for barrier / road lookups (car-mode hot path).
 _SEG_CELL = 10.0
-# Barrier prism length target — dense Chaikin samples are ~1.25; coarsen for FPS.
+# Barrier prism length target — smoothed samples are ~2 units; coarsen for FPS.
 _BARRIER_SPAN = 4.5
 # Drop leftover stubs between nearby crossings (e.g. Fraser × 58 Ave near 224 St).
 _BARRIER_MIN_RUN = 16.0
-
-# Car-mode HUD: neighborhood → (area label, municipality). Checked in order.
-_LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
-    ("city_centre", "Surrey City Centre", "Surrey"),
-    ("white_rock_centre", "White Rock Centre", "White Rock"),
-    ("langley_city", "Langley City", "Langley"),
-    ("whalley", "Whalley", "Surrey"),
-    ("newton", "Newton", "Surrey"),
-    ("guildford", "Guildford", "Surrey"),
-    ("fleetwood", "Fleetwood", "Surrey"),
-    ("cloverdale", "Cloverdale", "Surrey"),
-    ("south_surrey", "South Surrey", "Surrey"),
-    ("north_delta", "North Delta", "Delta"),
-    ("ladner", "Ladner", "Delta"),
-    ("tsawwassen", "Tsawwassen", "Delta"),
-    ("bridgeport", "Bridgeport", "Richmond"),
-    ("seaforth", "Seaforth", "Richmond"),
-    ("steveston", "Steveston", "Richmond"),
-    ("brighouse", "Brighouse", "Richmond"),
-    ("cambie", "Cambie", "Richmond"),
-    ("broadmoor", "Broadmoor", "Richmond"),
-    ("east_richmond", "East Richmond", "Richmond"),
-    ("downtown_vancouver", "Downtown Vancouver", "Vancouver"),
-    ("vancouver", "Vancouver", "Vancouver"),
-    ("port_kells", "Port Kells", "Langley"),
-    ("walnut_grove", "Walnut Grove", "Langley"),
-    ("fort_langley", "Fort Langley", "Langley"),
-    ("east_clayton", "East Clayton", "Langley"),
-    ("willoughby", "Willoughby", "Langley"),
-    ("hopington", "Hopington", "Langley"),
-    ("fern_ridge", "Fern Ridge", "Langley"),
-    ("brookswood", "Brookswood", "Langley"),
-    ("campbell_valley", "Campbell Valley", "Langley"),
-)
 
 
 class CityApp(ShowBase):
@@ -183,8 +69,27 @@ class CityApp(ShowBase):
         plan = default_city_plan()
         self.plan = plan
         self.city = self.render.attachNewNode("city")
-        block_size = plan.block_size
+        hwy = plan.highway_geometry()
+        self._hwy = hwy
+        road_z = hwy["road_z"]
+        road_thickness = hwy["road_thickness"]
+        road_top = road_z + road_thickness / 2
+        arterials = list(hwy["arterials"])
 
+        self._build_neighborhoods(plan)
+        self._build_city_centre(plan, road_z, arterials)
+        self._build_districts(road_z, road_thickness)
+        self._build_highways(plan, hwy, arterials, road_z, road_thickness, road_top)
+        self._build_streets(plan, hwy, road_z, road_thickness, road_top)
+        self._build_ground(hwy, road_z)
+        self._build_lighting()
+        self._build_traffic(plan, arterials, road_top)
+        self._setup_camera(plan, road_z)
+        self._setup_hud()
+        self._bind_controls()
+
+    def _build_neighborhoods(self, plan) -> None:
+        block_size = plan.block_size
         for hood in plan.neighborhoods:
             node = self.city.attachNewNode(f"hood-{hood.name}")
             node.setPos(hood.origin_x, hood.origin_y, 0.0)
@@ -229,17 +134,13 @@ class CityApp(ShowBase):
                         houses_across=lot.houses_across,
                         houses_deep=lot.houses_deep,
                     )
-
         # Demo house on the NE plate; skyscrapers stay in the circled Whalley blocks.
-        ne = SceneBuilders(self.city, plan, self.render)
-        ne._add_house(560.0, 400.0, brick=0.68, chimney=True)
-        hwy = plan.highway_geometry()
-        lane_width = hwy["lane_width"]
-        highway_width = hwy["highway_width"]
-        road_z = hwy["road_z"]
-        road_thickness = hwy["road_thickness"]
-        arterials = list(hwy["arterials"])
+        SceneBuilders(self.city, plan, self.render)._add_house(
+            560.0, 400.0, brick=0.68, chimney=True
+        )
 
+    def _build_city_centre(self, plan, road_z: float, arterials: list) -> None:
+        block_size = plan.block_size
         # Road corridors for tower sight checks: (ax, ay, bx, by, half_width).
         road_segs: list[tuple[float, float, float, float, float]] = []
         for route in arterials:
@@ -250,14 +151,14 @@ class CityApp(ShowBase):
                     (pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], half_w)
                 )
 
-        def _tower_sees_road(
+        def tower_sees_road(
             tx: float,
             ty: float,
             half: float,
             others: list[tuple[float, float]],
             *,
             max_dist: float = 48.0,
-            step: float = 0.7,
+            step: float = 1.0,
         ) -> bool:
             """True if a cardinal ray hits pavement before another tower."""
             for dx, dy in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
@@ -279,23 +180,9 @@ class CityApp(ShowBase):
                     dist += step
             return False
 
-        # City Centre: circled blocks packed with towers, split around 102 Ave.
-        # Each tuple is (west, east, south, north) inset from the arterials.
-        self.city_centre_blocks = (
-            (92.0, 113.0, 184.0, 204.0),   # 128–Uni, 96–102
-            (127.0, 148.0, 184.0, 204.0),  # Uni–KG, 96–102
-            (162.0, 180.0, 184.0, 204.0),  # KG–Whalley, 96–102
-            (194.0, 211.0, 184.0, 204.0),  # Whalley–140, 96–102
-            (92.0, 113.0, 216.0, 236.0),   # 128–Uni, 102–108
-            (127.0, 148.0, 216.0, 236.0),  # Uni–KG, 102–108
-            (162.0, 180.0, 216.0, 236.0),  # KG–Whalley, 102–108
-            (194.0, 211.0, 216.0, 236.0),  # Whalley–140, 102–108
-            (162.0, 180.0, 253.0, 282.0),  # KG–Whalley, above 108
-            (194.0, 211.0, 253.0, 282.0),  # Whalley–140, above 108
-        )
+        self.city_centre_blocks = CITY_CENTRE_BLOCKS
         self.city_centre = self.city.attachNewNode("city-centre")
         cc = SceneBuilders(self.city_centre, plan, self.render)
-        # Dark grey lot pads under the tower blocks (above the lawn).
         pad_mat = concrete_material(0.32)
         pad_thickness = 0.14
         for west, east, south, north in self.city_centre_blocks:
@@ -327,7 +214,6 @@ class CityApp(ShowBase):
                     seed = abs(int(x * 17 + y * 31))
                     x += ((seed % 7) - 3) * 0.12
                     y += ((seed % 5) - 2) * 0.12
-                    # Medium or tall only — no short stacks.
                     mid_lo = max(plan.floor_min, 14)
                     mid_hi = max(mid_lo + 4, plan.floor_max - 2)
                     tall_lo = mid_hi + 1
@@ -343,11 +229,11 @@ class CityApp(ShowBase):
                     heading = (seed % 9 - 4) * 5.0 if footprint == "tri" else 0.0
                     candidates.append((x, y, floors, footprint, heading, seed))
 
-        # Drop towers with no clear cardinal sightline to a road.
+        positions = [(x, y) for x, y, *_rest in candidates]
         kept: list[tuple[float, float, int, str, float, int]] = []
-        for x, y, floors, footprint, heading, seed in candidates:
-            others = [(ox, oy) for ox, oy, *_rest in candidates if ox != x or oy != y]
-            if _tower_sees_road(x, y, tower_half, others):
+        for i, (x, y, floors, footprint, heading, seed) in enumerate(candidates):
+            others = positions[:i] + positions[i + 1 :]
+            if tower_sees_road(x, y, tower_half, others):
                 kept.append((x, y, floors, footprint, heading, seed))
         for x, y, floors, footprint, heading, seed in kept:
             cc._add_stack(
@@ -361,604 +247,38 @@ class CityApp(ShowBase):
                 doors=("-y",),
             )
 
+    def _build_districts(self, road_z: float, road_thickness: float) -> None:
         self._ground_z = road_z
         outline_z = road_z + road_thickness / 2 + 0.03
-        # District rings follow arterial centrelines (click → outline + title).
-        # Outer boundary arterials use the outer curb so the full ribbon is inside:
-        # 0 Ave south -482, 102 Ave north 212.5, 276 St east 1255, Marine Dr SW +5,
-        # 120 St (28–Marine) west 21, Hwy 99 (Hwy 17–120) south -167.5,
-        # Hwy 15 (Hwy 17–102) east 487.5.
-        self._districts: dict[str, dict] = {
-            "city_centre": {
-                "title": "Surrey City Centre",
-                # 128 St → 96 Ave → 140 St → 114 Ave → King George → 108 Ave.
-                "ring": (
-                    (85.0, 175.0),
-                    (218.0, 175.0),
-                    (218.0, 290.0),
-                    (155.0, 290.0),
-                    (155.0, 245.0),
-                    (85.0, 245.0),
-                ),
-                "bright": self.city_centre,
-            },
-            "whalley": {
-                "title": "Whalley",
-                # 120 St → 88 Ave → 152 St → Hwy 1 → Hwy 17 (both sides) → 96 Ave;
-                # City Centre notched.
-                "ring": (
-                    (18.0, 78.0),
-                    (285.0, 78.0),
-                    (285.0, 175.0),
-                    (218.0, 175.0),
-                    (218.0, 290.0),
-                    (155.0, 290.0),
-                    (155.0, 245.0),
-                    (85.0, 245.0),
-                    (85.0, 175.0),
-                    (218.0, 175.0),
-                    (285.0, 175.0),
-                    (285.0, 234.0),
-                    (280.0, 236.0),
-                    (266.0, 263.0),
-                    (247.0, 319.0),
-                    (215.0, 357.0),
-                    (176.0, 387.2),
-                    (176.0, 397.0),
-                    (138.2, 394.9),
-                    (77.2, 383.7),
-                    (19.9, 365.9),
-                    (-28.5, 333.5),
-                    (-60.7, 285.4),
-                    (-79.6, 233.1),
-                    (-89.8, 177.4),
-                    (-90.0, 175.0),
-                    (14.0, 175.0),
-                    (16.0, 120.0),
-                ),
-                "bright": None,
-            },
-            "north_delta": {
-                "title": "North Delta",
-                # West of 120 St to Hwy 17 (Hwy 10 / Hwy 99 junction), Hwy 99 south curb.
-                "ring": (
-                    (14.0, 175.0),
-                    (-90.0, 175.0),
-                    (-101.8, 122.4),
-                    (-116.8, 42.1),
-                    (-131.9, -48.6),
-                    (-190.0, -50.0),
-                    (-190.0, -167.5),
-                    (26.0, -167.5),
-                    (24.0, -70.0),
-                    (22.0, -20.0),
-                    (20.0, 30.0),
-                    (18.0, 78.0),
-                    (16.0, 120.0),
-                ),
-                "bright": None,
-            },
-            "ladner": {
-                "title": "Ladner",
-                # Hwy 99 → Ladner Trunk → Hwy 17 west arm → back.
-                "ring": (
-                    (-520.0, -160.0),
-                    (-350.0, -160.0),
-                    (-270.0, -160.0),
-                    (-190.0, -160.0),
-                    (-190.0, -190.0),
-                    (-220.0, -260.0),
-                    (-270.0, -310.0),
-                    (-350.0, -320.0),
-                    (-520.0, -320.0),
-                ),
-                "bright": None,
-            },
-            "tsawwassen": {
-                "title": "Tsawwassen",
-                # South of Hwy 17 → 56 St / 17A → 0 Ave (south curb, both lanes).
-                "ring": (
-                    (-520.0, -320.0),
-                    (-350.0, -320.0),
-                    (-270.0, -310.0),
-                    (-260.0, -482.0),
-                    (-420.0, -482.0),
-                ),
-                "bright": None,
-            },
-            "bridgeport": {
-                "title": "Bridgeport",
-                # Purple: north of Bridgeport Rd (YVR not included); Hwy 99 leaves
-                # at Bridgeport toward Granville and is not part of this ring.
-                "ring": (
-                    (-1050.0, 550.0),
-                    (-620.0, 550.0),
-                    (-620.0, 700.0),
-                    (-1050.0, 700.0),
-                ),
-                "bright": None,
-            },
-            "seaforth": {
-                "title": "Seaforth",
-                # Green: No. 1 → No. 2, Bridgeport → Francis.
-                "ring": (
-                    (-915.0, 550.0),
-                    (-817.0, 550.0),
-                    (-817.0, 215.0),
-                    (-915.0, 215.0),
-                ),
-                "bright": None,
-            },
-            "steveston": {
-                "title": "Steveston",
-                # Blue: No. 1 → No. 2, Francis → Steveston Hwy.
-                "ring": (
-                    (-915.0, 215.0),
-                    (-817.0, 215.0),
-                    (-817.0, 75.0),
-                    (-915.0, 75.0),
-                ),
-                "bright": None,
-            },
-            "brighouse": {
-                "title": "Brighouse",
-                # Red: No. 2 → No. 3, Bridgeport → Francis.
-                "ring": (
-                    (-817.0, 550.0),
-                    (-718.0, 550.0),
-                    (-718.0, 215.0),
-                    (-817.0, 215.0),
-                ),
-                "bright": None,
-            },
-            "cambie": {
-                "title": "Cambie",
-                # Orange: No. 3 → Hwy 99, Bridgeport → Francis (covers Blundell strip).
-                "ring": (
-                    (-718.0, 550.0),
-                    (-620.0, 550.0),
-                    (-620.0, 215.0),
-                    (-718.0, 215.0),
-                ),
-                "bright": None,
-            },
-            "broadmoor": {
-                "title": "Broadmoor",
-                # Brown: No. 2 → Hwy 99, Francis → Steveston Hwy.
-                "ring": (
-                    (-817.0, 215.0),
-                    (-620.0, 215.0),
-                    (-620.0, 75.0),
-                    (-817.0, 75.0),
-                ),
-                "bright": None,
-            },
-            "east_richmond": {
-                "title": "East Richmond",
-                # Yellow: Hwy 99 → No. 4, Bridgeport → Steveston Hwy.
-                "ring": (
-                    (-620.0, 550.0),
-                    (-522.0, 550.0),
-                    (-480.0, 550.0),
-                    (-480.0, 75.0),
-                    (-522.0, 75.0),
-                    (-620.0, 75.0),
-                ),
-                "bright": None,
-            },
-            "newton": {
-                "title": "Newton",
-                # 88 Ave → 152 St → Hwy 99 (follow to 152 St) → 120 St.
-                "ring": (
-                    (18.0, 78.0),
-                    (285.0, 78.0),
-                    (285.0, -260.0),
-                    (280.0, -255.0),
-                    (220.0, -205.0),
-                    (160.0, -165.0),
-                    (100.0, -160.0),
-                    (40.0, -160.0),
-                    (26.0, -167.5),
-                    (24.0, -70.0),
-                    (22.0, -20.0),
-                    (20.0, 30.0),
-                ),
-                "bright": None,
-            },
-            "guildford": {
-                "title": "Guildford",
-                # 152 St / 96 Ave → Hwy 15 (east curb Hwy 17–102) → Hwy 17 (both sides) → Hwy 1.
-                "ring": (
-                    (285.0, 175.0),
-                    (480.0, 175.0),
-                    (480.0, 180.0),
-                    (480.0, 210.0),
-                    (487.5, 210.0),
-                    (487.5, 300.0),
-                    (487.5, 366.0),
-                    (482.4, 377.8),
-                    (462.4, 381.8),
-                    (402.0, 393.8),
-                    (341.0, 402.0),
-                    (270.0, 405.0),
-                    (199.1, 402.0),
-                    (176.0, 397.0),
-                    (176.0, 387.2),
-                    (215.0, 357.0),
-                    (247.0, 319.0),
-                    (266.0, 263.0),
-                    (280.0, 236.0),
-                    (285.0, 234.0),
-                ),
-                "bright": None,
-            },
-            "fleetwood": {
-                "title": "Fleetwood",
-                # 152 St → 96 Ave → Hwy 15 → Hwy 10.
-                "ring": (
-                    (285.0, 175.0),
-                    (480.0, 175.0),
-                    (480.0, -35.0),
-                    (285.0, -35.0),
-                ),
-                "bright": None,
-            },
-            "cloverdale": {
-                "title": "Cloverdale",
-                # Hwy 15 → Hwy 1 (angled NE tip) → 196 St → 28 Ave → Hwy 99 → 152 St → Hwy 10.
-                "ring": (
-                    (480.0, 175.0),
-                    (480.0, 190.0),
-                    (520.0, 180.0),
-                    (580.0, 168.0),
-                    (610.0, 160.0),
-                    (610.0, -320.0),
-                    (350.0, -320.0),
-                    (280.0, -255.0),
-                    (285.0, -260.0),
-                    (285.0, -35.0),
-                    (480.0, -35.0),
-                ),
-                "bright": None,
-            },
-            "white_rock_centre": {
-                "title": "White Rock Centre",
-                # 16 Ave → King George → 0 Ave (south curb) → 136 St (carved from South Surrey).
-                "ring": (
-                    (174.0, -400.0),
-                    (401.0, -400.0),
-                    (482.0, -482.0),
-                    (174.0, -482.0),
-                ),
-                "bright": None,
-            },
-            "south_surrey": {
-                "title": "South Surrey",
-                # Hwy 99 north → 28 Ave to 196 St → 0 Ave (south curb) with White Rock Centre
-                # notched out → Marine Dr (SW curb) → 120 St (west curb 28–Marine).
-                "ring": (
-                    (26.0, -167.5),
-                    (100.0, -160.0),
-                    (160.0, -165.0),
-                    (220.0, -205.0),
-                    (280.0, -255.0),
-                    (350.0, -320.0),
-                    (480.0, -320.0),
-                    (610.0, -320.0),
-                    (610.0, -400.0),
-                    (610.0, -482.0),
-                    (517.0, -482.0),
-                    (482.0, -482.0),
-                    (401.0, -400.0),
-                    (174.0, -400.0),
-                    (174.0, -482.0),
-                    (173.4, -490.0),
-                    (118.9, -482.9),
-                    (78.0, -469.6),
-                    (41.7, -448.8),
-                    (21.0, -422.0),
-                    (21.0, -400.0),
-                    (21.0, -320.0),
-                    (26.0, -320.0),
-                ),
-                "bright": None,
-            },
-            "port_kells": {
-                "title": "Port Kells",
-                # 196 St → 102 Ave (north curb) → 208 St → 88 Ave.
-                "ring": (
-                    (610.0, 212.5),
-                    (642.0, 212.5),
-                    (706.0, 212.5),
-                    (706.0, 78.0),
-                    (642.0, 78.0),
-                    (610.0, 78.0),
-                ),
-                "bright": None,
-            },
-            "walnut_grove": {
-                "title": "Walnut Grove",
-                # 208 St → 102 Ave (north curb) → 248 St → 88 Ave.
-                "ring": (
-                    (706.0, 212.5),
-                    (834.0, 212.5),
-                    (1026.0, 212.5),
-                    (1026.0, 78.0),
-                    (834.0, 78.0),
-                    (706.0, 78.0),
-                ),
-                "bright": None,
-            },
-            "fort_langley": {
-                "title": "Fort Langley",
-                # 248 St → 102 Ave (north curb) → 276 St (east curb) → 88 Ave.
-                "ring": (
-                    (1026.0, 212.5),
-                    (1122.0, 212.5),
-                    (1255.0, 212.5),
-                    (1255.0, 78.0),
-                    (1122.0, 78.0),
-                    (1026.0, 78.0),
-                ),
-                "bright": None,
-            },
-            "east_clayton": {
-                "title": "East Clayton",
-                # 196 St → 88 Ave → 208 St → Fraser Hwy.
-                "ring": (
-                    (610.0, 78.0),
-                    (642.0, 78.0),
-                    (706.0, 78.0),
-                    (706.0, -51.0),
-                    (642.0, -29.0),
-                    (610.0, -18.0),
-                ),
-                "bright": None,
-            },
-            "willoughby": {
-                "title": "Willoughby/Willowbrook",
-                # 208 St → 88 Ave → 248 St → Fraser Hwy.
-                "ring": (
-                    (706.0, 78.0),
-                    (834.0, 78.0),
-                    (1026.0, 78.0),
-                    (1026.0, -158.0),
-                    (834.0, -93.0),
-                    (720.0, -55.0),
-                    (706.0, -51.0),
-                ),
-                "bright": None,
-            },
-            "langley_city": {
-                "title": "Langley City",
-                # 196 St → Fraser Hwy → 208 St → 58 Ave.
-                "ring": (
-                    (610.0, -18.0),
-                    (642.0, -29.0),
-                    (706.0, -51.0),
-                    (706.0, -110.0),
-                    (610.0, -110.0),
-                ),
-                "bright": None,
-            },
-            "hopington": {
-                "title": "Hopington",
-                # 248 St → 88 Ave → 276 St (east curb) → Fraser Hwy.
-                "ring": (
-                    (1026.0, 78.0),
-                    (1122.0, 78.0),
-                    (1255.0, 78.0),
-                    (1255.0, -233.0),
-                    (1122.0, -190.0),
-                    (1026.0, -158.0),
-                ),
-                "bright": None,
-            },
-            "fern_ridge": {
-                "title": "Fern Ridge",
-                # 196 St → 58 Ave → 208 St → 0 Ave (south curb).
-                "ring": (
-                    (610.0, -110.0),
-                    (706.0, -110.0),
-                    (706.0, -482.0),
-                    (610.0, -482.0),
-                ),
-                "bright": None,
-            },
-            "brookswood": {
-                "title": "Brookswood",
-                # 208 St → Fraser Hwy → 224 St → 0 Ave (south curb).
-                "ring": (
-                    (706.0, -51.0),
-                    (720.0, -55.0),
-                    (834.0, -93.0),
-                    (834.0, -482.0),
-                    (706.0, -482.0),
-                ),
-                "bright": None,
-            },
-            "campbell_valley": {
-                "title": "Campbell Valley",
-                # 224 St → Fraser Hwy → 276 St (east curb) → 0 Ave (south curb).
-                "ring": (
-                    (834.0, -93.0),
-                    (1026.0, -158.0),
-                    (1122.0, -190.0),
-                    (1255.0, -233.0),
-                    (1255.0, -482.0),
-                    (834.0, -482.0),
-                ),
-                "bright": None,
-            },
-            "district_of_langley": {
-                "title": "District of Langley",
-                # All Langley districts except Langley City (notched via 58 Ave / 208 St / Fraser).
-                "ring": (
-                    (610.0, 212.5),
-                    (642.0, 212.5),
-                    (706.0, 212.5),
-                    (834.0, 212.5),
-                    (1026.0, 212.5),
-                    (1122.0, 212.5),
-                    (1255.0, 212.5),
-                    (1255.0, 78.0),
-                    (1255.0, -233.0),
-                    (1255.0, -482.0),
-                    (1122.0, -482.0),
-                    (1026.0, -482.0),
-                    (834.0, -482.0),
-                    (706.0, -482.0),
-                    (610.0, -482.0),
-                    (610.0, -110.0),
-                    (706.0, -110.0),
-                    (706.0, -51.0),
-                    (642.0, -29.0),
-                    (610.0, -18.0),
-                    (610.0, 78.0),
-                    (610.0, 212.5),
-                ),
-                "bright": None,
-                "hotkey_only": True,
-            },
-            "delta": {
-                "title": "Delta",
-                # Outer outline of North Delta + Ladner + Tsawwassen.
-                "ring": (
-                    (14.0, 175.0),
-                    (-90.0, 175.0),
-                    (-101.8, 122.4),
-                    (-116.8, 42.1),
-                    (-131.9, -48.6),
-                    (-190.0, -50.0),
-                    (-620.0, 75.0),
-                    (-560.0, -40.0),
-                    (-480.0, -100.0),
-                    (-400.0, -140.0),
-                    (-350.0, -160.0),
-                    (-520.0, -160.0),
-                    (-520.0, -320.0),
-                    (-420.0, -482.0),
-                    (-260.0, -482.0),
-                    (-270.0, -310.0),
-                    (-220.0, -260.0),
-                    (-190.0, -190.0),
-                    (-190.0, -167.5),
-                    (26.0, -167.5),
-                    (24.0, -70.0),
-                    (22.0, -20.0),
-                    (20.0, 30.0),
-                    (18.0, 78.0),
-                    (16.0, 120.0),
-                ),
-                "bright": None,
-                "hotkey_only": True,
-            },
-            "richmond": {
-                "title": "Richmond",
-                # Outer outline of Bridgeport + Seaforth + Steveston + Brighouse +
-                # Cambie + Broadmoor + East Richmond. Sea Island / YVR excluded.
-                # Hwy 99 bridge to Granville leaves at Bridgeport (not in ring).
-                "ring": (
-                    (-915.0, 75.0),
-                    (-480.0, 75.0),
-                    (-480.0, 550.0),
-                    (-620.0, 550.0),
-                    (-620.0, 700.0),
-                    (-1050.0, 700.0),
-                    (-1050.0, 550.0),
-                    (-915.0, 550.0),
-                ),
-                "bright": None,
-                "hotkey_only": True,
-            },
-            "downtown_vancouver": {
-                "title": "Downtown Vancouver",
-                # Peninsula north of Broadway: Burrard/Granville/Main/Cambie
-                # bends + Georgia/Davie diagonals + Hastings across the top.
-                "ring": (
-                    (-880.0, 1120.0),
-                    (-420.0, 1120.0),
-                    (-420.0, 1280.0),
-                    (-880.0, 1280.0),
-                ),
-                "bright": None,
-            },
-            "vancouver": {
-                "title": "Vancouver",
-                # City proper: SW Marine → Boundary → Burrard waterfront → west tip.
-                # UBC / Endowment Lands excluded (west of x=-920).
-                # Sub-area: Downtown Vancouver (clickable).
-                "ring": (
-                    (-920.0, 820.0),
-                    (-120.0, 820.0),
-                    (-120.0, 1280.0),
-                    (-920.0, 1280.0),
-                ),
-                "bright": None,
-                "hotkey_only": True,
-            },
-            "surrey": {
-                "title": "Surrey",
-                # Outer outline of all districts except North Delta and White Rock Centre.
-                "ring": (
-                    (-78.0, 175.0),
-                    (-68.0, 230.0),
-                    (-50.0, 280.0),
-                    (-20.0, 325.0),
-                    (8.0, 350.0),
-                    (25.0, 355.0),
-                    (80.0, 372.0),
-                    (140.0, 383.0),
-                    (200.0, 390.0),
-                    (270.0, 393.0),
-                    (340.0, 390.0),
-                    (400.0, 382.0),
-                    (460.0, 370.0),
-                    (487.5, 366.0),
-                    (487.5, 210.0),
-                    (480.0, 210.0),
-                    (480.0, 190.0),
-                    (520.0, 180.0),
-                    (580.0, 168.0),
-                    (610.0, 160.0),
-                    (610.0, -320.0),
-                    (610.0, -400.0),
-                    (610.0, -482.0),
-                    (517.0, -482.0),
-                    (482.0, -482.0),
-                    (401.0, -400.0),
-                    (174.0, -400.0),
-                    (174.0, -482.0),
-                    (173.4, -490.0),
-                    (118.9, -482.9),
-                    (78.0, -469.6),
-                    (41.7, -448.8),
-                    (21.0, -422.0),
-                    (21.0, -400.0),
-                    (21.0, -320.0),
-                    (26.0, -320.0),
-                    (26.0, -167.5),
-                    (24.0, -70.0),
-                    (22.0, -20.0),
-                    (20.0, 30.0),
-                    (18.0, 78.0),
-                    (16.0, 120.0),
-                    (14.0, 175.0),
-                ),
-                "bright": None,
-                "hotkey_only": True,
-            },
-        }
-        for key, district in self._districts.items():
+        bright_nodes = {"city_centre": self.city_centre}
+        self._districts: dict[str, dict] = {}
+        for key, spec in DISTRICT_DEFS.items():
+            district = {
+                "title": spec["title"],
+                "ring": spec["ring"],
+                "bright": bright_nodes.get(spec.get("bright_key")),
+                "hotkey_only": bool(spec.get("hotkey_only")),
+            }
             outline = self._build_district_outline(key, district["ring"], outline_z)
             outline.hide()
             district["outline"] = outline
             district["label"] = None
             district["label_scale"] = 1.0
+            self._districts[key] = district
         self._selected_district: str | None = None
-        # Keep legacy alias used by City Centre tower assembly comments/tests.
         self.city_centre_ring = self._districts["city_centre"]["ring"]
 
+    def _build_highways(
+        self,
+        plan,
+        hwy: dict,
+        arterials: list,
+        road_z: float,
+        road_thickness: float,
+        road_top: float,
+    ) -> None:
+        lane_width = hwy["lane_width"]
+        highway_width = hwy["highway_width"]
         self.highway = self.render.attachNewNode("highway")
         road_mat = road_material()
         mark_paint = mark_material()
@@ -972,14 +292,12 @@ class CityApp(ShowBase):
             width: float,
             mark_gaps: list[tuple[float, float, float]],
         ) -> None:
-            """Lane dashes that follow the smoothed centreline."""
             if len(pts) < 2 or lanes < 2:
                 return
-            # Longer dashes / gaps so the continuous ribbon still reads at overview.
-            mark_len = 3.5
+            mark_len = 4.5
             mark_w = 0.35
             mark_h = 0.04
-            mark_gap = 4.0
+            mark_gap = 5.5
             period = mark_len + mark_gap
             centre_divider = lanes // 2
             dist = [0.0]
@@ -1032,21 +350,16 @@ class CityApp(ShowBase):
                         mark.setMaterial(mark_paint, 1)
                 s += period
 
-        road_top = road_z + road_thickness / 2
         self._highway_labels = self.render.attachNewNode("highway_labels")
         labels_root = self._highway_labels
         self._highway_label_nodes: list = []
         self._label_base_scale = max(36.0, highway_width * 2.8)
         self._label_ref_distance = 1.0
-        # Barriers, side fences, and lane marks open at arterial crossings.
-        crossing_gaps = arterial_crossing_gaps(arterials)
-        # Named centreline segments for car-mode street HUD.
+        crossing_gaps, junctions = arterial_topology(arterials)
         self._named_roads: list[tuple[str, float, float, float, float, float]] = []
-        # Solid median / edge walls for player-car collision: (ax,ay,bx,by,half_w).
         self._solid_barriers: list[tuple[float, float, float, float, float]] = []
 
-        def _coarsen_polyline(points: list, max_span: float) -> list:
-            """Keep endpoints; skip verts until arc length reaches max_span."""
+        def coarsen_polyline(points: list, max_span: float) -> list:
             if len(points) < 2:
                 return list(points)
             out = [points[0]]
@@ -1060,13 +373,12 @@ class CityApp(ShowBase):
                     acc = 0.0
             return out
 
-        def _place_barrier_prisms(
+        def place_barrier_prisms(
             piece: list,
             width: float,
             height: float,
             z_center: float,
         ) -> None:
-            """Rectangular prisms along a coarsened polyline (keeps collision cheap)."""
             if width <= 0.0 or height <= 0.0 or len(piece) < 2:
                 return
             run = 0.0
@@ -1078,7 +390,7 @@ class CityApp(ShowBase):
             if run < _BARRIER_MIN_RUN:
                 return
             half_w = width * 0.5
-            pts = _coarsen_polyline(piece, _BARRIER_SPAN)
+            pts = coarsen_polyline(piece, _BARRIER_SPAN)
             for i in range(len(pts) - 1):
                 x0 = float(pts[i][0])
                 y0 = float(pts[i][1])
@@ -1102,32 +414,28 @@ class CityApp(ShowBase):
             route_lanes = int(arterial.get("lanes", plan.highway_lanes))
             route_width = float(arterial.get("width", highway_width))
             name = str(arterial.get("name", ""))
-            # (x, y, clear_radius) — radius is angle-aware (shallow junctions open wider).
             median_gaps = list(crossing_gaps.get(name, []))
-            # One continuous ribbon per route — smooth edges through bends.
             deck = self.highway.attachNewNode(
                 make_highway_ribbon(pts, route_width, road_thickness)
             )
             deck.setPos(0.0, 0.0, road_z)
             deck.setMaterial(road_mat, 1)
-            # Two-lane roads stay open — no median wall or edge fence.
             if route_lanes > 2:
                 if plan.barrier_w > 0.0 and plan.barrier_h > 0.0:
                     for piece in split_polyline_around_gaps(pts, median_gaps):
-                        _place_barrier_prisms(
+                        place_barrier_prisms(
                             piece,
                             plan.barrier_w,
                             plan.barrier_h,
                             road_top + plan.barrier_h / 2,
                         )
                 if name in SIDE_BORDER_ROUTES and plan.fence_w > 0.0 and plan.fence_h > 0.0:
-                    # Thin concrete lips along both pavement edges; gapped at crossings.
                     edge = route_width / 2 + plan.fence_w / 2
                     fence_gaps = [(x, y, radius + edge) for x, y, radius in median_gaps]
                     for side in (-1.0, 1.0):
                         edge_pts = offset_polyline(pts, side * edge)
                         for piece in split_polyline_around_gaps(edge_pts, fence_gaps):
-                            _place_barrier_prisms(
+                            place_barrier_prisms(
                                 piece,
                                 plan.fence_w,
                                 plan.fence_h,
@@ -1144,8 +452,7 @@ class CityApp(ShowBase):
             title = HIGHWAY_LABELS.get(name, name.replace("_", " ").title())
             if title:
                 half_w = route_width * 0.5
-                # Coarser samples for HUD / on-road tests (full ribbon stays dense).
-                road_pts = _coarsen_polyline(pts, 5.0)
+                road_pts = coarsen_polyline(pts, 5.0)
                 for i in range(len(road_pts) - 1):
                     self._named_roads.append(
                         (
@@ -1166,7 +473,6 @@ class CityApp(ShowBase):
             text.setTextColor(1.0, 1.0, 1.0, 1)
             text.setShadow(0.06, 0.06)
             text.setShadowColor(0.05, 0.06, 0.08, 0.9)
-            # Pivot stays fixed in world space; only the text child is re-scaled.
             pivot = labels_root.attachNewNode(f"hwy-label-pivot-{name}")
             pivot.setPos(mid[0], mid[1], road_top + 4.0)
             label = pivot.attachNewNode(text)
@@ -1176,7 +482,6 @@ class CityApp(ShowBase):
             label.setDepthWrite(False)
             self._highway_label_nodes.append(label)
 
-        # Spatial hashes — car mode used to scan tens of thousands of segs / frame.
         self._barrier_cell = _SEG_CELL
         self._road_cell = _SEG_CELL
         self._barrier_grid = self._build_segment_grid(
@@ -1186,29 +491,21 @@ class CityApp(ShowBase):
             self._named_roads, xy_offset=1, cell=self._road_cell
         )
 
-        # Gantry signals on 3-/4-way arterial junctions (never on Hwy 1).
-        # Two curb posts per approach, joined by a full crossbar. Shared lens
-        # materials still animate after flattenStrong.
         self._signals = None
         self._signals_root = self.city.attachNewNode("traffic-signals")
         signal_builders = SceneBuilders(self._signals_root, plan, self.render)
         signal_count = 0
-        for junction in arterial_junctions(arterials):
+        for junction in junctions:
             if "hwy1" in junction["roads"]:
                 continue
             jx = float(junction["x"])
             jy = float(junction["y"])
             half = float(junction["half"])
-            # Corner posts are shared by adjacent approach spans — place once.
             posts: dict[tuple[float, float], tuple[float, float]] = {}
             spans: list[tuple[float, float, float, float]] = []
             arms = list(junction["arms"])
             for ox, oy in arms:
-                # Through arms: gantry on that edge. T stem: gantry on the
-                # missing opposite side (e.g. roads N/S/W → lights on N/S/E).
-                has_opposite = any(
-                    dx * ox + dy * oy <= -0.85 for dx, dy in arms
-                )
+                has_opposite = any(dx * ox + dy * oy <= -0.85 for dx, dy in arms)
                 if has_opposite:
                     place_ox, place_oy = ox, oy
                 else:
@@ -1224,9 +521,7 @@ class CityApp(ShowBase):
                 posts[(round(bx, 3), round(by, 3))] = (bx, by)
                 spans.append((ax, ay, bx, by))
             for post_x, post_y in posts.values():
-                signal_builders._add_signal_post(
-                    post_x, post_y, road_top, block_size
-                )
+                signal_builders._add_signal_post(post_x, post_y, road_top, plan.block_size)
             for ax, ay, bx, by in spans:
                 signal_builders._add_traffic_light(
                     ax,
@@ -1234,7 +529,7 @@ class CityApp(ShowBase):
                     bx,
                     by,
                     road_top,
-                    block_size,
+                    plan.block_size,
                     face_x=jx,
                     face_y=jy,
                 )
@@ -1246,7 +541,6 @@ class CityApp(ShowBase):
         else:
             self._signals_root.removeNode()
 
-        # Red district titles — shown only while that district is selected.
         for key, district in self._districts.items():
             ring = district["ring"]
             text = TextNode(f"district-label-{key}")
@@ -1273,10 +567,19 @@ class CityApp(ShowBase):
 
         self.highway.flattenStrong()
 
-        # Local residential streets (Surrey interior fabric) — no median barrier.
+    def _build_streets(
+        self,
+        plan,
+        hwy: dict,
+        road_z: float,
+        road_thickness: float,
+        road_top: float,
+    ) -> None:
         streets = plan.street_geometry()
         self.streets = self.render.attachNewNode("streets")
         street_width = float(streets["street_width"])
+        road_mat = road_material()
+        mark_paint = mark_material()
         for route in streets["routes"]:
             pts = list(route["points"])
             if len(pts) < 2:
@@ -1286,11 +589,10 @@ class CityApp(ShowBase):
             )
             deck.setPos(0.0, 0.0, road_z)
             deck.setMaterial(road_mat, 1)
-            # Single centreline dash — skip tips so junctions / bulbs stay clean.
-            mark_len = 2.0
+            mark_len = 2.5
             mark_w = 0.2
             mark_h = 0.04
-            mark_gap = 3.0
+            mark_gap = 4.0
             period = mark_len + mark_gap
             tip_clear = street_width * 1.1
             dist = [0.0]
@@ -1323,7 +625,6 @@ class CityApp(ShowBase):
                     mark.setH(heading)
                     mark.setMaterial(mark_paint, 1)
                     s += period
-        # Round cul-de-sac pads at dead ends.
         for cx, cy, radius in streets["bulbs"]:
             pad = z_cylinder_instance(
                 self.streets, radius, road_thickness, segments=28
@@ -1332,6 +633,7 @@ class CityApp(ShowBase):
             pad.setMaterial(road_mat, 1)
         self.streets.flattenStrong()
 
+    def _build_ground(self, hwy: dict, road_z: float) -> None:
         lawn_mat = lawn_material()
         ground_pad = 80.0
         self._ground = box_instance(
@@ -1347,7 +649,7 @@ class CityApp(ShowBase):
         )
         self._ground.setMaterial(lawn_mat, 1)
 
-        # Fixed-function lights — colours / HPR driven by the day-night cycle.
+    def _build_lighting(self) -> None:
         self._ambient_light = AmbientLight("ambient")
         self._ambient_np = self.render.attachNewNode(self._ambient_light)
         self.render.setLight(self._ambient_np)
@@ -1358,7 +660,6 @@ class CityApp(ShowBase):
         self._fill_np = self.render.attachNewNode(self._fill_light)
         self.render.setLight(self._fill_np)
 
-        # Sky dome tracks the camera, world-oriented; rebuilt as the cycle shifts.
         self._sky_root = self.camera.attachNewNode("sky-root")
         self._sky_root.setEffect(CompassEffect.make(self.render))
         self._sky_root.setBin("background", 0)
@@ -1367,12 +668,11 @@ class CityApp(ShowBase):
         self._sky_root.setLightOff()
         self._sky_geom: object | None = None
         self._sky_key: tuple | None = None
-        # Begin mid-sunrise so load isn't pitch-black; full loop is still 10 min.
         self._day_cycle = DayNightCycle(SUNRISE_SECONDS * 0.5)
         self._vehicle_lights_on = False
         self._apply_day_cycle(self._day_cycle.sample(), force_sky=True)
 
-        # One cruiser on Fraser Hwy (right lane); Space focuses it.
+    def _build_traffic(self, plan, arterials: list, road_top: float) -> None:
         self._cars: list[CarController] = []
         self._car = None
         self._player_car: PlayerCar | None = None
@@ -1407,11 +707,9 @@ class CityApp(ShowBase):
             self._car = car
             self.taskMgr.add(self._fleet_task, "fleet")
 
-        # Green player car on King George Blvd through Surrey City Centre.
         king = next((a for a in arterials if a.get("name") == "king_george"), None)
         if king is not None:
             kg_w = float(king.get("width", plan.road_width))
-            # Right lane, northbound, mid-block between 102 Ave and 108 Ave.
             self._player_car = PlayerCar(
                 self,
                 road_top,
@@ -1422,27 +720,29 @@ class CityApp(ShowBase):
             )
             self.taskMgr.add(self._player_drive_task, "player-drive")
 
-        bounds = plan.framing_bounds()
-        left = bounds["left"]
-        right = bounds["right"]
-        frame_south = bounds["city_south"]
-        frame_north = bounds["city_north"]
-        # Highways sit near z=0; don't aim at tower mid-height when fabric is empty.
+    def _setup_camera(self, plan, road_z: float) -> None:
+        hwy = self._hwy
+        left = hwy["bounds_west"]
+        right = hwy["bounds_east"]
+        frame_south = hwy["bounds_south"]
+        frame_north = hwy["bounds_north"]
         self.look_at = (
             (left + right) / 2,
             (frame_south + frame_north) / 2,
             road_z,
         )
-        # North-up overview so diagonal Fraser Hwy / Hwy 99 read clearly.
         self.heading = 0.0
         self.pitch = 68.0
         half_fov = math.tan(math.radians(20.0))
         fit_x = ((right - left) / 2) / half_fov
-        fit_y = ((frame_north - frame_south) / 2) / half_fov / max(0.25, math.cos(math.radians(self.pitch)))
+        fit_y = (
+            ((frame_north - frame_south) / 2)
+            / half_fov
+            / max(0.25, math.cos(math.radians(self.pitch)))
+        )
         self.distance = max(fit_x, fit_y) * 1.2
         self.min_distance = 2.0
         self.max_distance = max(200.0, self.distance * 2.5)
-        # Overview distance → label world scale of 1× (see _update_camera).
         self._label_ref_distance = self.distance
         self.dragging = False
         self._drag_moved = False
@@ -1451,7 +751,6 @@ class CityApp(ShowBase):
         self.last_x = 0.0
         self.last_y = 0.0
         self._click_drag_threshold = 0.02
-        # Nodes dimmed when a district is selected (optional bright node excluded).
         self._dim_targets = list(self.city.getChildren())
         self._dim_targets.extend(
             (
@@ -1462,14 +761,12 @@ class CityApp(ShowBase):
                 self._highway_labels,
             )
         )
-        # Space cycles: car 0..n-1, then restore this overview framing.
         self._default_look_at = list(self.look_at)
         self._default_distance = self.distance
         self._default_heading = self.heading
         self._default_pitch = self.pitch
-        self._focus_index = -1  # -1 = overview; 0..len(focusables)-1 = follow car
+        self._focus_index = -1
         self._car_focus_distance = 14.0
-        # C toggles Fortnite-style third-person drive mode on the green car.
         self._car_mode = False
         self._chase_back = 8.5
         self._chase_height = 3.4
@@ -1480,11 +777,12 @@ class CityApp(ShowBase):
         self._map_distance = self.distance
         self._map_heading = self.heading
         self._map_pitch = self.pitch
+
+    def _setup_hud(self) -> None:
         self._hud_place_text = ""
         self._hud_street_text = ""
         self._hud_speed_text = ""
         self._hud_compass_text = ""
-        # World units ≈ metres; 3.6 → km/h for the car-mode speedometer.
         self._speed_to_kmh = 3.6
         self._hud_place = OnscreenText(
             text="",
@@ -1506,7 +804,6 @@ class CityApp(ShowBase):
             align=TextNode.ACenter,
             mayChange=True,
         )
-        # C mode: cardinal above the speedometer (world Y = north).
         self._hud_compass = OnscreenText(
             text="",
             parent=self.a2dBottomRight,
@@ -1542,7 +839,6 @@ class CityApp(ShowBase):
         self._hud_compass.hide()
         self._hud_speed.hide()
         self._hud_speed_unit.hide()
-        # Clock: top-centre on the map, bottom-left in C (drive) mode.
         self._hud_clock = OnscreenText(
             text=self._day_cycle.clock_text(),
             parent=self.a2dTopCenter,
@@ -1557,6 +853,7 @@ class CityApp(ShowBase):
         self._layout_clock_hud()
         self._update_camera()
 
+    def _bind_controls(self) -> None:
         self.accept("escape", sys.exit)
         self.accept("c", self._toggle_car_mode)
         self.accept("space", self._cycle_car_focus)
@@ -1833,7 +1130,7 @@ class CityApp(ShowBase):
 
     def _location_at(self, x: float, y: float) -> str:
         """Neighborhood + municipality for car HUD, e.g. 'Newton, Surrey'."""
-        for key, area, city in _LOCATION_AREAS:
+        for key, area, city in LOCATION_AREAS:
             district = self._districts.get(key)
             if district is None:
                 continue
@@ -2143,7 +1440,7 @@ class CityApp(ShowBase):
         self._select_district("richmond")
 
     def _select_vancouver(self) -> None:
-        """V: outline Vancouver city proper, no UEL (disabled in C / car mode)."""
+        """V: outline Vancouver including UBC / Point Grey (disabled in C mode)."""
         if self._car_mode:
             return
         self._select_district("vancouver")
