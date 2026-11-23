@@ -108,17 +108,20 @@ HIGHWAY_LABELS = {
     "russ_baker": "Russ Baker Way",
     "sea_island_way": "Sea Island Way",
     "hwy91a": "Hwy 91A",
-    # Burnaby / New Westminster / Queensborough
+    # Burnaby
     "hwy1_bn": "Hwy 1",
     "marine_stewardson": "Marine Way",
+    "north_fraser_way": "North Fraser Way",
     "kingsway_bn": "Kingsway",
     "canada_way": "Canada Way",
     "lougheed_bn": "Lougheed Hwy",
     "hastings_barnet": "Hastings St",
     "gaglardi_way": "Gaglardi Way",
-    "brunette_ave": "Brunette Ave",
+    "bn_mtn_pkwy": "Burnaby Mountain Pkwy",
     "gilmore_ave": "Gilmore Ave",
     "willingdon_ave": "Willingdon Ave",
+    "alpha_ave": "Alpha Ave",
+    "beta_ave": "Beta Ave",
     "royal_oak_ave": "Royal Oak Ave",
     "nelson_ave": "Nelson Ave",
     "sperling_ave": "Sperling Ave",
@@ -127,22 +130,90 @@ HIGHWAY_LABELS = {
     "north_rd": "North Rd",
     "boundary_rd_n": "Boundary Rd",
     "rumble_st": "Rumble St",
+    "imperial_st": "Imperial St",
+    "bn_broadway_e": "Broadway",
+    "central_blvd": "Central Blvd",
+    "beresford_st": "Beresford St",
+    "grange_st": "Grange St",
+    "mckay_ave": "McKay Ave",
+    "sussex_ave": "Sussex Ave",
+    "burke_st": "Burke St",
+    "dawson_st": "Dawson St",
+    "alaska_st": "Alaska St",
+    "halifax_st": "Halifax St",
+    "parker_st": "Parker St",
+    "delta_ave": "Delta Ave",
+    "edmonds_st": "Edmonds St",
+    "griffiths_dr": "Griffiths Dr",
+    "salisbury_ave": "Salisbury Ave",
+    "strachan_st": "Strachan St",
+    "ave_14th_bn": "14th Ave",
+    "ave_16th_bn": "16th Ave",
+    "ave_18th_bn": "18th Ave",
+    "austin_rd": "Austin Rd",
+    "cameron_st": "Cameron St",
+    "beaverbrook_dr": "Beaverbrook Dr",
+    "bartlett_ct": "Bartlett Ct",
     "sfu_ring": "University Dr",
-    "sfu_hastings_spur": "Burnaby Mountain Pkwy",
+    "sfu_hastings_spur": "Curtis St",
+    # New Westminster / Queensborough
+    "nw_front_st": "Front St",
     "nw_columbia_st": "Columbia St",
+    "nw_carnarvon_st": "Carnarvon St",
+    "nw_clarkson_st": "Clarkson St",
     "nw_royal_ave": "Royal Ave",
     "nw_queens_ave": "Queens Ave",
+    "nw_3rd_ave": "3rd Ave",
     "nw_4th_ave": "4th Ave",
+    "nw_5th_ave": "5th Ave",
     "nw_6th_ave": "6th Ave",
+    "nw_7th_ave": "7th Ave",
     "nw_8th_ave": "8th Ave",
     "nw_10th_ave": "10th Ave",
     "nw_stewardson": "Stewardson Way",
+    "nw_20th_st": "20th St",
+    "nw_14th_st": "14th St",
     "nw_12th_st": "12th St",
+    "nw_10th_st": "10th St",
     "nw_8th_st": "8th St",
     "nw_6th_st": "6th St",
+    "nw_4th_st": "4th St",
+    "nw_2nd_st": "2nd St",
+    "nw_1st_st": "1st St",
     "mcbride_blvd": "McBride Blvd",
+    "brunette_ave": "Brunette Ave",
     "ewen_ave": "Ewen Ave",
     "boyd_st": "Boyd St",
+    "salter_st": "Salter St",
+    # Coquitlam
+    "hwy1_cq": "Hwy 1",
+    "lougheed_cq": "Lougheed Hwy",
+    "barnet_cq": "Barnet Hwy",
+    "mary_hill_bypass": "Mary Hill Bypass",
+    "brunette_cq": "Brunette Ave",
+    "united_blvd": "United Blvd",
+    "como_lake_ave": "Como Lake Ave",
+    "pinetree_way": "Pinetree Way",
+    "blue_mountain_st": "Blue Mountain St",
+    "schoolhouse_st": "Schoolhouse St",
+    "mariner_way": "Mariner Way",
+    "johnson_st": "Johnson St",
+    "coast_meridian_rd": "Coast Meridian Rd",
+    "austin_ave": "Austin Ave",
+    "glen_dr": "Glen Dr",
+    "guildford_way": "Guildford Way",
+    "david_ave": "David Ave",
+    "foster_ave": "Foster Ave",
+    "smith_ave": "Smith Ave",
+    "marmont_st": "Marmont St",
+    "linton_st": "Linton St",
+    "rochester_ave": "Rochester Ave",
+    "cartier_ave": "Cartier Ave",
+    "alderson_ave": "Alderson Ave",
+    "laval_st": "Laval St",
+    "lincoln_ave": "Lincoln Ave",
+    "anson_ave": "Anson Ave",
+    "high_st": "High St",
     # Vancouver / UBC
     "sw_marine": "Marine Drive",
     "arthur_laing": "Arthur Laing Bridge",
@@ -328,14 +399,25 @@ LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
     ("mount_pleasant", "Mount Pleasant", "Vancouver"),
     ("east_vancouver", "East Vancouver", "Vancouver"),
     ("hastings_sunrise", "Hastings-Sunrise", "Vancouver"),
-    # Burnaby / New Westminster — specific before municipality catch-alls.
-    ("brentwood", "Brentwood", "Burnaby"),
+    # Burnaby — town centres before municipality catch-all.
     ("metrotown", "Metrotown", "Burnaby"),
+    ("brentwood", "Brentwood", "Burnaby"),
     ("edmonds", "Edmonds", "Burnaby"),
-    ("burnaby_heights", "Burnaby Heights", "Burnaby"),
+    ("lougheed_tc", "Lougheed Town Centre", "Burnaby"),
     ("sfu", "SFU", "Burnaby"),
+    ("burnaby_heights", "Burnaby Heights", "Burnaby"),
+    ("deer_lake", "Deer Lake", "Burnaby"),
+    # New Westminster — before municipality catch-all.
+    ("nw_downtown", "Downtown New Westminster", "New Westminster"),
+    ("nw_uptown", "Uptown", "New Westminster"),
+    ("sapperton", "Sapperton", "New Westminster"),
     ("queensborough", "Queensborough", "New Westminster"),
-    ("downtown_new_westminster", "Downtown", "New Westminster"),
+    # Coquitlam — town centres before municipality catch-all.
+    ("burquitlam", "Burquitlam", "Coquitlam"),
+    ("maillardville", "Maillardville", "Coquitlam"),
+    ("coq_centre", "Coquitlam Centre", "Coquitlam"),
+    ("westwood_plateau", "Westwood Plateau", "Coquitlam"),
+    ("burke_mountain", "Burke Mountain", "Coquitlam"),
     # Langley — specific communities before rural catch-all (first match wins).
     ("langley_city", "Langley City", "Langley City"),
     ("willowbrook", "Willowbrook", "Langley"),
@@ -599,7 +681,7 @@ DISTRICT_DEFS: dict[str, dict] = {
     },
     "richmond": {
         "title": "Richmond",
-        # Lulu Island envelope; eastern tip west of Queensborough river gap.
+        # Lulu Island envelope; eastern tip at the open Fraser gap.
         "ring": (
             (-510.0, -120.0),
             (-368.2, -120.0),
@@ -728,100 +810,198 @@ DISTRICT_DEFS: dict[str, dict] = {
         ),
         "hotkey_only": True,
     },
-    # --- Burnaby (Boundary Rd → North Rd; Burrard → Marine Way) ---
-    "brentwood": {
-        "title": "Brentwood",
-        "ring": (
-            (-160.0, 200.0),
-            (-120.0, 200.0),
-            (-120.0, 235.0),
-            (-160.0, 235.0),
-        ),
-    },
+    # --- Burnaby (Boundary X=-178 → North Rd X=+52) ---
     "metrotown": {
         "title": "Metrotown",
         "ring": (
-            (-150.0, 100.0),
-            (-100.0, 100.0),
-            (-100.0, 140.0),
-            (-150.0, 140.0),
+            (-155.0, 108.0),
+            (-93.6, 108.0),
+            (-93.6, 145.0),
+            (-155.0, 145.0),
+        ),
+    },
+    "brentwood": {
+        "title": "Brentwood",
+        "ring": (
+            (-165.0, 195.0),
+            (-115.0, 195.0),
+            (-115.0, 235.0),
+            (-165.0, 235.0),
         ),
     },
     "edmonds": {
         "title": "Edmonds",
         "ring": (
-            (-80.0, 90.0),
-            (-45.0, 90.0),
-            (-45.0, 125.0),
-            (-80.0, 125.0),
+            (-85.0, 95.0),
+            (-45.0, 95.0),
+            (-45.0, 135.0),
+            (-85.0, 135.0),
         ),
     },
-    "burnaby_heights": {
-        "title": "Burnaby Heights",
+    "lougheed_tc": {
+        "title": "Lougheed Town Centre",
         "ring": (
-            (-178.0, 248.0),
-            (-51.4, 248.0),
-            (-51.4, 275.0),
-            (-178.0, 275.0),
+            (20.0, 170.0),
+            (52.0, 170.0),
+            (52.0, 215.0),
+            (20.0, 215.0),
         ),
     },
     "sfu": {
         "title": "SFU",
         "ring": (
-            (-20.0, 235.0),
-            (35.0, 235.0),
-            (35.0, 270.0),
-            (-20.0, 270.0),
+            (-5.0, 245.0),
+            (25.0, 245.0),
+            (25.0, 262.0),
+            (-5.0, 262.0),
+        ),
+    },
+    "burnaby_heights": {
+        "title": "Burnaby Heights",
+        "ring": (
+            (-178.0, 250.0),
+            (-115.0, 250.0),
+            (-115.0, 282.0),
+            (-178.0, 282.0),
+        ),
+    },
+    "deer_lake": {
+        "title": "Deer Lake",
+        "ring": (
+            (-105.0, 145.0),
+            (-75.0, 145.0),
+            (-75.0, 175.0),
+            (-105.0, 175.0),
         ),
     },
     "burnaby": {
         "title": "Burnaby",
         "ring": (
             (-178.0, 88.0),
-            (-114.7, 88.0),
+            (-85.0, 86.0),
             (-45.0, 72.0),
-            (-25.0, 105.0),
+            (-55.0, 102.0),
+            (-15.0, 115.0),
             (15.0, 85.0),
-            (52.0, 145.0),
-            (52.0, 245.0),
-            (25.0, 265.0),
-            (-10.0, 260.0),
-            (-51.4, 275.0),
-            (-178.0, 275.0),
+            (35.0, 125.0),
+            (52.0, 135.0),
+            (52.0, 268.0),
+            (15.0, 268.0),
+            (-15.0, 262.0),
+            (-25.0, 282.0),
+            (-178.0, 282.0),
         ),
         "hotkey_only": True,
     },
-    # --- New Westminster (mainland + Queensborough) ---
+    # --- New Westminster (tilted mainland + Queensborough) ---
+    "nw_downtown": {
+        "title": "Downtown New Westminster",
+        "ring": (
+            (-48.0, 52.0),
+            (-5.0, 58.0),
+            (-8.0, 72.0),
+            (-42.0, 64.0),
+        ),
+    },
+    "nw_uptown": {
+        "title": "Uptown",
+        "ring": (
+            (-56.0, 74.0),
+            (-13.0, 91.0),
+            (-16.0, 105.0),
+            (-58.0, 100.0),
+        ),
+    },
+    "sapperton": {
+        "title": "Sapperton",
+        "ring": (
+            (-5.0, 63.5),
+            (22.0, 94.0),
+            (18.0, 102.0),
+            (-8.0, 86.0),
+        ),
+    },
     "queensborough": {
         "title": "Queensborough",
         "ring": (
             (-135.0, 28.0),
-            (-45.0, 28.0),
-            (-45.0, 55.0),
-            (-135.0, 55.0),
-        ),
-    },
-    "downtown_new_westminster": {
-        "title": "Downtown New Westminster",
-        "ring": (
-            (-40.0, 48.0),
-            (10.0, 48.0),
-            (10.0, 95.0),
-            (-40.0, 95.0),
+            (-48.0, 40.0),
+            (-55.0, 55.0),
+            (-135.0, 48.0),
         ),
     },
     "new_westminster": {
         "title": "New Westminster",
-        # Mainland + Queensborough envelope (bridge corridors span the river gap).
         "ring": (
-            (-135.0, 28.0),
-            (-45.0, 28.0),
-            (-45.0, 48.0),
-            (25.0, 48.0),
-            (25.0, 115.0),
-            (-55.0, 115.0),
-            (-55.0, 55.0),
-            (-135.0, 55.0),
+            (-62.0, 52.0),
+            (-8.0, 58.0),
+            (22.0, 94.0),
+            (18.0, 102.0),
+            (-8.0, 117.5),
+            (-58.0, 100.0),
+            (-56.0, 74.0),
+        ),
+        "hotkey_only": True,
+    },
+    # --- Coquitlam (North Rd → Pitt River Bridge) ---
+    "burquitlam": {
+        "title": "Burquitlam",
+        "ring": (
+            (52.0, 155.0),
+            (95.0, 155.0),
+            (95.0, 225.0),
+            (52.0, 225.0),
+        ),
+    },
+    "maillardville": {
+        "title": "Maillardville",
+        "ring": (
+            (45.0, 115.0),
+            (80.0, 115.0),
+            (80.0, 155.0),
+            (45.0, 155.0),
+        ),
+    },
+    "coq_centre": {
+        "title": "Coquitlam Centre",
+        "ring": (
+            (108.0, 190.0),
+            (135.0, 190.0),
+            (135.0, 225.0),
+            (108.0, 225.0),
+        ),
+    },
+    "westwood_plateau": {
+        "title": "Westwood Plateau",
+        "ring": (
+            (95.0, 245.0),
+            (125.0, 245.0),
+            (125.0, 275.0),
+            (95.0, 275.0),
+        ),
+    },
+    "burke_mountain": {
+        "title": "Burke Mountain",
+        "ring": (
+            (145.0, 205.0),
+            (175.0, 205.0),
+            (175.0, 275.0),
+            (145.0, 275.0),
+        ),
+    },
+    "coquitlam": {
+        "title": "Coquitlam",
+        "ring": (
+            (52.0, 105.0),
+            (64.0, 42.2),
+            (105.0, 90.0),
+            (165.0, 72.0),
+            (175.0, 68.0),
+            (175.0, 245.0),
+            (155.0, 275.0),
+            (120.0, 275.0),
+            (95.0, 240.0),
+            (52.0, 245.0),
         ),
         "hotkey_only": True,
     },
@@ -1076,13 +1256,22 @@ COMMUNITY_ANCHORS: dict[str, tuple[float, float]] = {
     "mount_pleasant": (-389.3, 216.5),  # Main & Broadway
     "east_vancouver": (-304.9, 174.3),  # Nanaimo & King Edward
     "hastings_sunrise": (-262.7, 269.0),  # Renfrew & Hastings
+    "metrotown": (-135.8, 118.0),  # Willingdon & Kingsway
     "brentwood": (-135.8, 216.5),  # Willingdon & Lougheed
-    "metrotown": (-125.0, 115.0),  # Kingsway / Metrotown
-    "edmonds": (-65.0, 100.0),  # Kingsway / Edmonds
+    "edmonds": (-72.5, 105.0),  # Sperling & Edmonds
+    "lougheed_tc": (52.0, 185.0),  # North Rd & Lougheed
+    "sfu": (10.0, 255.0),  # University Drive ring
     "burnaby_heights": (-135.8, 269.0),  # Willingdon & Hastings
-    "sfu": (10.0, 255.0),  # SFU / Burnaby Mountain
-    "queensborough": (-95.0, 42.0),  # Hwy 91A / Howes
-    "downtown_new_westminster": (-18.0, 70.0),  # 6th St / Columbia
+    "deer_lake": (-85.0, 160.0),  # Canada Way / City Hall
+    "nw_downtown": (-25.0, 57.5),  # 8th St & Columbia
+    "nw_uptown": (-25.0, 86.5),  # 6th St & 6th Ave
+    "sapperton": (8.0, 76.0),  # East Columbia / RCH
+    "queensborough": (-95.0, 41.0),  # Howes & Hwy 91A
+    "burquitlam": (68.0, 185.0),  # Blue Mountain & Lougheed
+    "maillardville": (58.0, 140.0),  # Laval & Rochester
+    "coq_centre": (120.0, 195.0),  # Pinetree & Lougheed
+    "westwood_plateau": (110.0, 260.0),  # Plateau Blvd
+    "burke_mountain": (155.0, 245.0),  # Coast Meridian & David
     "langley_city": (316.5, -168.8),  # 200 St & Fraser Hwy
     "willowbrook": (316.5, -147.7),  # 200 St & 64 Ave
     "willoughby": (358.7, -105.5),  # 208 St & 80 Ave

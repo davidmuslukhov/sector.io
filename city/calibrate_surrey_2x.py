@@ -1,5 +1,5 @@
 """Generate Surrey + Langley + Delta + Richmond + Vancouver/UBC + Burnaby +
-New Westminster (Queensborough) + Maple Ridge + Pitt Meadows 2× city.yaml.
+New Westminster + Coquitlam + Maple Ridge + Pitt Meadows 2× city.yaml.
 
 Scale: 26.4 units = 1.0 km; 42.2 units = 1.0 mile.
 Compact Y-scale anchors (Surrey): 104=0, 88=-42.2, 72=-84.4, 56=-168.8,
@@ -9,8 +9,10 @@ Delta stitches west at Scott Rd (X=-84.4) and Hwy 91 / Hwy 17 (X=-116, Y=-64).
 Richmond / Lulu Island sits northwest of Delta (No. 2–8 Rd grid + Sea Island spur).
 Vancouver / UBC sits north of the North Arm Fraser (open 25–35 unit river gap);
 Oak / Knight / Arthur Laing corridors are the only spans into SW Marine Drive.
-Burnaby fills Boundary Rd (X=-178) → North Rd (X=+52); New Westminster /
-Queensborough stitch via Pattullo, Queensborough Bridge, and Port Mann only.
+Eastern Vancouver clips at Boundary Rd (X=-178); Burnaby continues east to
+North Rd (X=+52). New Westminster uses a strict ~32°/122° tilted mainland grid
+(no axis-aligned streets) plus a ~18° Queensborough island plate. Coquitlam
+continues east of North Rd to the Pitt River Bridge (X=+175) and Port Mann.
 Maple Ridge sits north of the Fraser (open 35–45 unit gap); Golden Ears Bridge
 corridor at 200 St (X=+316.5) is the only road span into Lougheed / Dewdney Trunk.
 Pitt Meadows sits west of Laity / 207 St (X=+353), from the Pitt River Bridge
@@ -220,10 +222,10 @@ Y_RIVER_W = 62.2  # River Rd at No. 1 / Oak St Bridge latitude
 Y_RIVER_NO2 = 35.0  # River Rd at No. 2 Rd
 # Eastern tip must stay west of this X (open river gap vs Scott Rd X=-84.4).
 RICH_X_EAST_LIMIT = -128.0
-QUEENSBOROUGH = (-128.0, 30.0)  # Hwy 91A tip (parallel to Westminster NE exit)
+QUEENSBOROUGH = (-128.0, 30.0)  # Hwy 91A / Richmond east tip
 
 # Vancouver / UBC — 2× Whalley plate, north of the North Arm Fraser.
-# Major N–S arterials ≈ 21.1 units (0.5 mi) apart; Boundary Rd = Burnaby seam.
+# Major N–S arterials ≈ 21.1 units (0.5 mi) apart; Boundary Rd = east edge.
 VAN_NS_X: dict[str, float] = {
     "ubc_tip": -615.0,
     "wesbrook": -595.0,
@@ -242,7 +244,7 @@ VAN_NS_X: dict[str, float] = {
     "renfrew": -262.7,
     "rupert": -220.5,
     "joyce": -199.0,
-    "boundary": -178.0,  # Vancouver / Burnaby border
+    "boundary": -178.0,  # Vancouver east edge
 }
 VAN_EW_Y: dict[str, float] = {
     "marine": 90.0,  # SW / SE Marine Drive (south waterfront spine)
@@ -349,178 +351,419 @@ HWY1_VAN_CTRL: list[tuple[float, float]] = [
     (-255.0, 292.0),
 ]
 
-# Burnaby / New Westminster — 2× Whalley plate (Boundary → North Rd).
+# Burnaby — 2× Whalley plate (Boundary → North Rd). Roads only, Z = 0.
 # N–S arterials ≈ 21.1 units (0.5 mi) apart west of Gaglardi.
 BN_NS_X: dict[str, float] = {
     "boundary": -178.0,  # Vancouver / Burnaby border
     "gilmore": -156.9,
-    "willingdon": -135.8,  # Brentwood → Metrotown spine
+    "alpha": -142.0,  # Brentwood collector
+    "willingdon": -135.8,  # Metrotown → Brentwood spine
+    "beta": -129.0,  # Brentwood collector
     "royal_oak": -114.7,
-    "nelson": -93.6,  # Nelson / Deer Lake Pkwy
+    "nelson": -93.6,
     "sperling": -72.5,
     "kensington": -51.4,
     "gaglardi": -20.0,  # Hwy 1 → SFU spine
     "cariboo": 10.0,
-    "brunette_x": 35.0,  # Brunette Ave / Cape Horn band
+    "brunette_x": 35.0,  # Brunette / Cape Horn band
     "north_rd": 52.0,  # Burnaby / Coquitlam border
 }
 BN_EW_Y: dict[str, float] = {
-    "marine": 88.0,  # Marine Way / SE Marine (South Burnaby flats)
-    "rumble": 115.0,  # Rumble / Imperial
-    "canada_way_mid": 160.0,  # Deer Lake / City Hall band
+    "north_fraser": 82.0,  # Big Bend industrial parallel
+    "marine": 88.0,  # Marine Way / SE Marine flats
+    "rumble": 108.0,
+    "imperial": 120.0,
+    "oakland": 145.0,  # Deer Lake south edge
+    "canada_way_mid": 160.0,  # Deer Lake / City Hall
     "lougheed_w": 216.5,  # Broadway seam through Brentwood
+    "broadway_e": 215.0,  # Production / Austin band
     "hastings": 269.0,  # Hwy 7A North Burnaby
-    "burrard": 275.0,  # Burrard Inlet shoreline clip
+    "burrard": 282.0,  # Burrard Inlet north clip
 }
-# Hwy 1 Burnaby → Port Mann → Surrey snap at (64.0, 42.2).
+# 10th Avenue — Burnaby / New Westminster tilted SE border.
+BN_10TH_CTRL: list[tuple[float, float]] = [
+    (-58.0, 100.0),  # Kingsway / Edmonds
+    (-48.0, 103.5),  # 12th St
+    (-38.0, 107.0),  # 8th St
+    (-31.0, 109.5),  # 6th St
+    (-20.0, 113.5),  # McBride / Canada Way
+    (-8.0, 117.5),  # Cumberland
+    (10.0, 115.0),  # toward Cariboo
+]
+# Marine Way → Stewardson handoff (New West takes over east of this).
+MARINE_STEWARDSON_CTRL: list[tuple[float, float]] = [
+    (-178.0, 90.0),  # Boundary / SE Marine (Vancouver seam)
+    (-156.9, 88.0),  # Gilmore
+    (-135.8, 88.0),  # Willingdon
+    (-114.7, 88.0),  # Royal Oak
+    (-93.6, 86.0),  # Nelson
+    (-85.0, 86.0),  # Byrne Rd curve
+    (-55.0, 72.0),  # Stewardson / 20th St handoff
+]
+# Kingsway Burnaby (wider ~0.65) — Boundary → 12th St / 10th Ave handoff.
+KINGSWAY_BN_CTRL: list[tuple[float, float]] = [
+    (-178.0, 125.0),  # Boundary (Vancouver seam)
+    (-135.8, 118.0),  # Willingdon / Metrotown
+    (-114.7, 114.0),  # Royal Oak
+    (-93.6, 110.0),  # Nelson
+    (-72.5, 104.0),  # Sperling / Edmonds
+    (-65.0, 100.0),  # 12th St / New West entry
+]
+# Canada Way (wider ~0.6) — Grandview / Boundary → New West.
+CANADA_WAY_CTRL: list[tuple[float, float]] = [
+    (-178.0, 206.0),  # Boundary & Grandview
+    (-156.9, 195.0),  # Gilmore
+    (-135.8, 185.0),  # Willingdon
+    (-114.7, 175.0),  # Royal Oak
+    (-85.0, 160.0),  # Deer Lake / City Hall
+    (-72.5, 150.0),  # Sperling (south of Burnaby Lake)
+    (-51.4, 140.0),  # Kensington
+    (-25.0, 115.0),  # New Westminster entry
+]
+# Hwy 1 Burnaby → Brunette / Cape Horn handoff (Coquitlam owns Port Mann leg).
 HWY1_BN_CTRL: list[tuple[float, float]] = [
-    (-178.0, 248.0),  # Boundary Rd (Vancouver seam)
+    (-178.0, 248.0),  # Boundary (Vancouver seam)
+    (-156.9, 238.0),  # Gilmore
     (-135.8, 228.0),  # Willingdon
     (-51.4, 195.0),  # Sprott / Kensington
     (-20.0, 180.0),  # Gaglardi Way
-    (35.0, 115.0),  # Brunette / Cape Horn
-    (50.0, 75.0),  # Port Mann west approach
-    (64.0, 42.2),  # Surrey Hwy 1 snap
+    (10.0, 165.0),  # Cariboo Rd
+    (35.0, 125.0),  # Brunette / Cape Horn (Coquitlam seam)
 ]
-# Kingsway Burnaby → Edmonds (12th St continues into New Westminster).
-KINGSWAY_BN_CTRL: list[tuple[float, float]] = [
-    (-178.0, 125.0),  # Boundary (Vancouver seam)
-    (-125.0, 115.0),  # Metrotown
-    (-65.0, 100.0),  # Edmonds / 12th St handoff
-]
-# Canada Way — Grandview / Boundary → McBride / 10th Ave New West border.
-CANADA_WAY_CTRL: list[tuple[float, float]] = [
-    (-178.0, 206.0),  # Boundary & Grandview
-    (-135.8, 185.0),  # Burnaby Hospital / Willingdon
-    (-85.0, 160.0),  # Deer Lake / City Hall
-    (-25.0, 115.0),  # McBride Blvd / 10th Ave handoff
-]
-# Lougheed Hwy (Hwy 7) through Burnaby (Broadway seam → Brunette).
+# Lougheed Hwy (Hwy 7, wider ~0.65) → North Rd (Brunette owned by New West).
 LOUGHEED_BN_CTRL: list[tuple[float, float]] = [
     (-178.0, 216.5),  # Boundary / Broadway
     (-135.8, 216.5),  # Brentwood
     (-72.5, 216.5),  # Sperling
-    (-20.0, 200.0),  # Production Way
+    (-20.0, 200.0),  # Production Way / Gaglardi
     (52.0, 185.0),  # Lougheed Town Centre / North Rd
 ]
-# Marine Way → Stewardson entry (New West tilted grid takes over east of this).
-MARINE_STEWARDSON_CTRL: list[tuple[float, float]] = [
-    (-178.0, 90.0),  # Boundary / SE Marine (Vancouver seam)
-    (-135.8, 88.0),  # Willingdon
-    (-114.7, 88.0),  # Royal Oak
-    (-55.0, 72.0),  # Stewardson / 14th St handoff
-]
-# Hwy 91A Queensborough Bridge continuation (Richmond tip → Stewardson).
-HWY91A_QB_CTRL: list[tuple[float, float]] = [
-    (-128.0, 30.0),  # Richmond / Queensborough tip
-    (-110.0, 36.0),
-    (-95.0, 42.0),  # Howes / Hwy 91A
-    (-68.0, 45.0),  # Queensborough Bridge mid
-    (-55.0, 72.0),  # Stewardson / Marine Way snap
-]
-# Mainland New Westminster wipe box (tangled orthogonal overlap removed here).
-NW_WIPE_X0, NW_WIPE_X1 = -52.0, 22.0
-NW_WIPE_Y0, NW_WIPE_Y1 = 48.0, 112.0
-# 10th Avenue — Burnaby / New Westminster tilted border.
-NW_10TH_CTRL: list[tuple[float, float]] = [
-    (-55.0, 102.0),  # Kingsway / Edmonds
-    (-35.0, 106.0),  # 8th St
-    (-28.0, 110.0),  # 6th St
-    (-15.0, 115.0),  # Canada Way / Cumberland
-]
-# Columbia / Front — Fraser waterfront spine.
-NW_COLUMBIA_CTRL: list[tuple[float, float]] = [
-    (-45.0, 52.0),  # Stewardson junction
-    (-25.0, 55.0),  # 8th St
-    (-18.0, 58.0),  # 6th St
-    (-5.0, 62.0),  # McBride / Pattullo
-    (15.0, 85.0),  # Sapperton / Brunette
-]
-# Royal Avenue — parallel main corridor (~5 units NW of Columbia).
-NW_ROYAL_CTRL: list[tuple[float, float]] = [
-    (-48.0, 58.0),
-    (-28.0, 62.0),
-    (-10.0, 68.0),
-    (10.0, 88.0),
-]
-# 6th Avenue — Uptown commercial spine.
-NW_6TH_AVE_CTRL: list[tuple[float, float]] = [
-    (-42.0, 78.0),  # 12th St
-    (-30.0, 82.0),  # 8th St
-    (-22.0, 86.0),  # 6th St
-    (-12.0, 90.0),  # McBride
-    (5.0, 98.0),  # 1st St / Cumberland
-]
-# 8th Avenue — parallel ~6 units NW of 6th Ave.
-NW_8TH_AVE_CTRL: list[tuple[float, float]] = [
-    (-45.0, 86.0),
-    (-33.0, 90.0),
-    (-25.0, 94.0),
-    (-15.0, 98.0),
-]
-# Cross-streets (NW–SE, perpendicular to Columbia / Royal).
-NW_12TH_CTRL: list[tuple[float, float]] = [
-    (-65.0, 100.0),  # Kingsway / Edmonds handoff
-    (-50.0, 98.0),  # 10th Ave
-    (-45.0, 86.0),  # 8th Ave
-    (-42.0, 78.0),  # 6th Ave
-    (-40.0, 60.0),  # Royal Ave
-    (-5.0, 62.0),  # McBride / Columbia — Pattullo → King George
-]
-NW_8TH_ST_CTRL: list[tuple[float, float]] = [
-    (-35.0, 106.0),  # 10th Ave
-    (-33.0, 90.0),  # 8th Ave
-    (-30.0, 82.0),  # 6th Ave
-    (-28.0, 62.0),  # Royal Ave
-    (-25.0, 55.0),  # Columbia
-]
-NW_6TH_ST_CTRL: list[tuple[float, float]] = [
-    (-28.0, 110.0),  # 10th Ave
-    (-25.0, 94.0),  # 8th Ave
-    (-22.0, 86.0),  # 6th Ave
-    (-20.0, 65.0),  # Royal Ave
-    (-18.0, 58.0),  # Columbia
-]
-# McBride Blvd + Pattullo Bridge spine (Canada Way → Surrey).
-NW_MCBRIDE_CTRL: list[tuple[float, float]] = [
-    (-25.0, 115.0),  # Canada Way handoff
-    (-15.0, 98.0),  # 8th Ave
-    (-12.0, 90.0),  # 6th Ave
-    (-10.0, 68.0),  # Royal Ave
-    (-5.0, 62.0),  # Columbia / Pattullo north
-    (0.0, 32.0),  # Surrey Pattullo approach
-]
-# Stewardson / 14th St — Marine + Queensborough Bridge into Columbia / Royal.
-NW_STEWARDSON_CTRL: list[tuple[float, float]] = [
-    (-55.0, 72.0),  # Marine / Hwy 91A junction
-    (-48.0, 58.0),  # Royal Ave
-    (-45.0, 52.0),  # Columbia / Front
-]
-# Hastings → Barnet Highway (North Burnaby → Port Moody approach).
+# Hastings St → Barnet Hwy (north waterfront spine).
 HASTINGS_BARNET_CTRL: list[tuple[float, float]] = [
     (-178.0, 269.0),  # Boundary (Vancouver seam)
-    (-51.4, 269.0),  # Kensington / Burnaby Heights
-    (-10.0, 260.0),  # SFU / Burnaby Mountain base
-    (25.0, 265.0),  # Barnet Hwy
-    (65.0, 268.0),  # Port Moody approach
+    (-135.8, 269.0),  # Willingdon / Burnaby Heights
+    (-72.5, 269.0),  # Sperling
+    (-51.4, 269.0),  # Kensington
+    (-15.0, 262.0),  # Burnaby Mountain base / Inlet Dr
+    (15.0, 268.0),  # Barnet Hwy north flank
+    (52.0, 268.0),  # North Rd / Clarke Rd
 ]
-# Gaglardi Way — Hwy 1 → SFU ring.
+# Gaglardi Way (wider ~0.6) — Hwy 1 → SFU University Drive.
 GAGLARDI_CTRL: list[tuple[float, float]] = [
-    (-20.0, 180.0),  # Hwy 1 interchange
-    (-20.0, 220.0),
-    (-10.0, 245.0),
-    (10.0, 255.0),  # SFU core
+    (-20.0, 180.0),  # Cariboo / Hwy 1
+    (-20.0, 200.0),  # Lougheed
+    (-20.0, 218.0),  # Broadway
+    (-10.0, 238.0),  # Burnaby Mountain curve
+    (10.0, 255.0),  # SFU University Drive
 ]
-# Brunette Ave — Lougheed Town Centre south to Hwy 1 / New West.
-BRUNETTE_CTRL: list[tuple[float, float]] = [
-    (52.0, 185.0),  # North Rd / Lougheed
-    (35.0, 145.0),
-    (15.0, 85.0),  # Sapperton / New West
+# Burnaby Mountain Parkway — Broadway east → SFU.
+BN_MTN_PKWY_CTRL: list[tuple[float, float]] = [
+    (20.0, 220.0),
+    (15.0, 235.0),
+    (10.0, 255.0),
 ]
+# Park / lake voids — no cross-street fill (Sperling / Cariboo may skirt Burnaby Lake).
+BN_VOID_BURNABY_LAKE = (-68.0, 165.0, 15.0, 205.0)
+BN_VOID_DEER_LAKE = (-105.0, 145.0, -75.0, 168.0)
+BN_VOID_CENTRAL_PARK = (-178.0, 125.0, -152.0, 152.0)
+BN_PARK_VOIDS: tuple[tuple[float, float, float, float], ...] = (
+    BN_VOID_BURNABY_LAKE,
+    BN_VOID_DEER_LAKE,
+    BN_VOID_CENTRAL_PARK,
+)
+# N–S shafts allowed through the Burnaby Lake void (Sperling west / Cariboo east).
+BN_LAKE_CROSS_XS = frozenset(
+    {
+        BN_NS_X["sperling"],
+        BN_NS_X["cariboo"],
+    }
+)
 X_NORTH_RD = BN_NS_X["north_rd"]
 Y_BN_BURRARD = BN_EW_Y["burrard"]
 Y_BN_MARINE = BN_EW_Y["marine"]
 SFU_CORE = (10.0, 255.0)
+
+# =====================================================================
+# Mainland New Westminster — strict tilted grid (~32° river-parallel /
+# ~122° hill-climb). Zero axis-aligned segments inside the wipe box.
+# =====================================================================
+NW_AVE_ANGLE = 32.0  # NE–SW avenues (river-parallel)
+NW_CROSS_ANGLE = 122.0  # NW–SE cross-streets (hill-climb)
+NW_WIPE_X0, NW_WIPE_X1 = -55.0, 28.0
+NW_WIPE_Y0, NW_WIPE_Y1 = 48.0, 115.0
+# 10th Avenue — full Burnaby / New West tilted border (alias of BN_10TH_CTRL).
+NW_10TH_CTRL = BN_10TH_CTRL
+# Front St / Quayside — immediate waterfront edge.
+NW_FRONT_CTRL: list[tuple[float, float]] = [
+    (-42.0, 49.0),
+    (-24.0, 52.5),  # 8th St
+    (-8.0, 58.0),  # Pattullo / Begbie
+]
+# Columbia St → East Columbia (Downtown → Sapperton).
+NW_COLUMBIA_CTRL: list[tuple[float, float]] = [
+    (-46.0, 52.5),  # Stewardson / 14th St
+    (-38.0, 54.5),  # 12th St
+    (-25.0, 57.5),  # 8th St
+    (-18.0, 60.0),  # 6th St
+    (-5.0, 63.5),  # McBride / Pattullo
+    (8.0, 76.0),  # Royal Columbian / Sapperton
+    (22.0, 94.0),  # Brunette / North Road
+]
+# Royal Avenue (wider ~0.6) — Stewardson → Sapperton.
+NW_ROYAL_CTRL: list[tuple[float, float]] = [
+    (-49.0, 58.0),  # Stewardson
+    (-41.0, 60.5),  # 12th St
+    (-28.0, 64.0),  # 8th St
+    (-21.0, 66.5),  # 6th St
+    (-8.0, 70.5),  # McBride
+    (12.0, 86.0),  # Sapperton → East Columbia
+]
+# 6th Avenue (wider ~0.55) — Uptown → Cumberland.
+NW_6TH_AVE_CTRL: list[tuple[float, float]] = [
+    (-56.0, 74.0),  # 20th St / Marine Way
+    (-44.0, 79.0),  # 12th St
+    (-32.0, 83.5),  # 8th St
+    (-25.0, 86.5),  # 6th St
+    (-13.0, 91.0),  # McBride
+    (-2.0, 98.0),  # Cumberland / Richmond
+    (15.0, 108.0),  # toward Cariboo
+]
+# 8th Avenue — upper Uptown / Moody Park.
+NW_8TH_AVE_CTRL: list[tuple[float, float]] = [
+    (-58.0, 82.0),  # 20th St
+    (-46.0, 87.0),  # 12th St
+    (-35.0, 92.0),  # 8th St
+    (-28.0, 95.0),  # 6th St
+    (-16.0, 100.0),  # McBride
+    (-4.0, 106.0),  # Cumberland
+]
+# Stewardson Way — Queensborough Bridge → Columbia (western entry).
+NW_STEWARDSON_CTRL: list[tuple[float, float]] = [
+    (-62.0, 52.0),  # Queensborough Bridge north approach
+    (-55.0, 62.0),  # Hwy 91A / 20th snap
+    (-52.0, 64.0),  # Stewardson
+    (-46.0, 52.5),  # Columbia / 14th St
+]
+# 20th Street — 10th Ave → Stewardson (NW–SE).
+NW_20TH_CTRL: list[tuple[float, float]] = [
+    (-58.0, 100.0),  # 10th Ave / Kingsway
+    (-57.0, 88.0),  # 8th Ave
+    (-56.0, 74.0),  # 6th Ave
+    (-52.0, 64.0),  # Stewardson
+]
+# 14th Street — 8th Ave → Columbia.
+NW_14TH_CTRL: list[tuple[float, float]] = [
+    (-50.0, 90.0),  # 8th Ave
+    (-48.0, 74.0),  # 6th Ave
+    (-46.0, 52.5),  # Stewardson / Columbia
+]
+# 12th Street — Kingsway / 10th Ave → Columbia.
+NW_12TH_CTRL: list[tuple[float, float]] = [
+    (-65.0, 100.0),  # Burnaby Kingsway handoff
+    (-48.0, 103.5),  # 10th Ave
+    (-46.0, 92.0),  # 8th Ave
+    (-44.0, 79.0),  # 6th Ave
+    (-41.0, 60.5),  # Royal Ave
+    (-38.0, 54.5),  # Columbia
+]
+# 10th Street — Brow of the Hill.
+NW_10TH_ST_CTRL: list[tuple[float, float]] = [
+    (-43.0, 105.0),  # 10th Ave
+    (-40.0, 92.0),  # 8th Ave
+    (-38.0, 81.0),  # 6th Ave
+    (-34.0, 62.0),  # Royal Ave
+    (-31.5, 56.0),  # Columbia
+]
+# 8th Street (wider ~0.5) — 10th Ave → Front.
+NW_8TH_ST_CTRL: list[tuple[float, float]] = [
+    (-38.0, 107.0),  # 10th Ave
+    (-35.0, 95.0),  # 8th Ave
+    (-32.0, 83.5),  # 6th Ave
+    (-28.0, 64.0),  # Royal Ave
+    (-25.0, 57.5),  # Columbia
+    (-24.0, 52.5),  # Front
+]
+# 6th Street (wider ~0.55) — 10th Ave → Front.
+NW_6TH_ST_CTRL: list[tuple[float, float]] = [
+    (-31.0, 109.5),  # 10th Ave
+    (-28.0, 97.0),  # 8th Ave
+    (-25.0, 86.5),  # 6th Ave
+    (-21.0, 66.5),  # Royal Ave
+    (-18.0, 60.0),  # Columbia
+    (-17.0, 55.0),  # Front
+]
+# McBride Blvd (wider ~0.7) — Canada Way → Pattullo / Surrey.
+NW_MCBRIDE_CTRL: list[tuple[float, float]] = [
+    (-25.0, 115.0),  # Burnaby Canada Way handoff
+    (-20.0, 113.5),  # 10th Ave
+    (-16.0, 100.0),  # 8th Ave
+    (-13.0, 91.0),  # 6th Ave
+    (-8.0, 70.5),  # Royal Ave
+    (-5.0, 63.5),  # Columbia
+    (0.0, 32.0),  # Surrey Pattullo approach
+]
+# Brunette Ave (wider ~0.65) — Sapperton → Hwy 1 / Lougheed.
+NW_BRUNETTE_CTRL: list[tuple[float, float]] = [
+    (14.0, 88.0),  # East Columbia
+    (18.0, 102.0),  # Sapperton valley
+    (35.0, 125.0),  # Hwy 1 / Lougheed
+]
+# Hwy 91A Queensborough Bridge continuation (Richmond tip → Stewardson).
+HWY91A_QB_CTRL: list[tuple[float, float]] = [
+    (-128.0, 30.0),  # Richmond / Queensborough tip
+    (-95.0, 41.0),
+    (-72.0, 44.0),
+    (-65.0, 48.0),  # Bridge mid
+    (-55.0, 62.0),  # Stewardson / 20th St snap
+]
+# Queensborough peninsula (~18° island tilt).
+QB_EWEN_CTRL: list[tuple[float, float]] = [
+    (-125.0, 31.0),
+    (-95.0, 35.5),
+    (-72.0, 39.0),
+    (-52.0, 43.0),
+]
+QB_BOYD_CTRL: list[tuple[float, float]] = [
+    (-95.0, 46.0),
+    (-68.0, 50.0),
+]
+QB_SALTER_CTRL: list[tuple[float, float]] = [
+    (-95.0, 31.0),
+    (-52.0, 39.0),
+]
+# Queensborough cross-street X anchors (tilted NW–SE connectors).
+QB_CROSS_XS: tuple[float, ...] = (-115.0, -95.0, -82.0, -72.0, -60.0)
+
+# Routes allowed to occupy the Mainland New Westminster wipe box.
+_NW_BOX_KEEP = frozenset(
+    {
+        "nw_front_st",
+        "nw_columbia_st",
+        "nw_carnarvon_st",
+        "nw_clarkson_st",
+        "nw_royal_ave",
+        "nw_queens_ave",
+        "nw_3rd_ave",
+        "nw_4th_ave",
+        "nw_5th_ave",
+        "nw_6th_ave",
+        "nw_7th_ave",
+        "nw_8th_ave",
+        "nw_10th_ave",
+        "nw_stewardson",
+        "nw_20th_st",
+        "nw_14th_st",
+        "nw_12th_st",
+        "nw_10th_st",
+        "nw_8th_st",
+        "nw_6th_st",
+        "nw_4th_st",
+        "nw_2nd_st",
+        "nw_1st_st",
+        "mcbride_blvd",
+        "brunette_ave",
+        "hwy91a",
+        "marine_stewardson",
+        "kingsway_bn",
+        "canada_way",
+    }
+)
+# Burnaby SE spines that terminate on 10th Ave (endpoints sit in the wipe AABB).
+_BN_SE_KEEP_PREFIXES = (
+    "sperling_ave",
+    "kensington_ave",
+    "cariboo_rd",
+    "nelson_ave",
+)
+
+# =====================================================================
+# Coquitlam — North Rd (Burnaby) → Pitt River Bridge / Port Mann (roads only).
+# =====================================================================
+CQ_NS_X: dict[str, float] = {
+    "north_rd": 52.0,  # Burnaby border
+    "blue_mountain": 68.0,
+    "king_edward": 76.0,
+    "schoolhouse": 84.0,
+    "mariner": 105.0,
+    "johnson": 112.0,
+    "pinetree": 120.0,
+    "coast_meridian": 155.0,
+    "pitt_bridge": 175.0,  # Pitt Meadows seam
+}
+CQ_EW_Y: dict[str, float] = {
+    "united": 92.0,
+    "austin": 165.0,
+    "lougheed_w": 185.0,  # North Rd seam
+    "glen": 205.0,
+    "como_lake": 215.0,
+    "guildford": 215.0,
+    "barnet_dew": 232.0,
+    "clarke": 245.0,
+    "david": 245.0,
+}
+# Hwy 1 Coquitlam — Brunette / Cape Horn → Port Mann → Surrey snap.
+HWY1_CQ_CTRL: list[tuple[float, float]] = [
+    (35.0, 125.0),  # Brunette interchange (Burnaby seam)
+    (55.0, 115.0),  # Maillardville / Cape Horn
+    (64.0, 42.2),  # Surrey Hwy 1 / Port Mann snap
+]
+# Lougheed Hwy (Hwy 7) — North Rd → Coquitlam Centre → Pitt River Bridge.
+LOUGHEED_CQ_CTRL: list[tuple[float, float]] = [
+    (52.0, 185.0),  # North Rd (Burnaby seam)
+    (85.0, 185.0),  # Burquitlam / Austin Heights North
+    (120.0, 195.0),  # Coquitlam Centre / Pinetree
+    (135.0, 145.0),  # Riverview
+    (175.0, 68.0),  # Pitt River Bridge (Pitt Meadows seam)
+]
+# Barnet Hwy (Hwy 7A) — Port Moody → Coquitlam Centre.
+BARNET_CQ_CTRL: list[tuple[float, float]] = [
+    (95.0, 240.0),  # Port Moody / Dewdney Trunk entry
+    (110.0, 225.0),  # Westwood Plateau foot
+    (120.0, 195.0),  # Lougheed / Pinetree
+]
+# Mary Hill Bypass (Hwy 7B) — Cape Horn → Pitt River approach.
+MARY_HILL_CTRL: list[tuple[float, float]] = [
+    (62.0, 110.0),  # Hwy 1 / Lougheed Cape Horn
+    (95.0, 95.0),
+    (135.0, 82.0),
+    (165.0, 72.0),  # merge to Lougheed west of Pitt Bridge
+]
+# Brunette Ave Coquitlam leg — Hwy 1 → Blue Mountain / Maillardville.
+BRUNETTE_CQ_CTRL: list[tuple[float, float]] = [
+    (35.0, 125.0),  # Hwy 1 / New West seam
+    (58.0, 165.0),  # into Blue Mountain St
+]
+# United Boulevard — industrial riverfront spine.
+UNITED_BLVD_CTRL: list[tuple[float, float]] = [
+    (52.0, 105.0),  # Brunette / North Rd band
+    (76.0, 95.0),  # King Edward St
+    (105.0, 90.0),  # Mariner Way / Mary Hill
+]
+# Como Lake Ave — North Rd → Lougheed / Pinetree (curves SE past Mundy Park).
+COMO_LAKE_CTRL: list[tuple[float, float]] = [
+    (52.0, 215.0),  # North Rd
+    (68.0, 215.0),  # Blue Mountain
+    (84.0, 215.0),  # Schoolhouse
+    (105.0, 205.0),  # Mundy Park south-east edge
+    (120.0, 195.0),  # Lougheed / Pinetree
+]
+# Pinetree Way — Town Centre → Westwood Plateau loop.
+PINETREE_CTRL: list[tuple[float, float]] = [
+    (120.0, 195.0),  # Lougheed / Coquitlam Centre
+    (120.0, 215.0),  # Guildford Way
+    (120.0, 245.0),  # David Ave
+    (110.0, 260.0),  # Westwood Plateau climb
+    (100.0, 270.0),
+    (95.0, 265.0),
+    (105.0, 255.0),
+    (120.0, 250.0),  # Plateau Blvd return
+]
+# Mundy Park open void — no internal grid (Mariner Way X=+105 is the east edge).
+CQ_VOID_MUNDY = (92.0, 168.0, 104.5, 202.0)
+CQ_PARK_VOIDS: tuple[tuple[float, float, float, float], ...] = (CQ_VOID_MUNDY,)
+X_CQ_WEST = CQ_NS_X["north_rd"]
+X_CQ_EAST = CQ_NS_X["pitt_bridge"]
+Y_CQ_CLARKE = CQ_EW_Y["clarke"]
 
 
 def ave_y(ave: float) -> float:
@@ -747,28 +990,36 @@ _MAJOR_XS = {
     -420.0,
     -405.0,
     -398.0,
-    # Burnaby / New Westminster N–S arterials
+    # Burnaby N–S arterials / collectors
     -156.9,
+    -142.0,
     -135.8,
+    -129.0,
     -114.7,
     -93.6,
+    -85.0,
     -72.5,
     -51.4,
-    -35.0,
-    -28.0,
-    -25.0,
     -20.0,
-    -18.0,
-    -15.0,
     -10.0,
-    -5.0,
     10.0,
     15.0,
-    25.0,
+    20.0,
     35.0,
     52.0,
+    # Coquitlam N–S arterials
+    68.0,
+    76.0,
+    84.0,
+    95.0,
+    105.0,
+    112.0,
+    120.0,
+    135.0,
+    145.0,
+    155.0,
+    # Surrey Hwy 1 / Port Mann tip
     64.0,
-    65.0,
     175.0,
     185.0,
     211.0,
@@ -887,36 +1138,69 @@ _MAJOR_YS = {round(y, 1) for _, y in AVE_Y_ANCHORS} | {
     292.0,
     305.0,
     325.0,
-    # Burnaby / New Westminster E–W spines
-    28.0,
-    35.0,
-    36.0,
-    42.0,
-    42.2,
-    44.0,
-    45.0,
-    48.0,
-    52.0,
-    75.0,
-    85.0,
+    # Burnaby E–W spines / town-centre collectors
+    72.0,
+    82.0,
+    86.0,
     88.0,
-    95.0,
-    105.0,
+    96.0,
+    98.0,
+    102.0,
+    104.0,
+    108.0,
     110.0,
+    112.0,
+    114.0,
     115.0,
+    118.0,
+    120.0,
     125.0,
+    135.0,
+    140.0,
     145.0,
+    150.0,
+    155.0,
     160.0,
+    165.0,
+    168.0,
+    170.0,
+    175.0,
     180.0,
     185.0,
     195.0,
     200.0,
+    205.0,
+    215.0,
+    218.0,
     228.0,
     235.0,
-    245.0,
-    260.0,
-    265.0,
+    238.0,
+    248.0,
+    262.0,
     268.0,
+    282.0,
+    # Coquitlam E–W spines
+    82.0,
+    92.0,
+    95.0,
+    110.0,
+    165.0,
+    185.0,
+    190.0,
+    195.0,
+    202.0,
+    205.0,
+    215.0,
+    225.0,
+    232.0,
+    240.0,
+    245.0,
+    250.0,
+    260.0,
+    270.0,
+    275.0,
+    # Surrey Hwy 1 / Port Mann tip
+    42.2,
 }
 
 
@@ -1095,55 +1379,89 @@ def _snap_highways(highways: dict, tol: float = 0.15) -> None:
             (-510.0, -106.6),
             (-510.0, -112.0),
             (-495.0, -112.0),
-            # Burnaby / New Westminster / Queensborough
+            # Surrey north approaches (Pattullo / Port Mann tips)
+            (0.0, 32.0),
+            (64.0, 42.2),
+            # Burnaby / Boundary seams + town-centre anchors
             (-178.0, 90.0),
+            (-178.0, 108.0),
+            (-178.0, 120.0),
             (-178.0, 125.0),
             (-178.0, 206.0),
             (-178.0, 216.5),
             (-178.0, 248.0),
             (-178.0, 269.0),
+            (-178.0, 282.0),
             (-156.9, 88.0),
             (-135.8, 88.0),
-            (-135.8, 115.0),
+            (-135.8, 118.0),
             (-135.8, 185.0),
             (-135.8, 216.5),
             (-135.8, 228.0),
             (-135.8, 269.0),
-            (-125.0, 115.0),
             (-114.7, 88.0),
-            (-114.7, 115.0),
-            (-95.0, 42.0),
-            (-93.6, 115.0),
-            (-85.0, 160.0),
+            (-114.7, 114.0),
+            (-114.7, 175.0),
+            (-93.6, 86.0),
+            (-93.6, 110.0),
+            (-72.5, 104.0),
+            (-72.5, 108.0),
+            (-72.5, 150.0),
             (-72.5, 216.5),
-            (-68.0, 45.0),
-            (-65.0, 100.0),
-            (-55.0, 72.0),
+            (-72.5, 269.0),
+            (-51.4, 98.0),
+            (-51.4, 140.0),
             (-51.4, 195.0),
             (-51.4, 269.0),
             (-45.0, 72.0),
-            (-35.0, 48.0),
-            (-35.0, 105.0),
-            (-28.0, 110.0),
-            (-25.0, 75.0),
+            (-45.0, 96.0),
             (-25.0, 115.0),
             (-20.0, 180.0),
             (-20.0, 200.0),
-            (-18.0, 55.0),
-            (-15.0, 52.0),
-            (-10.0, 260.0),
-            (-5.0, 50.0),
-            (-5.0, 52.0),
-            (0.0, 32.0),
+            (-20.0, 218.0),
+            (10.0, 165.0),
             (10.0, 255.0),
             (15.0, 85.0),
-            (25.0, 265.0),
-            (35.0, 115.0),
-            (35.0, 145.0),
+            (35.0, 125.0),
+            (35.0, 155.0),
+            (52.0, 135.0),
+            (52.0, 165.0),
             (52.0, 185.0),
+            (52.0, 215.0),
             (52.0, 245.0),
+            (52.0, 268.0),
+            # Coquitlam seams / town-centre anchors
+            (35.0, 125.0),
+            (55.0, 115.0),
+            (62.0, 110.0),
             (64.0, 42.2),
-            (65.0, 268.0),
+            (68.0, 125.0),
+            (68.0, 165.0),
+            (68.0, 185.0),
+            (68.0, 215.0),
+            (84.0, 92.0),
+            (84.0, 165.0),
+            (84.0, 215.0),
+            (95.0, 95.0),
+            (95.0, 240.0),
+            (105.0, 90.0),
+            (105.0, 165.0),
+            (105.0, 205.0),
+            (112.0, 205.0),
+            (112.0, 215.0),
+            (112.0, 245.0),
+            (120.0, 195.0),
+            (120.0, 215.0),
+            (120.0, 245.0),
+            (135.0, 82.0),
+            (135.0, 145.0),
+            (155.0, 115.0),
+            (155.0, 155.0),
+            (155.0, 205.0),
+            (155.0, 245.0),
+            (165.0, 72.0),
+            (175.0, 68.0),
+            (175.0, 245.0),
         ]
     )
     # Dedup anchors.
@@ -1168,29 +1486,53 @@ def _snap_highways(highways: dict, tol: float = 0.15) -> None:
         "old_dewdney_trunk",
         "neaves_mcneil",
         "pm_rannie",
-        "hwy1_bn",
         "hwy1_van",
+        "hwy1_bn",
         "kingsway",
         "kingsway_bn",
         "canada_way",
         "lougheed_bn",
-        "marine_stewardson",
         "hastings_barnet",
         "gaglardi_way",
+        "marine_stewardson",
         "brunette_ave",
+        "bn_mtn_pkwy",
         "sfu_ring",
+        "nw_front_st",
         "nw_columbia_st",
+        "nw_carnarvon_st",
+        "nw_clarkson_st",
         "nw_royal_ave",
         "nw_queens_ave",
+        "nw_3rd_ave",
         "nw_4th_ave",
+        "nw_5th_ave",
         "nw_6th_ave",
+        "nw_7th_ave",
         "nw_8th_ave",
         "nw_10th_ave",
         "nw_stewardson",
+        "nw_20th_st",
+        "nw_14th_st",
         "nw_12th_st",
+        "nw_10th_st",
         "nw_8th_st",
         "nw_6th_st",
+        "nw_4th_st",
+        "nw_2nd_st",
+        "nw_1st_st",
         "mcbride_blvd",
+        "ewen_ave",
+        "boyd_st",
+        "salter_st",
+        "hwy1_cq",
+        "lougheed_cq",
+        "barnet_cq",
+        "mary_hill_bypass",
+        "brunette_cq",
+        "united_blvd",
+        "como_lake_ave",
+        "pinetree_way",
     }
     for name, route in highways.items():
         if name in skip_snap:
@@ -1516,7 +1858,7 @@ def _build_richmond(highways: dict) -> None:
     _add_ew(highways, "bridgeport_rd", y_bp, x3, x6, lanes=4)
     _add_ew(highways, "cambie_rd", y_cam, x1, x8, lanes=4)
     # Westminster Hwy: straight through East Richmond, then continuous NE
-    # S-curve across Hwy 91 into Queensborough (no X-junction stubs).
+    # S-curve across Hwy 91 to the east tip (no X-junction stubs).
     westminster_curve = _dense_spline(
         [
             (-225.0, -1.1),  # No. 8 Rd entry into the curve
@@ -1524,7 +1866,7 @@ def _build_richmond(highways: dict) -> None:
             (-182.0, 10.0),  # Hwy 91 crossover
             (-168.0, 20.0),
             (-150.0, 28.0),
-            (-130.0, 36.0),  # Queensborough / New West connection
+            (-130.0, 36.0),  # Richmond east tip (open Fraser gap)
         ],
         segments=18,
     )
@@ -2181,7 +2523,7 @@ def _build_vancouver(highways: dict) -> None:
     for key, x, y_top, lanes in east_ns:
         _add_ns(highways, key, x, y_mar, y_top, lanes=lanes)
 
-    # Boundary Road — Vancouver / Burnaby seam (Marine → Hastings / Hwy 1).
+    # Boundary Road — Vancouver east edge (Marine → Hastings / Hwy 1).
     _add_ns(highways, "boundary_rd", x_bound, y_mar, y_hast, lanes=4)
 
     # --- East–West major avenues ---
@@ -2220,7 +2562,7 @@ def _build_vancouver(highways: dict) -> None:
             ]
         ),
     }
-    # Broadway — UBC → Boundary (Burnaby / Lougheed seam).
+    # Broadway — UBC → Boundary.
     highways["broadway"] = {
         "lanes": 4,
         "points": yaml_pts(
@@ -2239,7 +2581,7 @@ def _build_vancouver(highways: dict) -> None:
     }
     # Grandview Highway / 12th Ave — Cambie / Clark → Boundary.
     _add_ew(highways, "grandview_hwy", y_gv, x_cam, x_bound, lanes=4)
-    # Hastings St built in _build_downtown_peninsula (West Hastings → Burnaby).
+    # Hastings St built in _build_downtown_peninsula (West Hastings → Boundary).
 
     # --- Kingsway diagonal ---
     highways["kingsway"] = {
@@ -2344,115 +2686,151 @@ def _build_vancouver(highways: dict) -> None:
     )
 
 
-def _nw_10th_y(x: float) -> float:
+def _bn_10th_y(x: float) -> float:
     """Y of 10th Avenue (Burnaby / New West border) at X."""
-    return _interp_poly_y(NW_10TH_CTRL, x)
+    return _interp_poly_y(BN_10TH_CTRL, x)
 
 
 def _bn_ns_south_y(x: float) -> float:
-    """Southern clip for Burnaby N–S arterials.
-
-    West of New Westminster: Marine Way / Stewardson. Inside the New West
-    X-band: clip at tilted 10th Avenue so orthogonal streets do not poke
-    south through the Fraser-aligned grid.
-    """
-    if -55.0 <= x <= 25.0:
-        return _nw_10th_y(x)
+    """Southern clip for Burnaby N–S arterials (Marine / Stewardson / 10th Ave)."""
+    # SE Burnaby: clip at tilted 10th Ave so streets do not poke into New West.
+    if -58.0 <= x <= 15.0:
+        return _bn_10th_y(x)
     return _interp_poly_y(MARINE_STEWARDSON_CTRL, x)
 
 
-def _in_nw_wipe(x: float, y: float) -> bool:
-    """True if (x,y) is interior Mainland New West (south of 10th Ave border)."""
-    if not (NW_WIPE_X0 < x < NW_WIPE_X1 and NW_WIPE_Y0 < y < NW_WIPE_Y1):
-        return False
-    # Burnaby owns the 10th Avenue seam and everything north of it.
-    if y >= _nw_10th_y(x) - 0.5:
-        return False
-    return True
-
-
-def _offset_polyline(
-    controls: list[tuple[float, float]],
-    dist: float,
-) -> list[tuple[float, float]]:
-    """Offset a polyline to the left of its forward direction by ``dist``."""
-    if len(controls) < 2:
-        return list(controls)
-    dx = controls[-1][0] - controls[0][0]
-    dy = controls[-1][1] - controls[0][1]
-    length = math.hypot(dx, dy) or 1.0
-    # Left normal (NW when travelling NE along the Fraser).
-    nx, ny = -dy / length, dx / length
-    return [(x + nx * dist, y + ny * dist) for x, y in controls]
-
-
-# Routes allowed to occupy the Mainland New Westminster wipe box.
-_NW_BOX_KEEP = frozenset(
-    {
-        "nw_columbia_st",
-        "nw_royal_ave",
-        "nw_queens_ave",
-        "nw_4th_ave",
-        "nw_6th_ave",
-        "nw_8th_ave",
-        "nw_10th_ave",
-        "nw_stewardson",
-        "nw_12th_st",
-        "nw_8th_st",
-        "nw_6th_st",
-        "mcbride_blvd",
-        "brunette_ave",
-        "hwy91a",
-        "marine_stewardson",
-        "kingsway_bn",
-        "canada_way",
-    }
-)
-
-
-def _wipe_new_west_box(highways: dict) -> None:
-    """Delete residual non-NW geometry inside the Mainland New West wipe box."""
-    doomed: list[str] = []
-    for key, route in highways.items():
-        if key in _NW_BOX_KEEP or key.startswith("nw_"):
+def _bn_void_y_gaps(x: float) -> list[tuple[float, float]]:
+    """Y intervals of park voids that contain this X (excluding lake cross shafts)."""
+    gaps: list[tuple[float, float]] = []
+    for x0, y0, x1, y1 in BN_PARK_VOIDS:
+        if not (x0 <= x <= x1):
             continue
-        pts = route.get("points") or []
-        if len(pts) < 2:
-            doomed.append(key)
+        if (x0, y0, x1, y1) == BN_VOID_BURNABY_LAKE and any(
+            abs(x - ax) <= 0.6 for ax in BN_LAKE_CROSS_XS
+        ):
             continue
-        kept: list[list[float]] = []
-        for p in pts:
-            x, y = float(p[0]), float(p[1])
-            if _in_nw_wipe(x, y):
-                continue
-            kept.append([round(x, 1), round(y, 1)])
-        # Drop zero-length consecutive duplicates.
-        cleaned: list[list[float]] = []
-        for p in kept:
-            if not cleaned or p != cleaned[-1]:
-                cleaned.append(p)
-        if len(cleaned) < 2:
-            doomed.append(key)
-        else:
-            route["points"] = cleaned
-    for key in doomed:
-        del highways[key]
+        gaps.append((y0, y1))
+    gaps.sort()
+    return gaps
 
 
-def _build_burnaby_new_west(highways: dict) -> None:
-    """Burnaby + Mainland New Westminster + Queensborough (roads only, Z=0).
+def _bn_void_x_gaps(y: float) -> list[tuple[float, float]]:
+    """X intervals of park voids that contain this Y."""
+    gaps: list[tuple[float, float]] = []
+    for x0, y0, x1, y1 in BN_PARK_VOIDS:
+        if y0 <= y <= y1:
+            gaps.append((x0, x1))
+    gaps.sort()
+    return gaps
+
+
+def _add_ns_split_voids(
+    highways: dict,
+    key: str,
+    x: float,
+    y0: float,
+    y1: float,
+    *,
+    lanes: int = 2,
+) -> None:
+    """Add a N–S road, splitting around park voids that contain X."""
+    if y0 > y1:
+        y0, y1 = y1, y0
+    gaps = _bn_void_y_gaps(x)
+    if not gaps:
+        _add_ns(highways, key, x, y0, y1, lanes=lanes)
+        return
+    cursor = y0
+    part = 0
+    for gy0, gy1 in gaps:
+        if gy1 <= cursor or gy0 >= y1:
+            continue
+        seg_end = min(y1, gy0)
+        if seg_end > cursor + 1.0:
+            _add_ns(highways, f"{key}_{part}", x, cursor, seg_end, lanes=lanes)
+            part += 1
+        cursor = max(cursor, gy1)
+    if y1 > cursor + 1.0:
+        _add_ns(highways, f"{key}_{part}" if part else key, x, cursor, y1, lanes=lanes)
+
+
+def _add_ew_split_voids(
+    highways: dict,
+    key: str,
+    y: float,
+    x0: float,
+    x1: float,
+    *,
+    lanes: int = 2,
+) -> None:
+    """Add an E–W road, splitting around park voids that contain Y."""
+    if x0 > x1:
+        x0, x1 = x1, x0
+    gaps = _bn_void_x_gaps(y)
+    if not gaps:
+        _add_ew(highways, key, y, x0, x1, lanes=lanes)
+        return
+    cursor = x0
+    part = 0
+    for gx0, gx1 in gaps:
+        if gx1 <= cursor or gx0 >= x1:
+            continue
+        seg_end = min(x1, gx0)
+        if seg_end > cursor + 1.0:
+            _add_ew(highways, f"{key}_{part}", y, cursor, seg_end, lanes=lanes)
+            part += 1
+        cursor = max(cursor, gx1)
+    if x1 > cursor + 1.0:
+        _add_ew(
+            highways, f"{key}_{part}" if part else key, y, cursor, x1, lanes=lanes
+        )
+
+
+def _bn_urban_grid(
+    highways: dict,
+    prefix: str,
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    *,
+    step: float = 10.0,
+) -> None:
+    """Dense 2-lane fill that skips Burnaby park / lake voids."""
+    if y0 > y1:
+        y0, y1 = y1, y0
+    if x0 > x1:
+        x0, x1 = x1, x0
+    x = x0 + step
+    n = 0
+    while x < x1 - 0.5:
+        if not _near(x, _MAJOR_XS):
+            _add_ns_split_voids(highways, f"{prefix}_ns_{n}", x, y0, y1, lanes=2)
+            n += 1
+        x += step
+    y = y0 + step
+    n = 0
+    while y < y1 - 0.5:
+        if not _near(y, _MAJOR_YS):
+            _add_ew_split_voids(highways, f"{prefix}_ew_{n}", y, x0, x1, lanes=2)
+            n += 1
+        y += step
+
+
+def _build_burnaby(highways: dict) -> None:
+    """City of Burnaby road network (flat Z=0 arterials only).
 
     Stitches onto Vancouver at Boundary Rd (X=-178): Marine, Kingsway, Canada
-    Way / Grandview, Lougheed / Broadway, Hastings, and Hwy 1. Stitches onto
-    Richmond via Hwy 91A / Queensborough Bridge, onto Surrey via Pattullo
-    (0, +32) and Port Mann / Hwy 1 (64, 42.2). Mainland New Westminster uses
-    a single ~30° Fraser-aligned tilted grid; Burnaby orthogonal streets clip
-    at 10th Avenue. Open Fraser buffer kept south of Front; Burrard Inlet
-    clips the north shore near Y=+275.
+    Way / Grandview, Lougheed / Broadway, Hastings, and Hwy 1. Handoffs to New
+    Westminster at 10th Ave / Kingsway / Canada Way / Stewardson; east border
+    is North Rd (X=+52) toward Coquitlam. Deer Lake, Burnaby Lake, and Central
+    Park stay open (no cross-street fill).
     """
     x_bound = BN_NS_X["boundary"]
     x_gil = BN_NS_X["gilmore"]
+    x_alpha = BN_NS_X["alpha"]
     x_will = BN_NS_X["willingdon"]
+    x_beta = BN_NS_X["beta"]
     x_oak = BN_NS_X["royal_oak"]
     x_nel = BN_NS_X["nelson"]
     x_sper = BN_NS_X["sperling"]
@@ -2462,45 +2840,42 @@ def _build_burnaby_new_west(highways: dict) -> None:
     x_north = BN_NS_X["north_rd"]
 
     y_rumble = BN_EW_Y["rumble"]
+    y_imp = BN_EW_Y["imperial"]
+    y_oak_st = BN_EW_Y["oakland"]
     y_hast = BN_EW_Y["hastings"]
     y_burrard = Y_BN_BURRARD
+    y_lougheed = BN_EW_Y["lougheed_w"]
 
-    # --- Hwy 1 Burnaby → Port Mann → Surrey snap ---
+    # --- Hwy 1 Burnaby → Port Mann → Surrey snap (wider ~0.8) ---
     highways["hwy1_bn"] = {
         "lanes": 6,
         "points": yaml_pts(_dense_spline(HWY1_BN_CTRL, segments=16)),
     }
 
-    # --- Extend Hwy 91A across Queensborough Bridge into Stewardson ---
-    qb_ext = yaml_pts(_dense_spline(HWY91A_QB_CTRL, segments=14))
-    if "hwy91a" in highways:
-        base = highways["hwy91a"]["points"]
-        highways["hwy91a"]["points"] = base[:-1] + qb_ext
-    else:
-        highways["hwy91a"] = {"lanes": 4, "points": qb_ext}
-
-    # --- Marine Way → Stewardson handoff (New West owns the tilt east of this) ---
+    # --- Marine Way → Stewardson handoff ---
     highways["marine_stewardson"] = {
         "lanes": 4,
         "points": yaml_pts(_dense_spline(MARINE_STEWARDSON_CTRL, segments=12)),
     }
+    # North Fraser Way — Big Bend industrial parallel (Boundary → Byrne).
+    _add_ew(highways, "north_fraser_way", BN_EW_Y["north_fraser"], x_bound, -85.0, lanes=2)
 
-    # --- Kingsway → Edmonds (12th St continues into New West) ---
+    # --- Kingsway (wider ~0.65) → New West entry ---
     highways["kingsway_bn"] = {
-        "lanes": 4,
-        "points": yaml_pts(_dense_spline(KINGSWAY_BN_CTRL, segments=10)),
+        "lanes": 5,
+        "points": yaml_pts(_dense_spline(KINGSWAY_BN_CTRL, segments=12)),
     }
 
-    # --- Canada Way → McBride / 10th Ave handoff ---
+    # --- Canada Way (wider ~0.6) → New West entry ---
     highways["canada_way"] = {
-        "lanes": 4,
-        "points": yaml_pts(_dense_spline(CANADA_WAY_CTRL, segments=12)),
+        "lanes": 5,
+        "points": yaml_pts(_dense_spline(CANADA_WAY_CTRL, segments=14)),
     }
 
-    # --- Lougheed Hwy (Hwy 7) through Burnaby ---
+    # --- Lougheed Hwy (Hwy 7, wider ~0.65) → Brunette Ave ---
     highways["lougheed_bn"] = {
-        "lanes": 6,
-        "points": yaml_pts(_dense_spline(LOUGHEED_BN_CTRL, segments=12)),
+        "lanes": 5,
+        "points": yaml_pts(_dense_spline(LOUGHEED_BN_CTRL, segments=14)),
     }
 
     # --- Hastings St / Barnet Hwy ---
@@ -2509,105 +2884,331 @@ def _build_burnaby_new_west(highways: dict) -> None:
         "points": yaml_pts(_dense_spline(HASTINGS_BARNET_CTRL, segments=12)),
     }
 
-    # --- Gaglardi Way + Brunette Ave (NE Sapperton exit) ---
+    # --- Gaglardi Way (wider ~0.6) + Burnaby Mountain Pkwy ---
     highways["gaglardi_way"] = {
-        "lanes": 4,
+        "lanes": 5,
         "points": yaml_pts(_dense_spline(GAGLARDI_CTRL, segments=12)),
     }
-    highways["brunette_ave"] = {
+    highways["bn_mtn_pkwy"] = {
         "lanes": 4,
-        "points": yaml_pts(_dense_spline(BRUNETTE_CTRL, segments=10)),
+        "points": yaml_pts(_dense_spline(BN_MTN_PKWY_CTRL, segments=8)),
     }
 
-    # --- Major N–S arterials (10th Ave clip inside New West X-band) ---
-    ns_major = (
-        ("gilmore_ave", x_gil, y_burrard, 4),
-        ("willingdon_ave", x_will, y_burrard, 4),
-        ("royal_oak_ave", x_oak, y_hast, 4),
-        ("nelson_ave", x_nel, y_hast, 4),
-        ("sperling_ave", x_sper, y_hast, 4),
-        ("kensington_ave", x_ken, y_hast, 4),
-        ("cariboo_rd", x_car, 245.0, 4),
-    )
-    for key, x, y_top, lanes in ns_major:
-        y0 = round(_bn_ns_south_y(x), 1)
-        if y_top > y0 + 1.0:
-            _add_ns(highways, key, x, y0, y_top, lanes=lanes)
+    # Brunette Ave owned by New Westminster (Sapperton → Hwy 1).
 
-    # North Road — Lougheed Town Centre → Clarke / Como Lake.
-    _add_ns(highways, "north_rd", x_north, 185.0, 245.0, lanes=4)
-
-    # Boundary Rd already owned by Vancouver (Marine → Hastings); short north
-    # stub to Hwy 1 / Burrard so the seam covers the freeway latitude.
+    # --- Major N–S arterials (clip at Marine / 10th Ave / Burrard) ---
+    # Boundary Rd already owned by Vancouver (Marine → Hastings); extend north.
     _add_ns(highways, "boundary_rd_n", x_bound, y_hast, y_burrard, lanes=4)
 
-    # --- Rumble / Imperial (South Burnaby E–W; stops west of New West) ---
-    _add_ew(highways, "rumble_st", y_rumble, x_bound, x_oak, lanes=4)
+    # SE spines clip cleanly on tilted 10th Ave / Cumberland (no New West poke).
+    ns_major = (
+        ("gilmore_ave", x_gil, None, y_burrard - 2.0, 4),
+        ("willingdon_ave", x_will, None, y_burrard, 4),
+        ("royal_oak_ave", x_oak, None, 175.0, 4),  # Marine → Canada Way
+        ("nelson_ave", x_nel, None, y_oak_st, 4),  # Marine → Oakland / Deer Lake
+        ("sperling_ave", x_sper, 100.0, y_hast, 4),  # Edmonds / 10th Ave band
+        ("kensington_ave", x_ken, None, y_hast, 4),
+        ("cariboo_rd", x_car, None, 195.0, 4),  # 10th Ave → Lougheed
+    )
+    for key, x, y_south, y_top, lanes in ns_major:
+        y0 = round(y_south if y_south is not None else _bn_ns_south_y(x), 1)
+        if y_top > y0 + 1.0:
+            _add_ns_split_voids(highways, key, x, y0, y_top, lanes=lanes)
 
-    # --- Secondary E–W collectors (split around the New West wipe box) ---
-    for i, y in enumerate((100.0, 130.0, 145.0, 170.0, 190.0, 235.0, 250.0)):
-        if _near(y, _MAJOR_YS, tol=2.0):
-            continue
-        if y <= Y_BN_MARINE + 2.0 or y >= y_burrard - 2.0:
-            continue
-        if NW_WIPE_Y0 <= y <= NW_WIPE_Y1:
-            # West lobe: Boundary → New West west edge.
-            _add_ew(highways, f"bn_ew_{i}_w", y, x_bound, -55.0, lanes=2)
-            # East lobe: east of wipe → North Rd (Sapperton / LOUGHEED band).
-            if x_north > NW_WIPE_X1 + 1.0:
-                _add_ew(highways, f"bn_ew_{i}_e", y, NW_WIPE_X1, x_north, lanes=2)
-        else:
-            _add_ew(highways, f"bn_ew_{i}", y, x_bound, x_north, lanes=2)
+    # Alpha / Beta — Brentwood collectors (Canada Way → Hastings).
+    _add_ns(highways, "alpha_ave", x_alpha, 185.0, y_hast, lanes=2)
+    _add_ns(highways, "beta_ave", x_beta, 185.0, y_hast, lanes=2)
 
-    # --- SFU / Burnaby Mountain ring ---
+    # North Road — Brunette → Clarke (Coquitlam border; Barnet gap stays open north).
+    _add_ns(highways, "north_rd", x_north, 135.0, Y_CQ_CLARKE, lanes=4)
+
+    # --- Imperial / Rumble (South Burnaby) ---
+    _add_ew(highways, "rumble_st", y_rumble, x_bound, x_sper, lanes=4)
+    # Imperial: Boundary → Edmonds (angles toward Kingsway near Sperling).
+    highways["imperial_st"] = {
+        "lanes": 4,
+        "points": yaml_pts(
+            [
+                (x_bound, y_imp),
+                (x_will, y_imp),
+                (x_oak, y_imp),
+                (x_nel, 116.0),
+                (x_sper, 112.0),
+            ]
+        ),
+    }
+
+    # --- Broadway east of Gaglardi / Production Way band ---
+    highways["bn_broadway_e"] = {
+        "lanes": 4,
+        "points": yaml_pts(
+            [
+                (x_gag, 218.0),
+                (x_car, BN_EW_Y["broadway_e"]),
+                (x_north, BN_EW_Y["broadway_e"]),
+            ]
+        ),
+    }
+
+    # --- SFU / Burnaby Mountain oval ring ---
     sx, sy = SFU_CORE
     highways["sfu_ring"] = {
         "lanes": 2,
         "points": yaml_pts(
             [
-                (sx - 12.0, sy),
-                (sx - 6.0, sy + 8.0),
-                (sx + 8.0, sy + 10.0),
-                (sx + 14.0, sy),
-                (sx + 8.0, sy - 8.0),
-                (sx - 4.0, sy - 10.0),
-                (sx - 12.0, sy),
+                (sx - 15.0, sy),
+                (sx - 8.0, sy + 7.0),
+                (sx + 10.0, sy + 7.0),
+                (sx + 15.0, sy),
+                (sx + 10.0, sy - 7.0),
+                (sx - 5.0, sy - 10.0),
+                (sx - 15.0, sy),
             ]
         ),
     }
+    # Curtis / Hastings west spur into the ring.
     highways["sfu_hastings_spur"] = {
         "lanes": 2,
-        "points": yaml_pts([(-10.0, 260.0), (sx - 12.0, sy)]),
+        "points": yaml_pts([(-15.0, 262.0), (sx - 15.0, sy)]),
     }
 
     # =====================================================================
-    # Mainland New Westminster — single ~30° Fraser-aligned tilted grid
-    # (no axis-aligned H/V fill inside the wipe box)
+    # Town-centre tight sub-grids (8–12 unit spacing) + named collectors
     # =====================================================================
-    # Waterfront avenues (parallel to the Fraser).
+    dense = 10.0
+
+    # Metrotown — Central / Beresford / McKay / Sussex / Grange / Burke.
+    _add_ew(highways, "central_blvd", 128.0, -152.0, x_nel, lanes=2)
+    _add_ew(highways, "beresford_st", 134.0, -152.0, x_nel, lanes=2)
+    _add_ew(highways, "grange_st", 140.0, -152.0, x_nel, lanes=2)
+    _add_ns(highways, "mckay_ave", -148.0, y_rumble, 145.0, lanes=2)
+    _add_ns(highways, "sussex_ave", -125.0, y_rumble, 145.0, lanes=2)
+    _add_ew(highways, "burke_st", 124.0, x_will, x_nel, lanes=2)
+    # Skip Central Park void on the west edge of the Metrotown box.
+    _bn_urban_grid(
+        highways, "metrotown", -152.0, x_nel, y_rumble, 145.0, step=dense
+    )
+
+    # Brentwood — Dawson / Alaska / Halifax / Parker + Alpha/Beta/Delta.
+    _add_ew(highways, "dawson_st", 205.0, -165.0, -115.0, lanes=2)
+    _add_ew(highways, "alaska_st", 210.0, -165.0, -115.0, lanes=2)
+    _add_ew(highways, "halifax_st", 222.0, -165.0, -115.0, lanes=2)
+    _add_ew(highways, "parker_st", 230.0, -165.0, -115.0, lanes=2)
+    _add_ns(highways, "delta_ave", -148.0, 195.0, 235.0, lanes=2)
+    _bn_urban_grid(
+        highways, "brentwood", -165.0, -115.0, 195.0, 235.0, step=dense
+    )
+
+    # Edmonds / HighGate — stay west/north of New West wipe (10th Ave tilted border).
+    _add_ew(highways, "edmonds_st", 105.0, -85.0, -58.0, lanes=4)
+    _add_ns(highways, "griffiths_dr", -65.0, 105.0, 135.0, lanes=2)
+    _add_ew(highways, "strachan_st", 118.0, -85.0, -55.0, lanes=2)
+    _add_ew(highways, "ave_14th_bn", 100.0, -85.0, -58.0, lanes=2)
+    _add_ew(highways, "ave_16th_bn", 112.0, -85.0, -55.0, lanes=2)
+    _add_ew(highways, "ave_18th_bn", 125.0, -85.0, -55.0, lanes=2)
+    _bn_urban_grid(
+        highways, "edmonds", -85.0, -58.0, 105.0, 135.0, step=dense
+    )
+
+    # Lougheed Town Centre — Austin / Cameron / Bartlett / Beaverbrook.
+    _add_ew(highways, "austin_rd", 205.0, 20.0, x_north, lanes=4)
+    _add_ew(highways, "cameron_st", 195.0, 20.0, x_north, lanes=2)
+    _add_ew(highways, "beaverbrook_dr", 180.0, 20.0, x_north, lanes=2)
+    _add_ns(highways, "bartlett_ct", 30.0, 170.0, 215.0, lanes=2)
+    _bn_urban_grid(
+        highways, "lougheed_tc", 20.0, x_north, 170.0, 215.0, step=dense
+    )
+
+    # Secondary E–W collectors across Burnaby (split at park voids / SE border).
+    for i, y in enumerate((100.0, 130.0, 155.0, 175.0, 190.0, 235.0, 250.0)):
+        if _near(y, _MAJOR_YS, tol=2.0):
+            continue
+        if y <= Y_BN_MARINE + 2.0 or y >= y_burrard - 2.0:
+            continue
+        # Stop west of New West band for southern collectors.
+        x_east = -55.0 if y < 120.0 else x_north
+        _add_ew_split_voids(highways, f"bn_ew_{i}", y, x_bound, x_east, lanes=2)
+
+    # Central / North Burnaby fill outside town centres and park voids.
+    _bn_urban_grid(
+        highways, "bn_central", x_will, -55.0, y_rumble, 200.0, step=HALF_MILE
+    )
+    _bn_urban_grid(
+        highways, "bn_north", x_will, x_gag, 220.0, y_hast, step=HALF_MILE
+    )
+    # East Burnaby (Cariboo → North Rd) north of Hwy 1 / Brunette band.
+    _bn_urban_grid(
+        highways, "bn_east", x_car, x_north, 145.0, y_lougheed, step=HALF_MILE
+    )
+
+
+def _in_nw_wipe(x: float, y: float) -> bool:
+    """True if (x,y) is interior Mainland New Westminster wipe box."""
+    return NW_WIPE_X0 < x < NW_WIPE_X1 and NW_WIPE_Y0 < y < NW_WIPE_Y1
+
+
+def _offset_polyline(
+    controls: list[tuple[float, float]],
+    dist: float,
+) -> list[tuple[float, float]]:
+    """Offset a polyline to the left of its overall forward direction by ``dist``."""
+    if len(controls) < 2:
+        return list(controls)
+    dx = controls[-1][0] - controls[0][0]
+    dy = controls[-1][1] - controls[0][1]
+    length = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / length, dx / length
+    return [(x + nx * dist, y + ny * dist) for x, y in controls]
+
+
+def _clip_poly_between_x(
+    controls: list[tuple[float, float]],
+    x0: float,
+    x1: float,
+) -> list[tuple[float, float]]:
+    """Keep polyline vertices whose X lies between ``x0`` and ``x1``."""
+    if x0 > x1:
+        x0, x1 = x1, x0
+    return [(x, y) for x, y in controls if x0 - 0.05 <= x <= x1 + 0.05]
+
+
+def _seg_is_axis_aligned(
+    p0: tuple[float, float] | list[float],
+    p1: tuple[float, float] | list[float],
+    *,
+    tol: float = 0.05,
+) -> bool:
+    return abs(float(p0[0]) - float(p1[0])) <= tol or abs(
+        float(p0[1]) - float(p1[1])
+    ) <= tol
+
+
+def _wipe_nw_axis_aligned(highways: dict) -> None:
+    """Purge axis-aligned geometry inside the Mainland New West wipe box."""
+    doomed: list[str] = []
+    for key, route in list(highways.items()):
+        if key in _NW_BOX_KEEP or key.startswith("nw_"):
+            continue
+        if any(key.startswith(p) for p in _BN_SE_KEEP_PREFIXES):
+            continue
+        pts = route.get("points") or []
+        if len(pts) < 2:
+            doomed.append(key)
+            continue
+        # Drop vertices inside the wipe box (orthogonal Burnaby stubs, etc.).
+        kept: list[list[float]] = []
+        for p in pts:
+            x, y = float(p[0]), float(p[1])
+            if _in_nw_wipe(x, y):
+                continue
+            kept.append([round(x, 1), round(y, 1)])
+        cleaned: list[list[float]] = []
+        for p in kept:
+            if not cleaned or p != cleaned[-1]:
+                cleaned.append(p)
+        # Also drop any remaining axis-aligned chord whose midpoint is in-box.
+        final: list[list[float]] = [cleaned[0]] if cleaned else []
+        for i in range(1, len(cleaned)):
+            a, b = final[-1], cleaned[i]
+            mx = 0.5 * (a[0] + b[0])
+            my = 0.5 * (a[1] + b[1])
+            if _in_nw_wipe(mx, my) and _seg_is_axis_aligned(a, b):
+                continue
+            final.append(b)
+        if len(final) < 2:
+            doomed.append(key)
+        else:
+            route["points"] = final
+    for key in doomed:
+        del highways[key]
+
+
+def _qb_cross_pts(x_anchor: float) -> list[tuple[float, float]]:
+    """Tilted NW–SE Queensborough cross-street through ``x_anchor`` on Hwy 91A."""
+    # Island ~18° NE–SW; cross-streets ~108° (perpendicular).
+    a = math.radians(108.0)
+    # Anchor Y on Hwy 91A corridor approx.
+    y_mid = _interp_poly_y(
+        [(-130.0, 36.0), (-95.0, 41.0), (-72.0, 44.0), (-55.0, 50.0)],
+        x_anchor,
+    )
+    half = 10.0
+    return [
+        (x_anchor - half * math.cos(a), y_mid - half * math.sin(a)),
+        (x_anchor + half * math.cos(a), y_mid + half * math.sin(a)),
+    ]
+
+
+def _build_new_westminster(highways: dict) -> None:
+    """Mainland New Westminster tilted grid + Queensborough (roads only, Z=0).
+
+    Strict rule: no axis-aligned (ΔX=0 / ΔY=0) segments inside
+    X∈[-55,+28], Y∈[+48,+115]. River-parallel avenues ~32°; hill-climb
+    cross-streets ~122°. Stitches onto Burnaby at 10th Ave / Kingsway /
+    Canada Way / Stewardson, onto Richmond via Hwy 91A / Queensborough
+    Bridge, and onto Surrey via Pattullo (0, +32).
+    """
+    # Purge any leftover orthogonal geometry in the mainland box first.
+    _wipe_nw_axis_aligned(highways)
+
+    # --- Extend Hwy 91A across Queensborough Bridge into Stewardson ---
+    qb_ext = yaml_pts(_dense_spline(HWY91A_QB_CTRL, segments=14))
+    if "hwy91a" in highways:
+        base = highways["hwy91a"]["points"]
+        # Drop Richmond tip duplicate, then append bridge corridor.
+        highways["hwy91a"]["points"] = base[:-1] + qb_ext
+        highways["hwy91a"]["lanes"] = 4
+    else:
+        highways["hwy91a"] = {"lanes": 4, "points": qb_ext}
+
+    # =====================================================================
+    # Mainland — river-parallel avenues (south → north)
+    # =====================================================================
+    highways["nw_front_st"] = {
+        "lanes": 2,
+        "points": yaml_pts(NW_FRONT_CTRL),
+    }
     highways["nw_columbia_st"] = {
         "lanes": 4,
         "points": yaml_pts(NW_COLUMBIA_CTRL),
     }
+    # Carnarvon / Clarkson — tight downtown parallels NW of Columbia.
+    carn = _clip_poly_between_x(_offset_polyline(NW_COLUMBIA_CTRL, 2.2), -39.0, -7.0)
+    clark = _clip_poly_between_x(_offset_polyline(NW_COLUMBIA_CTRL, 4.4), -39.0, -7.0)
+    if len(carn) >= 2:
+        highways["nw_carnarvon_st"] = {"lanes": 2, "points": yaml_pts(carn)}
+    if len(clark) >= 2:
+        highways["nw_clarkson_st"] = {"lanes": 2, "points": yaml_pts(clark)}
+
     highways["nw_royal_ave"] = {
-        "lanes": 4,
+        "lanes": 5,
         "points": yaml_pts(NW_ROYAL_CTRL),
     }
-    # Queens Ave / 4th Ave — parallel NW of Royal, between 12th St and McBride.
-    royal_span = [(-40.0, 60.0), (-28.0, 62.0), (-10.0, 68.0)]
-    highways["nw_queens_ave"] = {
-        "lanes": 2,
-        "points": yaml_pts(_offset_polyline(royal_span, 5.0)),
-    }
-    highways["nw_4th_ave"] = {
-        "lanes": 2,
-        "points": yaml_pts(_offset_polyline(royal_span, 10.0)),
-    }
+    # Queens / 3rd / 4th / 5th — spaced 4.2 units NW of Royal (20th St → McBride).
+    for i, (key, dist) in enumerate(
+        (
+            ("nw_queens_ave", 4.2),
+            ("nw_3rd_ave", 8.4),
+            ("nw_4th_ave", 12.6),
+            ("nw_5th_ave", 16.8),
+        )
+    ):
+        pts = _clip_poly_between_x(
+            _offset_polyline(NW_ROYAL_CTRL, dist), -54.0, -8.0
+        )
+        if len(pts) >= 2:
+            highways[key] = {"lanes": 2, "points": yaml_pts(pts)}
 
     highways["nw_6th_ave"] = {
         "lanes": 4,
         "points": yaml_pts(NW_6TH_AVE_CTRL),
     }
+    # 7th Ave — 4.2 units NW of 6th Ave.
+    seventh = _clip_poly_between_x(
+        _offset_polyline(NW_6TH_AVE_CTRL, 4.2), -58.0, -4.0
+    )
+    if len(seventh) >= 2:
+        highways["nw_7th_ave"] = {"lanes": 2, "points": yaml_pts(seventh)}
     highways["nw_8th_ave"] = {
         "lanes": 2,
         "points": yaml_pts(NW_8TH_AVE_CTRL),
@@ -2617,14 +3218,28 @@ def _build_burnaby_new_west(highways: dict) -> None:
         "points": yaml_pts(NW_10TH_CTRL),
     }
 
-    # Cross-streets (perpendicular to Columbia / Royal).
+    # =====================================================================
+    # Mainland — hill-climb cross-streets (west → east)
+    # =====================================================================
     highways["nw_stewardson"] = {
         "lanes": 4,
         "points": yaml_pts(NW_STEWARDSON_CTRL),
     }
+    highways["nw_20th_st"] = {
+        "lanes": 2,
+        "points": yaml_pts(NW_20TH_CTRL),
+    }
+    highways["nw_14th_st"] = {
+        "lanes": 2,
+        "points": yaml_pts(NW_14TH_CTRL),
+    }
     highways["nw_12th_st"] = {
         "lanes": 4,
         "points": yaml_pts(NW_12TH_CTRL),
+    }
+    highways["nw_10th_st"] = {
+        "lanes": 2,
+        "points": yaml_pts(NW_10TH_ST_CTRL),
     }
     highways["nw_8th_st"] = {
         "lanes": 4,
@@ -2634,47 +3249,326 @@ def _build_burnaby_new_west(highways: dict) -> None:
         "lanes": 4,
         "points": yaml_pts(NW_6TH_ST_CTRL),
     }
-    # McBride + Pattullo — wider spine (~0.65 units ≈ 5 lanes).
+    # 4th / 2nd / 1st — Queen's Park cross-streets (4.5-unit spacing).
+    # Interpolate between 6th St and McBride along the hill-climb axis.
+    for key, t in (
+        ("nw_4th_st", 0.28),
+        ("nw_2nd_st", 0.55),
+        ("nw_1st_st", 0.78),
+    ):
+        pts: list[tuple[float, float]] = []
+        # Sample corresponding stations on 6th St and McBride, lerp.
+        a_ctrl = NW_6TH_ST_CTRL
+        b_ctrl = NW_MCBRIDE_CTRL[:6]  # stop at Columbia (before Pattullo tip)
+        n = min(len(a_ctrl), len(b_ctrl))
+        for i in range(n):
+            ax, ay = a_ctrl[i]
+            bx, by = b_ctrl[min(i, len(b_ctrl) - 1)]
+            pts.append((ax + t * (bx - ax), ay + t * (by - ay)))
+        # Clip to 8th/10th Ave band down to Royal (drop Front stubs).
+        clipped = [(x, y) for x, y in pts if y >= 62.0]
+        if len(clipped) >= 2:
+            highways[key] = {"lanes": 2, "points": yaml_pts(clipped)}
+
     highways["mcbride_blvd"] = {
         "lanes": 5,
         "points": yaml_pts(NW_MCBRIDE_CTRL),
     }
+    highways["brunette_ave"] = {
+        "lanes": 5,
+        "points": yaml_pts(NW_BRUNETTE_CTRL),
+    }
 
     # =====================================================================
-    # Queensborough Peninsula (unchanged — outside the mainland wipe box)
+    # Queensborough peninsula (~18° tilted island grid)
     # =====================================================================
-    _add_ew(highways, "ewen_ave", 35.0, -125.0, -55.0, lanes=2)
-    _add_ew(highways, "boyd_st", 44.0, -125.0, -55.0, lanes=2)
-    for i, x in enumerate((-115.0, -100.0, -80.0, -60.0)):
-        if _near(x, _MAJOR_XS, tol=2.0):
-            continue
-        _add_ns(highways, f"qb_ns_{i}", x, 30.0, 48.0, lanes=2)
-
-    # =====================================================================
-    # Burnaby neighbourhood sub-grids (kept outside the New West wipe box)
-    # =====================================================================
-    dense = QUARTER_MILE  # 10.55
-    _urban_grid(
-        highways, "brentwood", -160.0, -120.0, 200.0, 235.0, step=dense
-    )
-    _urban_grid(
-        highways, "metrotown", -150.0, -100.0, 100.0, 140.0, step=dense
-    )
-    # Edmonds — north of 10th Ave / west of New West only.
-    _urban_grid(
-        highways, "edmonds", -80.0, -55.0, 105.0, 125.0, step=dense
-    )
-
-    # Central Burnaby fill — stop west of the New West X-band.
-    _urban_grid(
-        highways, "bn_central", x_will, -55.0, y_rumble, 200.0, step=HALF_MILE
-    )
-    _urban_grid(
-        highways, "bn_north", x_will, x_gag, 220.0, y_hast, step=HALF_MILE
-    )
+    highways["ewen_ave"] = {
+        "lanes": 2,
+        "points": yaml_pts(QB_EWEN_CTRL),
+    }
+    highways["boyd_st"] = {
+        "lanes": 2,
+        "points": yaml_pts(QB_BOYD_CTRL),
+    }
+    highways["salter_st"] = {
+        "lanes": 2,
+        "points": yaml_pts(QB_SALTER_CTRL),
+    }
+    for i, x in enumerate(QB_CROSS_XS):
+        pts = _qb_cross_pts(x)
+        # Clip cross-streets to the island Y band.
+        pts = [(px, py) for px, py in pts if 28.0 <= py <= 55.0 and -135.0 <= px <= -48.0]
+        if len(pts) < 2:
+            # Fall back to short tilted segment around the anchor.
+            a = math.radians(108.0)
+            y_mid = _interp_poly_y(
+                [(-130.0, 36.0), (-95.0, 41.0), (-72.0, 44.0)], x
+            )
+            pts = [
+                (x - 6.0 * math.cos(a), y_mid - 6.0 * math.sin(a)),
+                (x + 6.0 * math.cos(a), y_mid + 6.0 * math.sin(a)),
+            ]
+        highways[f"qb_cross_{i}"] = {"lanes": 2, "points": yaml_pts(pts)}
 
     # Final safety wipe: drop any leftover non-NW stubs inside the box.
-    _wipe_new_west_box(highways)
+    _wipe_nw_axis_aligned(highways)
+
+    # Assert: no kept NW mainland route may contain an axis-aligned segment
+    # whose midpoint sits inside the wipe box.
+    for key in list(highways):
+        if key not in _NW_BOX_KEEP and not key.startswith("nw_"):
+            continue
+        pts = highways[key].get("points") or []
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            mx = 0.5 * (float(a[0]) + float(b[0]))
+            my = 0.5 * (float(a[1]) + float(b[1]))
+            if _in_nw_wipe(mx, my) and _seg_is_axis_aligned(a, b):
+                raise RuntimeError(
+                    f"axis-aligned NW segment in wipe box: {key} {a}→{b}"
+                )
+
+
+def _cq_void_y_gaps(x: float) -> list[tuple[float, float]]:
+    """Y intervals of Coquitlam park voids that contain this X."""
+    gaps: list[tuple[float, float]] = []
+    for x0, y0, x1, y1 in CQ_PARK_VOIDS:
+        if x0 <= x <= x1:
+            gaps.append((y0, y1))
+    gaps.sort()
+    return gaps
+
+
+def _cq_void_x_gaps(y: float) -> list[tuple[float, float]]:
+    """X intervals of Coquitlam park voids that contain this Y."""
+    gaps: list[tuple[float, float]] = []
+    for x0, y0, x1, y1 in CQ_PARK_VOIDS:
+        if y0 <= y <= y1:
+            gaps.append((x0, x1))
+    gaps.sort()
+    return gaps
+
+
+def _add_ns_cq_voids(
+    highways: dict,
+    key: str,
+    x: float,
+    y0: float,
+    y1: float,
+    *,
+    lanes: int = 2,
+) -> None:
+    if y0 > y1:
+        y0, y1 = y1, y0
+    gaps = _cq_void_y_gaps(x)
+    if not gaps:
+        _add_ns(highways, key, x, y0, y1, lanes=lanes)
+        return
+    cursor = y0
+    part = 0
+    for gy0, gy1 in gaps:
+        if gy1 <= cursor or gy0 >= y1:
+            continue
+        seg_end = min(y1, gy0)
+        if seg_end > cursor + 1.0:
+            _add_ns(highways, f"{key}_{part}", x, cursor, seg_end, lanes=lanes)
+            part += 1
+        cursor = max(cursor, gy1)
+    if y1 > cursor + 1.0:
+        _add_ns(highways, f"{key}_{part}" if part else key, x, cursor, y1, lanes=lanes)
+
+
+def _add_ew_cq_voids(
+    highways: dict,
+    key: str,
+    y: float,
+    x0: float,
+    x1: float,
+    *,
+    lanes: int = 2,
+) -> None:
+    if x0 > x1:
+        x0, x1 = x1, x0
+    gaps = _cq_void_x_gaps(y)
+    if not gaps:
+        _add_ew(highways, key, y, x0, x1, lanes=lanes)
+        return
+    cursor = x0
+    part = 0
+    for gx0, gx1 in gaps:
+        if gx1 <= cursor or gx0 >= x1:
+            continue
+        seg_end = min(x1, gx0)
+        if seg_end > cursor + 1.0:
+            _add_ew(highways, f"{key}_{part}", y, cursor, seg_end, lanes=lanes)
+            part += 1
+        cursor = max(cursor, gx1)
+    if x1 > cursor + 1.0:
+        _add_ew(
+            highways, f"{key}_{part}" if part else key, y, cursor, x1, lanes=lanes
+        )
+
+
+def _cq_urban_grid(
+    highways: dict,
+    prefix: str,
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    *,
+    step: float = 10.0,
+) -> None:
+    """Dense 2-lane fill that skips Coquitlam park voids (Mundy Park)."""
+    if y0 > y1:
+        y0, y1 = y1, y0
+    if x0 > x1:
+        x0, x1 = x1, x0
+    x = x0 + step
+    n = 0
+    while x < x1 - 0.5:
+        if not _near(x, _MAJOR_XS):
+            _add_ns_cq_voids(highways, f"{prefix}_ns_{n}", x, y0, y1, lanes=2)
+            n += 1
+        x += step
+    y = y0 + step
+    n = 0
+    while y < y1 - 0.5:
+        if not _near(y, _MAJOR_YS):
+            _add_ew_cq_voids(highways, f"{prefix}_ew_{n}", y, x0, x1, lanes=2)
+            n += 1
+        y += step
+
+
+def _build_coquitlam(highways: dict) -> None:
+    """City of Coquitlam road network (flat Z=0 arterials only).
+
+    Stitches onto Burnaby at North Rd (X=+52): Austin, Lougheed, Como Lake.
+    Hwy 1 continues from Brunette (+35,+125) to Port Mann / Surrey (+64,+42.2).
+    Lougheed continues to Pitt River Bridge (+175,+68). Mundy Park stays open.
+    Port Moody / Burrard Inlet band (Y≈+235–268 west of Westwood) left sparse.
+    """
+    x_north = CQ_NS_X["north_rd"]
+    x_blue = CQ_NS_X["blue_mountain"]
+    x_school = CQ_NS_X["schoolhouse"]
+    x_mariner = CQ_NS_X["mariner"]
+    x_johnson = CQ_NS_X["johnson"]
+    x_pine = CQ_NS_X["pinetree"]
+    x_cm = CQ_NS_X["coast_meridian"]
+    x_pitt = CQ_NS_X["pitt_bridge"]
+
+    y_austin = CQ_EW_Y["austin"]
+    y_lough = CQ_EW_Y["lougheed_w"]
+    y_glen = CQ_EW_Y["glen"]
+    y_como = CQ_EW_Y["como_lake"]
+    y_guild = CQ_EW_Y["guildford"]
+    y_david = CQ_EW_Y["david"]
+    y_clarke = CQ_EW_Y["clarke"]
+
+    # --- Hwy 1 Cape Horn → Port Mann (wider ~0.8) ---
+    highways["hwy1_cq"] = {
+        "lanes": 6,
+        "points": yaml_pts(_dense_spline(HWY1_CQ_CTRL, segments=14)),
+    }
+
+    # --- Lougheed Hwy → Pitt River Bridge (wider ~0.65) ---
+    highways["lougheed_cq"] = {
+        "lanes": 5,
+        "points": yaml_pts(_dense_spline(LOUGHEED_CQ_CTRL, segments=14)),
+    }
+
+    # --- Barnet Hwy / Town Centre connector (wider ~0.65) ---
+    highways["barnet_cq"] = {
+        "lanes": 5,
+        "points": yaml_pts(_dense_spline(BARNET_CQ_CTRL, segments=10)),
+    }
+
+    # --- Mary Hill Bypass (wider ~0.65) ---
+    highways["mary_hill_bypass"] = {
+        "lanes": 5,
+        "points": yaml_pts(_dense_spline(MARY_HILL_CTRL, segments=12)),
+    }
+
+    # --- Brunette Ave Coquitlam leg (Hwy 1 → Blue Mountain) ---
+    highways["brunette_cq"] = {
+        "lanes": 4,
+        "points": yaml_pts(BRUNETTE_CQ_CTRL),
+    }
+
+    # --- United Boulevard ---
+    highways["united_blvd"] = {
+        "lanes": 4,
+        "points": yaml_pts(UNITED_BLVD_CTRL),
+    }
+
+    # --- Como Lake Ave (curves SE past Mundy Park to Lougheed) ---
+    highways["como_lake_ave"] = {
+        "lanes": 4,
+        "points": yaml_pts(COMO_LAKE_CTRL),
+    }
+
+    # --- Pinetree Way + Westwood Plateau loop ---
+    highways["pinetree_way"] = {
+        "lanes": 4,
+        "points": yaml_pts(_dense_spline(PINETREE_CTRL, segments=12)),
+    }
+
+    # North Road already owned by Burnaby (Brunette → Clarke).
+
+    # --- N–S arterials ---
+    _add_ns(highways, "blue_mountain_st", x_blue, 125.0, y_como, lanes=4)
+    _add_ns(highways, "schoolhouse_st", x_school, 92.0, y_como, lanes=4)
+    _add_ns(highways, "mariner_way", x_mariner, 90.0, CQ_EW_Y["barnet_dew"], lanes=4)
+    _add_ns(highways, "johnson_st", x_johnson, y_lough, y_david, lanes=4)
+    _add_ns(highways, "coast_meridian_rd", x_cm, 115.0, 275.0, lanes=4)
+
+    # --- E–W arterials ---
+    _add_ew(highways, "austin_ave", y_austin, x_north, x_mariner, lanes=4)
+    _add_ew(highways, "glen_dr", y_glen, x_johnson, x_pine, lanes=4)
+    _add_ew(highways, "guildford_way", y_guild, x_johnson, 145.0, lanes=4)
+    _add_ew(highways, "david_ave", y_david, x_johnson, x_pitt, lanes=4)
+
+    # Secondary E–W collectors (skip Mundy void + Port Moody open gap).
+    for i, y in enumerate((145.0, 155.0, 175.0, 195.0, 225.0)):
+        if _near(y, _MAJOR_YS, tol=2.0):
+            continue
+        _add_ew_cq_voids(highways, f"cq_ew_{i}", y, x_north, x_cm, lanes=2)
+
+    # =====================================================================
+    # Neighbourhood sub-grids + named collectors
+    # =====================================================================
+    dense = 10.0
+
+    # Burquitlam / Austin Heights — Foster / Smith / Marmont / Linton.
+    _add_ew(highways, "foster_ave", 175.0, x_north, x_school, lanes=2)
+    _add_ew(highways, "smith_ave", 195.0, x_north, x_school, lanes=2)
+    _add_ns(highways, "marmont_st", 60.0, y_austin, y_como, lanes=2)
+    _add_ns(highways, "linton_st", 76.0, y_austin, y_como, lanes=2)
+    _cq_urban_grid(
+        highways, "burquitlam", x_north, 95.0, y_austin, 225.0, step=dense
+    )
+
+    # Maillardville — Laval / Rochester / Cartier / Alderson.
+    _add_ew(highways, "rochester_ave", 140.0, 45.0, 80.0, lanes=2)
+    _add_ew(highways, "cartier_ave", 130.0, 45.0, 80.0, lanes=2)
+    _add_ew(highways, "alderson_ave", 150.0, 45.0, 80.0, lanes=2)
+    _add_ns(highways, "laval_st", 58.0, 115.0, y_austin, lanes=2)
+    _cq_urban_grid(
+        highways, "maillardville", 45.0, 80.0, 115.0, y_austin, step=dense
+    )
+
+    # Coquitlam Town Centre — Lincoln / Glen / Anson / High.
+    _add_ew(highways, "lincoln_ave", 200.0, 108.0, 135.0, lanes=2)
+    _add_ew(highways, "anson_ave", 210.0, 108.0, 135.0, lanes=2)
+    _add_ns(highways, "high_st", 128.0, 190.0, 225.0, lanes=2)
+    _cq_urban_grid(
+        highways, "coq_centre", 108.0, 135.0, 190.0, 225.0, step=8.0
+    )
+
+    # East Coquitlam / Port Coquitlam fringe (Coast Meridian band) — light fill.
+    _cq_urban_grid(
+        highways, "cq_east", x_pine, x_cm, 145.0, y_david, step=HALF_MILE
+    )
 
 
 def _build_pitt_meadows(highways: dict) -> None:
@@ -3121,12 +4015,12 @@ def build() -> dict:
             ]
         ),
     }
-    # King George Blvd — Pattullo (McBride / Kingsway via 12th St) → Whalley → South Surrey.
+    # King George Blvd — north tip → Whalley → South Surrey.
     highways["king_george"] = {
         "lanes": 4,
         "points": yaml_pts(
             [
-                (0.0, 32.0),  # Pattullo Bridge / McBride snap
+                (0.0, 32.0),  # North tip (open Fraser gap)
                 (0.0, 0.0),  # Whalley / 104 Ave
                 (0.0, -84.4),
                 (30.0, -148.0),
@@ -3486,9 +4380,19 @@ def build() -> dict:
     _build_vancouver(highways)
 
     # =====================================================================
-    # Burnaby + New Westminster / Queensborough (Boundary → North Rd)
+    # Burnaby — Boundary Rd → North Rd (roads only; park/lake voids open)
     # =====================================================================
-    _build_burnaby_new_west(highways)
+    _build_burnaby(highways)
+
+    # =====================================================================
+    # New Westminster — Mainland tilted grid + Queensborough peninsula
+    # =====================================================================
+    _build_new_westminster(highways)
+
+    # =====================================================================
+    # Coquitlam — North Rd → Pitt River Bridge / Port Mann (Mundy Park open)
+    # =====================================================================
+    _build_coquitlam(highways)
 
     _snap_highways(highways)
 
@@ -3528,7 +4432,7 @@ def main() -> None:
     data = build()
     header = (
         "# Surrey + Langley + Delta + Richmond + Vancouver/UBC + Burnaby +"
-        " New Westminster + Maple Ridge + Pitt Meadows — 2× arterials.\n"
+        " New Westminster + Coquitlam + Maple Ridge + Pitt Meadows — 2× arterials.\n"
         f"# Scale: {UNITS_PER_KM:g} units = 1.0 km; {UNITS_PER_MILE:g} units = 1.0 mile.\n"
         "# Anchor (0,0): King George Blvd & 104 Ave (Surrey City Centre / Whalley).\n"
         "# Scott Rd X=-84.4; Alex Fraser X=-116; Ferry tip X=-465; 276 St X=+717.4.\n"
@@ -3537,8 +4441,11 @@ def main() -> None:
         "# River gap: Richmond local roads stay west of X=-135; only Hwy 99/91/91A cross.\n"
         "# Vancouver: Marine Y=+90; Broadway Y=+216.5; Boundary X=-178; UBC tip X=-615.\n"
         "# North Arm gap: Richmond Y≈+55–70 ↔ Vancouver Marine Y=+90; Oak/Knight/Arthur Laing only.\n"
-        "# Burnaby: Boundary X=-178 → North Rd X=+52; Willingdon X=-135.8; Hwy1 Port Mann→(64,42.2).\n"
-        "# New West: Pattullo (−5,50→0,32); Queensborough Bridge (−68,45); Front/Columbia tilted grid.\n"
+        "# Burnaby: Boundary X=-178 → North Rd X=+52; Marine/Kingsway/Canada Way/Hwy1/Lougheed/Hastings.\n"
+        "# Burnaby voids: Central Park, Deer Lake, Burnaby Lake; SFU ring at (+10,+255).\n"
+        "# New West: tilted ~32°/122° grid in X∈[-55,+28] Y∈[+48,+115]; zero axis-aligned segments.\n"
+        "# Queensborough: Hwy 91A bridge → Stewardson; Ewen/Boyd/Salter ~18° island tilt.\n"
+        "# Coquitlam: North Rd X=+52 → Pitt Bridge X=+175; Hwy1 Port Mann; Mundy Park void.\n"
         "# Maple Ridge: Golden Ears bridge only (316.5,20→58); Lougheed / Dewdney / 287 St=+775.\n"
         "# Pitt Meadows: Pitt River Bridge X=+175 → Laity X=+353; Airport Way Y=+52; Polder north.\n"
         "# Road widths: ~0.5–0.8 (4–6 lane) / 0.3 (2-lane collectors). Z = 0 coplanar.\n"

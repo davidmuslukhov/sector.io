@@ -707,8 +707,6 @@ class CityApp(ShowBase):
         self.accept("e", self._select_delta)
         self.accept("r", self._select_richmond)
         self.accept("v", self._select_vancouver)
-        self.accept("b", self._select_burnaby)
-        self.accept("n", self._select_new_westminster)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
         self.accept("arrow_up", self._bump_player_speed_limit, [10.0])
@@ -1300,18 +1298,6 @@ class CityApp(ShowBase):
         if self._car_mode:
             return
         self._select_district("vancouver")
-
-    def _select_burnaby(self) -> None:
-        """B: outline Burnaby east of Boundary Rd (disabled in C / car mode)."""
-        if self._car_mode:
-            return
-        self._select_district("burnaby")
-
-    def _select_new_westminster(self) -> None:
-        """N: outline New Westminster (disabled in C / car mode)."""
-        if self._car_mode:
-            return
-        self._select_district("new_westminster")
 
     def _try_select_district(self) -> None:
         if self._car_mode:

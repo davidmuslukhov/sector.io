@@ -1,4 +1,4 @@
-"""Shift Richmond/Vancouver/Burnaby 200 units west; lengthen Hwy 99 straight."""
+"""Shift Richmond/Vancouver 200 units west; lengthen Hwy 99 straight."""
 
 from __future__ import annotations
 
@@ -44,14 +44,6 @@ WEST_DISTRICTS = {
     "vancouver",
     "downtown_vancouver",
     "ubc",
-    "burnaby",
-    "metrotown",
-    "brentwood",
-    "burnaby_heights",
-    "edmonds",
-    "new_westminster",
-    "downtown_new_west",
-    "sapperton",
 }
 
 
@@ -102,11 +94,11 @@ def main() -> None:
     print("hwy99 y=-160 x span:", min(straight), "->", max(straight), "len", max(straight) - min(straight))
 
     header = (
-        "# Surrey / Langley / Delta / Richmond / Vancouver / Burnaby / New Westminster, BC —\n"
+        "# Surrey / Langley / Delta / Richmond / Vancouver, BC —\n"
         "# arterial highways + local streets.\n"
         "# World XY: X=east, Y=north. Schematic but oriented like the real map.\n"
-        "# Van/Burnaby/New West: six traced corridors. Richmond/Van/Burnaby shifted -200x\n"
-        "# to lengthen the Hwy 99 straight connector toward Surrey.\n"
+        "# Richmond/Vancouver shifted -200x to lengthen the Hwy 99 straight\n"
+        "# connector toward Surrey.\n"
         "# Provincial: Hwy 1, 10, 15, 17, 17A, 91, 99.\n"
         "\n"
     )
