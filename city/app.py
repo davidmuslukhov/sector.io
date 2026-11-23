@@ -33,28 +33,63 @@ from city.geo import CAMERA_FAR_CLIP, apply_district_transforms
 
 DISTRICT_DEFS = apply_district_transforms(_DISTRICT_DEFS_RAW)
 from city.materials import (
-    concrete_material,
     lawn_material,
     mark_material,
     road_material,
 )
 from city.mesh import (
     _dist2_point_segment,
-    arterial_topology,
     box_instance,
+    make_flat_deck_batch,
     make_highway_ribbon,
     make_sky_dome,
-    offset_polyline,
-    split_polyline_around_gaps,
     z_cylinder_instance,
 )
+from city.chicago_signals import build_chicago_signals
 from city.plan import default_city_plan
+from city.signals import TrafficLightController
 # Spatial hash cell size for barrier / road lookups (car-mode hot path).
 _SEG_CELL = 4.0
 # Barrier prism length target — thin 2× ribbons; coarsen lightly for FPS.
 _BARRIER_SPAN = 1.2
 # Drop leftover stubs between nearby crossings.
 _BARRIER_MIN_RUN = 2.5
+# Minor-street spatial tiles (2 miles) — only nearby tiles draw when zoomed in.
+_MINOR_TILE = 84.4
+_MINOR_HIDE_DIST = 220.0
+_COLLECTOR_HIDE_DIST = 450.0
+_SIGNAL_HIDE_DIST = 320.0
+_LABEL_HIDE_DIST = 500.0
+_LABEL_MAX_VISIBLE = 8
+_DAY_CYCLE_HZ = 1.0
+# Billboard labels only on these spines (not every suburban arterial).
+_LABEL_ROADS = frozenset(
+    {
+        "state",
+        "madison",
+        "michigan",
+        "halsted",
+        "ashland",
+        "western",
+        "kedzie",
+        "pulaski",
+        "cicero",
+        "harlem",
+        "kennedy",
+        "edens",
+        "kennedy_ohare",
+        "dan_ryan",
+        "eisenhower",
+        "stevenson",
+        "tri_state",
+        "i57",
+        "bishop_ford",
+        "milwaukee",
+        "archer",
+        "lake_cook",
+        "route_83",
+    }
+)
 
 
 class CityApp(ShowBase):
@@ -63,6 +98,8 @@ class CityApp(ShowBase):
         self.screenshot_path = screenshot
         self.disableMouse()
         self.setBackgroundColor(0.7, 0.78, 0.88, 1)
+        # Unlit-ish roads don't need auto shaders; keeps the CPU cull path light.
+        self.render.setShaderAuto(False)
 
         plan = default_city_plan()
         self.plan = plan
@@ -80,6 +117,7 @@ class CityApp(ShowBase):
         self._build_districts(road_z, road_thickness)
         self._build_highways(plan, hwy, arterials, road_z, road_thickness, road_top)
         self._build_streets(plan, hwy, road_z, road_thickness, road_top)
+        self._build_signals(arterials, road_z, road_thickness)
         self._build_ground(hwy, road_z)
         self._build_lighting()
         self._build_traffic(plan, arterials, road_top)
@@ -142,7 +180,7 @@ class CityApp(ShowBase):
     def _build_districts(self, road_z: float, road_thickness: float) -> None:
         self._ground_z = road_z
         outline_z = road_z + road_thickness / 2 + 0.03
-        bright_nodes = {"city_centre": self.city_centre}
+        bright_nodes = {"the_loop": self.city_centre, "city_centre": self.city_centre}
         self._districts: dict[str, dict] = {}
         for key, spec in DISTRICT_DEFS.items():
             district = {
@@ -150,7 +188,7 @@ class CityApp(ShowBase):
                 "ring": spec["ring"],
                 "bbox": spec.get("bbox"),
                 "anchor": spec.get("anchor"),
-                "bright": bright_nodes.get(spec.get("bright_key")),
+                "bright": bright_nodes.get(spec.get("bright_key") or key),
                 "hotkey_only": bool(spec.get("hotkey_only")),
             }
             outline = self._build_district_outline(key, district["ring"], outline_z)
@@ -160,7 +198,9 @@ class CityApp(ShowBase):
             district["label_scale"] = 1.0
             self._districts[key] = district
         self._selected_district: str | None = None
-        self.city_centre_ring = self._districts["city_centre"]["ring"]
+        # Loop is the downtown anchor (was Surrey City Centre).
+        centre_key = "the_loop" if "the_loop" in self._districts else next(iter(self._districts))
+        self.city_centre_ring = self._districts[centre_key]["ring"]
 
     def _build_highways(
         self,
@@ -171,87 +211,31 @@ class CityApp(ShowBase):
         road_thickness: float,
         road_top: float,
     ) -> None:
-        lane_width = hwy["lane_width"]
         highway_width = hwy["highway_width"]
         self.highway = self.render.attachNewNode("highway")
+        # LOD stack parents — minors/collectors are single batched GeomNodes.
+        self.minor_streets_node = self.highway.attachNewNode("minor_streets_node")
+        self.collectors_node = self.highway.attachNewNode("collectors_node")
+        self.arterials_node = self.highway.attachNewNode("arterials_node")
+        self.expressways_node = self.highway.attachNewNode("expressways_node")
+        layer_nodes = {
+            "arterial": self.arterials_node,
+            "expressway": self.expressways_node,
+        }
+        for node in (
+            self.minor_streets_node,
+            self.collectors_node,
+            self.arterials_node,
+            self.expressways_node,
+        ):
+            node.setDepthOffset(0)
         road_mat = road_material()
-        mark_paint = mark_material()
-        barrier_mat = concrete_material(0.75)
-
-        def paint_route_marks(
-            pts: list[tuple[float, float]],
-            z_top: float,
-            *,
-            lanes: int,
-            width: float,
-            mark_gaps: list[tuple[float, float, float]],
-        ) -> None:
-            if len(pts) < 2 or lanes < 2:
-                return
-            mark_len = max(0.35, lane_width * 1.1)
-            mark_w = max(0.04, lane_width * 0.18)
-            mark_h = 0.004
-            mark_gap = mark_len * 1.2
-            period = mark_len + mark_gap
-            # Sit flush on the deck: box centre at half thickness above road top.
-            mark_z = z_top + mark_h / 2
-            centre_divider = lanes // 2
-            dist = [0.0]
-            for i in range(len(pts) - 1):
-                dist.append(
-                    dist[-1]
-                    + math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
-                )
-            total = dist[-1]
-            if total < period:
-                return
-
-            def sample(s: float) -> tuple[float, float, float, float]:
-                s = max(0.0, min(total, s))
-                j = 0
-                while j < len(dist) - 2 and dist[j + 1] < s:
-                    j += 1
-                span = dist[j + 1] - dist[j]
-                t = 0.0 if span < 1e-9 else (s - dist[j]) / span
-                x0, y0 = pts[j]
-                x1, y1 = pts[j + 1]
-                dx = x1 - x0
-                dy = y1 - y0
-                length = math.hypot(dx, dy) or 1.0
-                return (x0 + dx * t, y0 + dy * t, dx / length, dy / length)
-
-            def in_gap(x: float, y: float) -> bool:
-                for gx, gy, radius in mark_gaps:
-                    if radius <= 0.0:
-                        continue
-                    dx = x - gx
-                    dy = y - gy
-                    if dx * dx + dy * dy <= radius * radius:
-                        return True
-                return False
-
-            s = mark_len * 0.5
-            while s < total:
-                x, y, ux, uy = sample(s)
-                if not in_gap(x, y):
-                    px, py = -uy, ux
-                    heading = math.degrees(math.atan2(uy, ux))
-                    for divider in range(1, lanes):
-                        if divider == centre_divider:
-                            continue
-                        offset = -width / 2 + divider * lane_width
-                        mark = box_instance(self.highway, mark_len, mark_w, mark_h)
-                        mark.setPos(x + px * offset, y + py * offset, mark_z)
-                        mark.setH(heading)
-                        mark.setMaterial(mark_paint, 1)
-                s += period
 
         self._highway_labels = self.render.attachNewNode("highway_labels")
         labels_root = self._highway_labels
         self._highway_label_nodes: list = []
         self._label_base_scale = max(2.4, highway_width * 4.5)
         self._label_ref_distance = 1.0
-        crossing_gaps, _junctions = arterial_topology(arterials)
         self._named_roads: list[tuple[str, float, float, float, float, float]] = []
         self._solid_barriers: list[tuple[float, float, float, float, float]] = []
 
@@ -269,104 +253,178 @@ class CityApp(ShowBase):
                     acc = 0.0
             return out
 
-        def place_barrier_prisms(
-            piece: list,
-            width: float,
-            height: float,
-            z_center: float,
+        # ---- Collectors: one batched deck ----
+        collector_segs: list[tuple[float, float, float, float, float, float]] = []
+        # Minors: spatial tiles so zoomed-in views don't rasterize the whole metro.
+        minor_tiles: dict[tuple[int, int], list] = {}
+
+        def _bin_minor_seg(
+            x0: float, y0: float, x1: float, y1: float, width: float, zc: float
         ) -> None:
-            if width <= 0.0 or height <= 0.0 or len(piece) < 2:
-                return
-            run = 0.0
-            for i in range(1, len(piece)):
-                run += math.hypot(
-                    float(piece[i][0]) - float(piece[i - 1][0]),
-                    float(piece[i][1]) - float(piece[i - 1][1]),
-                )
-            if run < _BARRIER_MIN_RUN:
-                return
-            half_w = width * 0.5
-            pts = coarsen_polyline(piece, _BARRIER_SPAN)
-            for i in range(len(pts) - 1):
-                x0 = float(pts[i][0])
-                y0 = float(pts[i][1])
-                x1 = float(pts[i + 1][0])
-                y1 = float(pts[i + 1][1])
-                dx = x1 - x0
-                dy = y1 - y0
-                length = math.hypot(dx, dy)
-                if length < 0.05:
-                    continue
-                box = box_instance(self.highway, length, width, height)
-                box.setPos((x0 + x1) * 0.5, (y0 + y1) * 0.5, z_center)
-                box.setH(math.degrees(math.atan2(dy, dx)))
-                box.setMaterial(barrier_mat, 1)
-                self._solid_barriers.append((x0, y0, x1, y1, half_w))
+            tile = _MINOR_TILE
+            if abs(x1 - x0) < 1e-6:  # vertical
+                x = x0
+                ya, yb = (y0, y1) if y0 <= y1 else (y1, y0)
+                ty0 = int(math.floor(ya / tile))
+                ty1 = int(math.floor(yb / tile))
+                tx = int(math.floor(x / tile))
+                for ty in range(ty0, ty1 + 1):
+                    a = max(ya, ty * tile)
+                    b = min(yb, (ty + 1) * tile)
+                    if b - a > 0.05:
+                        minor_tiles.setdefault((tx, ty), []).append(
+                            (x, a, x, b, width, zc)
+                        )
+            elif abs(y1 - y0) < 1e-6:  # horizontal
+                y = y0
+                xa, xb = (x0, x1) if x0 <= x1 else (x1, x0)
+                tx0 = int(math.floor(xa / tile))
+                tx1 = int(math.floor(xb / tile))
+                ty = int(math.floor(y / tile))
+                for tx in range(tx0, tx1 + 1):
+                    a = max(xa, tx * tile)
+                    b = min(xb, (tx + 1) * tile)
+                    if b - a > 0.05:
+                        minor_tiles.setdefault((tx, ty), []).append(
+                            (a, y, b, y, width, zc)
+                        )
+            else:
+                mx = 0.5 * (x0 + x1)
+                my = 0.5 * (y0 + y1)
+                key = (int(math.floor(mx / tile)), int(math.floor(my / tile)))
+                minor_tiles.setdefault(key, []).append((x0, y0, x1, y1, width, zc))
 
         for arterial in arterials:
+            layer = str(arterial.get("layer", "arterial"))
+            if layer not in ("minor", "collector"):
+                continue
             pts = list(arterial["points"])
             if len(pts) < 2:
                 continue
-            route_lanes = int(arterial.get("lanes", plan.highway_lanes))
+            width = float(arterial.get("width", highway_width))
+            zc = road_z + float(arterial.get("z_offset", 0.0))
+            if layer == "minor":
+                for i in range(len(pts) - 1):
+                    _bin_minor_seg(
+                        float(pts[i][0]),
+                        float(pts[i][1]),
+                        float(pts[i + 1][0]),
+                        float(pts[i + 1][1]),
+                        width,
+                        zc,
+                    )
+                continue
+            for i in range(len(pts) - 1):
+                x0, y0 = pts[i]
+                x1, y1 = pts[i + 1]
+                collector_segs.append(
+                    (float(x0), float(y0), float(x1), float(y1), width, zc)
+                )
+            name = str(arterial.get("name", ""))
+            base = name.rsplit("_", 1)[0] if name[-1:].isdigit() else name
+            title = HIGHWAY_LABELS.get(name) or HIGHWAY_LABELS.get(base) or ""
+            if title:
+                half_w = width * 0.5
+                for i in range(len(pts) - 1):
+                    self._named_roads.append(
+                        (
+                            title,
+                            float(pts[i][0]),
+                            float(pts[i][1]),
+                            float(pts[i + 1][0]),
+                            float(pts[i + 1][1]),
+                            half_w,
+                        )
+                    )
+
+        self._minor_tiles: list[tuple[float, float, object]] = []
+        for (tx, ty), segs in minor_tiles.items():
+            deck = self.minor_streets_node.attachNewNode(
+                make_flat_deck_batch(
+                    segs,
+                    road_thickness,
+                    name=f"minor_tile_{tx}_{ty}",
+                    top_only=True,
+                )
+            )
+            deck.setMaterial(road_mat, 1)
+            deck.flattenStrong()
+            cx = (tx + 0.5) * _MINOR_TILE
+            cy = (ty + 0.5) * _MINOR_TILE
+            deck.hide()
+            self._minor_tiles.append((cx, cy, deck))
+        self._minor_tiles_hidden = True
+
+        if collector_segs:
+            deck = self.collectors_node.attachNewNode(
+                make_flat_deck_batch(
+                    collector_segs,
+                    road_thickness,
+                    name="collectors_deck",
+                    top_only=True,
+                )
+            )
+            deck.setMaterial(road_mat, 1)
+        self.collectors_node.flattenStrong()
+        self.collectors_node.hide()
+        self._collectors_hidden = True
+
+        # ---- Arterials + expressways (axis-aligned → batch; curves → ribbon) ----
+        arterial_segs: list[tuple[float, float, float, float, float, float]] = []
+        expressway_segs: list[tuple[float, float, float, float, float, float]] = []
+
+        def _is_axis_aligned(pts: list) -> bool:
+            for i in range(len(pts) - 1):
+                if abs(pts[i + 1][0] - pts[i][0]) > 1e-6 and abs(
+                    pts[i + 1][1] - pts[i][1]
+                ) > 1e-6:
+                    return False
+            return len(pts) >= 2
+
+        for arterial in arterials:
+            layer = str(arterial.get("layer", "arterial"))
+            if layer not in ("arterial", "expressway"):
+                continue
+            pts = list(arterial["points"])
+            if len(pts) < 2:
+                continue
             route_width = float(arterial.get("width", highway_width))
             name = str(arterial.get("name", ""))
+            parent = layer_nodes.get(layer, self.arterials_node)
             z_off = float(arterial.get("z_offset", 0.0))
             route_z = road_z + z_off
-            route_top = road_top + z_off
-            median_gaps = list(crossing_gaps.get(name, []))
-            deck = self.highway.attachNewNode(
-                make_highway_ribbon(pts, route_width, road_thickness)
-            )
-            deck.setPos(0.0, 0.0, route_z)
-            deck.setMaterial(road_mat, 1)
-            if route_lanes > 2:
-                if plan.barrier_w > 0.0 and plan.barrier_h > 0.0:
-                    for piece in split_polyline_around_gaps(pts, median_gaps):
-                        place_barrier_prisms(
-                            piece,
-                            plan.barrier_w,
-                            plan.barrier_h,
-                            route_top + plan.barrier_h / 2,
+            if _is_axis_aligned(pts):
+                bucket = arterial_segs if layer == "arterial" else expressway_segs
+                for i in range(len(pts) - 1):
+                    bucket.append(
+                        (
+                            float(pts[i][0]),
+                            float(pts[i][1]),
+                            float(pts[i + 1][0]),
+                            float(pts[i + 1][1]),
+                            route_width,
+                            route_z,
                         )
-                # Side fences only on 6-lane arterials (not 2-/4-lane roads).
-                if route_lanes >= 6 and plan.fence_w > 0.0 and plan.fence_h > 0.0:
-                    edge = route_width / 2 + plan.fence_w / 2
-                    fence_gaps = [(x, y, radius + edge) for x, y, radius in median_gaps]
-                    for side in (-1.0, 1.0):
-                        edge_pts = offset_polyline(pts, side * edge)
-                        for piece in split_polyline_around_gaps(edge_pts, fence_gaps):
-                            place_barrier_prisms(
-                                piece,
-                                plan.fence_w,
-                                plan.fence_h,
-                                route_top + plan.fence_h / 2,
-                            )
-            paint_route_marks(
-                pts,
-                route_top,
-                lanes=route_lanes,
-                width=route_width,
-                mark_gaps=median_gaps,
-            )
+                    )
+            else:
+                deck = parent.attachNewNode(
+                    make_highway_ribbon(pts, route_width, road_thickness)
+                )
+                deck.setPos(0.0, 0.0, route_z)
+                deck.setMaterial(road_mat, 1)
 
-            title = HIGHWAY_LABELS.get(name)
+            base_name = (
+                name.rsplit("_", 1)[0]
+                if name[:1].isalpha() and name[-1:].isdigit()
+                else name
+            )
+            title = HIGHWAY_LABELS.get(name) or HIGHWAY_LABELS.get(base_name)
             if title is None:
-                # Urban fill / anonymous collectors stay unlabeled.
-                if name.startswith(("wg_", "wb_", "lc_", "ag_", "sw_fill_")):
-                    title = ""
-                elif name.endswith(("_w", "_e")) and name.startswith(
-                    ("ave_", "col_ave_")
-                ):
-                    # ALR-split avenue halves share one label family.
-                    title = HIGHWAY_LABELS.get(name.rsplit("_", 1)[0], "")
-                    if not title:
-                        base = name.rsplit("_", 1)[0]
-                        title = base.replace("_", " ").title()
-                else:
-                    title = name.replace("_", " ").title()
+                title = name.replace("_", " ").title()
             if title:
                 half_w = route_width * 0.5
-                road_pts = coarsen_polyline(pts, 1.5)
+                # Coarse HUD segments for car mode only.
+                road_pts = coarsen_polyline(pts, 24.0)
                 for i in range(len(road_pts) - 1):
                     self._named_roads.append(
                         (
@@ -378,23 +436,50 @@ class CityApp(ShowBase):
                             half_w,
                         )
                     )
-            if not title:
-                continue
-            mid = pts[len(pts) // 2]
-            text = TextNode(f"hwy-label-{name}")
-            text.setText(title)
-            text.setAlign(TextNode.ACenter)
-            text.setTextColor(1.0, 1.0, 1.0, 1)
-            text.setShadow(0.06, 0.06)
-            text.setShadowColor(0.05, 0.06, 0.08, 0.9)
-            pivot = labels_root.attachNewNode(f"hwy-label-pivot-{name}")
-            pivot.setPos(mid[0], mid[1], road_top + 0.55)
-            label = pivot.attachNewNode(text)
-            label.setScale(self._label_base_scale)
-            label.setBillboardPointEye()
-            label.setDepthTest(False)
-            label.setDepthWrite(False)
-            self._highway_label_nodes.append(label)
+                if name in _LABEL_ROADS or layer == "expressway":
+                    mid = pts[len(pts) // 2]
+                    text = TextNode(f"hwy-label-{name}")
+                    text.setText(title)
+                    text.setAlign(TextNode.ACenter)
+                    text.setTextColor(1.0, 1.0, 1.0, 1)
+                    # No drop shadow — billboard shadows are expensive.
+                    pivot = labels_root.attachNewNode(f"hwy-label-pivot-{name}")
+                    pivot.setPos(mid[0], mid[1], road_top + 0.55)
+                    label = pivot.attachNewNode(text)
+                    label.setScale(self._label_base_scale)
+                    label.setBillboardPointEye()
+                    label.setDepthTest(False)
+                    label.setDepthWrite(False)
+                    label.hide()
+                    self._highway_label_nodes.append(
+                        (label, float(mid[0]), float(mid[1]))
+                    )
+        self._label_zoom_applied = None
+        self._lod_key = None
+
+        if arterial_segs:
+            deck = self.arterials_node.attachNewNode(
+                make_flat_deck_batch(
+                    arterial_segs,
+                    road_thickness,
+                    name="arterials_deck",
+                    top_only=True,
+                )
+            )
+            deck.setMaterial(road_mat, 1)
+        if expressway_segs:
+            deck = self.expressways_node.attachNewNode(
+                make_flat_deck_batch(
+                    expressway_segs,
+                    road_thickness,
+                    name="expressways_axis_deck",
+                    top_only=True,
+                )
+            )
+            deck.setMaterial(road_mat, 1)
+
+        self.arterials_node.flattenStrong()
+        self.expressways_node.flattenStrong()
 
         self._barrier_cell = _SEG_CELL
         self._road_cell = _SEG_CELL
@@ -405,36 +490,19 @@ class CityApp(ShowBase):
             self._named_roads, xy_offset=1, cell=self._road_cell
         )
 
-        # Traffic lights disabled for the road-network pass.
-        self._signals = None
-
+        # District billboards are created lazily on select (keeps overview light).
         for key, district in self._districts.items():
             ring = district["ring"]
-            text = TextNode(f"district-label-{key}")
-            text.setText(district["title"])
-            text.setAlign(TextNode.ACenter)
-            text.setTextColor(0.86, 0.12, 0.1, 1)
-            text.setShadow(0.05, 0.05)
-            text.setShadowColor(0.08, 0.02, 0.02, 0.75)
-            pivot = self.render.attachNewNode(f"district-label-pivot-{key}")
             anchor = district.get("anchor")
             if anchor is not None:
                 label_x, label_y = anchor
             else:
                 label_x = sum(p[0] for p in ring) / len(ring)
                 label_y = sum(p[1] for p in ring) / len(ring)
-            pivot.setPos(label_x, label_y, road_top + 6.0)
-            label = pivot.attachNewNode(text)
-            label_scale = self._label_base_scale * 4.0
-            label.setScale(label_scale)
-            label.setBillboardPointEye()
-            label.setDepthTest(False)
-            label.setDepthWrite(False)
-            label.hide()
-            district["label"] = label
-            district["label_scale"] = label_scale
-
-        self.highway.flattenStrong()
+            district["label"] = None
+            district["label_xy"] = (label_x, label_y)
+            district["label_z"] = road_top + 6.0
+            district["label_scale"] = self._label_base_scale * 20.0
 
     def _build_streets(
         self,
@@ -503,21 +571,43 @@ class CityApp(ShowBase):
             pad.setMaterial(road_mat, 1)
         self.streets.flattenStrong()
 
+    def _build_signals(
+        self, arterials: list, road_z: float, road_thickness: float
+    ) -> None:
+        """Chicago signal assemblies + crosswalk/stop-bar markings."""
+        self.signals_root, self._signal_junctions, self._signal_tiles = (
+            build_chicago_signals(
+                self.render,
+                arterials,
+                road_z=road_z,
+                road_thickness=road_thickness,
+            )
+        )
+        self._signal_tiles_hidden = True
+        self._signals = TrafficLightController(self)
+        self.taskMgr.add(self._signals.update, "update_traffic_signals")
+
     def _build_ground(self, hwy: dict, road_z: float) -> None:
         lawn_mat = lawn_material()
         ground_pad = 40.0
+        thickness = 0.16
+        road_thickness = float(hwy.get("road_thickness", 0.1))
+        # Top of baseplate flush with the underside of Z=0 road ribbons.
+        ground_top = road_z - road_thickness * 0.5
+        ground_center_z = ground_top - thickness * 0.5
         self._ground = box_instance(
             self.render,
             (hwy["bounds_east"] - hwy["bounds_west"]) + ground_pad,
             (hwy["bounds_north"] - hwy["bounds_south"]) + ground_pad,
-            0.16,
+            thickness,
         )
         self._ground.setPos(
             (hwy["bounds_west"] + hwy["bounds_east"]) / 2,
             (hwy["bounds_south"] + hwy["bounds_north"]) / 2,
-            road_z - 0.12,
+            ground_center_z,
         )
         self._ground.setMaterial(lawn_mat, 1)
+        self._ground_z = ground_top
 
     def _build_lighting(self) -> None:
         self._ambient_light = AmbientLight("ambient")
@@ -526,9 +616,7 @@ class CityApp(ShowBase):
         self._sun_light = DirectionalLight("sun")
         self._sun_np = self.render.attachNewNode(self._sun_light)
         self.render.setLight(self._sun_np)
-        self._fill_light = DirectionalLight("fill")
-        self._fill_np = self.render.attachNewNode(self._fill_light)
-        self.render.setLight(self._fill_np)
+        # Skip fill light — one directional + ambient is enough for flat roads.
 
         self._sky_root = self.camera.attachNewNode("sky-root")
         self._sky_root.setEffect(CompassEffect.make(self.render))
@@ -548,14 +636,17 @@ class CityApp(ShowBase):
         self._player_car: PlayerCar | None = None
         self._fleet_root = self.render.attachNewNode("fleet")
 
-        # Green player car on King George Blvd at Whalley (right lane, southbound).
-        king = next((a for a in arterials if a.get("name") == "king_george"), None)
-        if king is not None:
-            kg_w = float(king.get("width", plan.road_width))
+        # Green player car on State Street at Madison (right lane, southbound).
+        state = next((a for a in arterials if a.get("name") == "state"), None)
+        if state is not None:
+            st_w = float(state.get("width", plan.road_width))
+            # Deck top for this route + small lift so the body clears the ribbon.
+            z_off = float(state.get("z_offset", 0.0))
+            surface_z = road_top + z_off + 0.02
             self._player_car = PlayerCar(
                 self,
-                road_top,
-                -kg_w / 4.0,
+                surface_z,
+                -st_w / 4.0,
                 -1.5,
                 heading=-90.0,
                 body_colour=(0.16, 0.62, 0.28),
@@ -586,7 +677,7 @@ class CityApp(ShowBase):
         self.distance = max(fit_x, fit_y) * 1.2
         self.min_distance = 2.0
         self.max_distance = max(200.0, self.distance * 2.5)
-        # Full georeferenced Metro Vancouver span (X≈[-680,+820], Y≈[-300,+520]).
+        # Chicago plate + O'Hare / I-57 spurs (see city.geo WORLD_*).
         self.camLens.setFar(CAMERA_FAR_CLIP)
         self.camLens.setNear(0.05)
         self._label_ref_distance = self.distance
@@ -605,6 +696,7 @@ class CityApp(ShowBase):
                 self._ground,
                 self._fleet_root,
                 self._highway_labels,
+                self.signals_root,
             )
         )
         self._default_look_at = list(self.look_at)
@@ -702,14 +794,14 @@ class CityApp(ShowBase):
 
     def _bind_controls(self) -> None:
         self.accept("escape", sys.exit)
-        self.accept("c", self._toggle_car_mode)
+        self.accept("enter", self._toggle_car_mode)
         self.accept("space", self._cycle_car_focus)
         self.accept("backspace", self._clear_district_selection)
-        self.accept("s", self._select_surrey)
-        self.accept("l", self._select_district_of_langley)
-        self.accept("e", self._select_delta)
-        self.accept("r", self._select_richmond)
-        self.accept("v", self._select_vancouver)
+        self.accept("c", self._select_chicago)
+        self.accept("l", self._select_the_loop)
+        self.accept("n", self._select_river_north)
+        self.accept("w", self._select_west_town)
+        self.accept("h", self._select_hyde_park)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
         step = PlayerCar._SPEED_STEP_KMH
@@ -744,7 +836,7 @@ class CityApp(ShowBase):
         return task.cont
 
     def _layout_clock_hud(self) -> None:
-        """Map mode: top centre. C mode: bottom left (street name keeps the top)."""
+        """Map mode: top centre. Car mode: bottom left (street name keeps the top)."""
         if not hasattr(self, "_hud_clock"):
             return
         if self._car_mode:
@@ -758,7 +850,11 @@ class CityApp(ShowBase):
 
     def _day_cycle_task(self, task):
         self._day_cycle.update(self.clock.getDt())
-        self._apply_day_cycle(self._day_cycle.sample())
+        # Lights/sky don't need per-frame updates — throttle heavily.
+        slot = int(task.time * _DAY_CYCLE_HZ)
+        if slot != getattr(self, "_day_slot", -1):
+            self._day_slot = slot
+            self._apply_day_cycle(self._day_cycle.sample())
         return task.cont
 
     def _apply_day_cycle(self, sample, *, force_sky: bool = False) -> None:
@@ -769,24 +865,21 @@ class CityApp(ShowBase):
         sr, sg, sb = sample.sun_color
         self._sun_light.setColor((sr, sg, sb, 1))
         self._sun_np.setHpr(*sample.sun_hpr)
-        fr, fg, fb = sample.fill_color
-        self._fill_light.setColor((fr, fg, fb, 1))
-        self._fill_np.setHpr(*sample.fill_hpr)
         br, bg, bb = sample.background
         self.setBackgroundColor(br, bg, bb, 1)
 
-        # Rebuild the dome when the palette moves enough — cheap 8×24 mesh.
+        # Coarse key — avoid rebuilding the sky dome every frame as the sun creeps.
         sky_key = (
-            round(sample.zenith[0], 3),
-            round(sample.zenith[1], 3),
-            round(sample.zenith[2], 3),
-            round(sample.horizon_cool[0], 3),
-            round(sample.horizon_cool[1], 3),
-            round(sample.horizon_cool[2], 3),
-            round(sample.horizon_warm[0], 3),
-            round(sample.horizon_warm[1], 3),
-            round(sample.horizon_warm[2], 3),
-            round(sample.sun_phi_deg, 1),
+            round(sample.zenith[0], 2),
+            round(sample.zenith[1], 2),
+            round(sample.zenith[2], 2),
+            round(sample.horizon_cool[0], 2),
+            round(sample.horizon_cool[1], 2),
+            round(sample.horizon_cool[2], 2),
+            round(sample.horizon_warm[0], 2),
+            round(sample.horizon_warm[1], 2),
+            round(sample.horizon_warm[2], 2),
+            round(sample.sun_phi_deg, 0),
         )
         if force_sky or sky_key != self._sky_key:
             self._sky_key = sky_key
@@ -813,7 +906,7 @@ class CityApp(ShowBase):
             self._hud_clock_text = sample.clock_text
             self._hud_clock.setText(sample.clock_text)
 
-        # Player car only runs its update loop in C mode — sync night lamps here.
+        # Player car only runs its update loop in car mode — sync night lamps here.
         player = getattr(self, "_player_car", None)
         if player is not None and not getattr(self, "_car_mode", False):
             player._refresh_lamps(braking=False, reversing=False)
@@ -851,7 +944,7 @@ class CityApp(ShowBase):
         return [car._car_pos[0], car._car_pos[1], car._car_z + 0.5]
 
     def _toggle_car_mode(self) -> None:
-        """C: enter/exit third-person drive mode on the green player car."""
+        """Enter: enter/exit third-person drive mode on the green player car."""
         if self._player_car is None:
             return
         if self._car_mode:
@@ -861,6 +954,7 @@ class CityApp(ShowBase):
 
     def _enter_car_mode(self) -> None:
         self._car_mode = True
+        self._lod_key = None
         self._clear_district_selection()
         self._focus_index = -1
         self.dragging = False
@@ -886,6 +980,7 @@ class CityApp(ShowBase):
 
     def _exit_car_mode(self) -> None:
         self._car_mode = False
+        self._lod_key = None
         self.dragging = False
         self._highway_labels.show()
         self._hud_place.hide()
@@ -1076,6 +1171,11 @@ class CityApp(ShowBase):
         look_z = pz + self._chase_look_z
         self.camera.lookAt(look_x, look_y, look_z)
         self.look_at = [look_x, look_y, look_z]
+        # Local minor tiles around the car (map-mode distance would hide them).
+        saved = self.distance
+        self.distance = 60.0
+        self._update_road_lod(px, py)
+        self.distance = saved
 
     def _cycle_car_focus(self) -> None:
         """Space: zoom to next car; after the last car, restore the city overview."""
@@ -1121,7 +1221,7 @@ class CityApp(ShowBase):
         self._player_car.bump_speed_limit(delta_kmh)
 
     def _player_drive_task(self, task):
-        """C mode: WASD drive; ←/→ trim heading; ↑/↓ set cruise limit."""
+        """Car mode: WASD drive; ←/→ trim heading; ↑/↓ set cruise limit."""
         if not self._car_mode or self._player_car is None:
             return task.cont
         mw = self.mouseWatcherNode
@@ -1150,16 +1250,110 @@ class CityApp(ShowBase):
             look_z + self.distance * math.sin(pitch),
         )
         self.camera.lookAt(look_x, look_y, look_z)
-        # Keep label screen size roughly constant while zooming.
-        ref = max(self._label_ref_distance, 1e-6)
-        zoom = self.distance / ref
-        scale = self._label_base_scale * zoom
-        for label in self._highway_label_nodes:
-            label.setScale(scale)
-        for district in self._districts.values():
-            label = district.get("label")
-            if label is not None:
-                label.setScale(district["label_scale"] * zoom)
+        self._update_road_lod(look_x, look_y)
+
+    def _update_road_lod(self, look_x: float, look_y: float) -> None:
+        """Show only nearby minor tiles + a handful of road labels."""
+        dist = self.distance
+        # Skip work when the camera hasn't moved enough to change LOD.
+        lod_key = (
+            int(look_x // 8.0),
+            int(look_y // 8.0),
+            int(dist // 12.0),
+            bool(self._car_mode),
+        )
+        if lod_key == getattr(self, "_lod_key", None):
+            selected = getattr(self, "_selected_district", None)
+            if selected is not None:
+                district = self._districts.get(selected)
+                if district is not None:
+                    label = district.get("label")
+                    if label is not None and not label.isHidden():
+                        ref = max(self._label_ref_distance, 1e-6)
+                        label.setScale(district["label_scale"] * (dist / ref))
+            return
+        self._lod_key = lod_key
+
+        # ---- Collectors (citywide mesh — hide in overview) ----
+        if dist >= _COLLECTOR_HIDE_DIST and not self._car_mode:
+            if not getattr(self, "_collectors_hidden", False):
+                self.collectors_node.hide()
+                self._collectors_hidden = True
+        else:
+            if getattr(self, "_collectors_hidden", False):
+                self.collectors_node.show()
+                self._collectors_hidden = False
+
+        def _show_nearby_tiles(tiles, *, hide_dist: float, pad: float, hidden_attr: str) -> None:
+            if dist >= hide_dist and not self._car_mode:
+                if not getattr(self, hidden_attr, False):
+                    for _cx, _cy, node in tiles:
+                        if not node.isHidden():
+                            node.hide()
+                    setattr(self, hidden_attr, True)
+                return
+            setattr(self, hidden_attr, False)
+            radius = max(70.0, dist * 0.45) + pad
+            r2 = radius * radius
+            for cx, cy, node in tiles:
+                dx = cx - look_x
+                dy = cy - look_y
+                near = dx * dx + dy * dy <= r2
+                if near and node.isHidden():
+                    node.show()
+                elif not near and not node.isHidden():
+                    node.hide()
+
+        # ---- Minor street tiles ----
+        _show_nearby_tiles(
+            getattr(self, "_minor_tiles", None) or [],
+            hide_dist=_MINOR_HIDE_DIST,
+            pad=_MINOR_TILE * 0.5,
+            hidden_attr="_minor_tiles_hidden",
+        )
+        # ---- Signal tiles ----
+        _show_nearby_tiles(
+            getattr(self, "_signal_tiles", None) or [],
+            hide_dist=_SIGNAL_HIDE_DIST,
+            pad=_MINOR_TILE * 0.5,
+            hidden_attr="_signal_tiles_hidden",
+        )
+        # ---- Highway labels (nearest N only; skip when far / car mode) ----
+        labels = getattr(self, "_highway_label_nodes", None) or []
+        if dist >= _LABEL_HIDE_DIST or self._car_mode:
+            if not self._highway_labels.isHidden():
+                self._highway_labels.hide()
+        else:
+            if self._highway_labels.isHidden():
+                self._highway_labels.show()
+            scored: list[tuple[float, object]] = []
+            for label, lx, ly in labels:
+                dx = lx - look_x
+                dy = ly - look_y
+                scored.append((dx * dx + dy * dy, label))
+            scored.sort(key=lambda item: item[0])
+            visible = {id(item[1]) for item in scored[:_LABEL_MAX_VISIBLE]}
+            ref = max(self._label_ref_distance, 1e-6)
+            zoom = dist / ref
+            scale = self._label_base_scale * zoom
+            for _d2, label in scored:
+                show = id(label) in visible
+                if show:
+                    if label.isHidden():
+                        label.show()
+                    label.setScale(scale)
+                elif not label.isHidden():
+                    label.hide()
+
+        # District label scale tracks zoom only when one is selected.
+        selected = getattr(self, "_selected_district", None)
+        if selected is not None:
+            district = self._districts.get(selected)
+            if district is not None:
+                label = district.get("label")
+                if label is not None and not label.isHidden():
+                    ref = max(self._label_ref_distance, 1e-6)
+                    label.setScale(district["label_scale"] * (dist / ref))
 
     def _zoom(self, factor: float) -> None:
         if self._car_mode:
@@ -1242,6 +1436,26 @@ class CityApp(ShowBase):
             near_w.y + (far_w.y - near_w.y) * t,
         )
 
+    def _ensure_district_label(self, key: str):
+        district = self._districts[key]
+        label = district.get("label")
+        if label is not None:
+            return label
+        text = TextNode(f"district-label-{key}")
+        text.setText(district["title"])
+        text.setAlign(TextNode.ACenter)
+        text.setTextColor(0.86, 0.12, 0.1, 1)
+        pivot = self.render.attachNewNode(f"district-label-pivot-{key}")
+        lx, ly = district["label_xy"]
+        pivot.setPos(lx, ly, district["label_z"])
+        label = pivot.attachNewNode(text)
+        label.setScale(district["label_scale"])
+        label.setBillboardPointEye()
+        label.setDepthTest(False)
+        label.setDepthWrite(False)
+        district["label"] = label
+        return label
+
     def _select_district(self, key: str) -> None:
         if key not in self._districts:
             return
@@ -1257,9 +1471,8 @@ class CityApp(ShowBase):
                 continue
             node.setColorScale(*dim)
         district["outline"].show()
-        label = district.get("label")
-        if label is not None:
-            label.show()
+        label = self._ensure_district_label(key)
+        label.show()
 
     def _clear_district_selection(self) -> None:
         if self._selected_district is None:
@@ -1273,35 +1486,35 @@ class CityApp(ShowBase):
         if label is not None:
             label.hide()
 
-    def _select_surrey(self) -> None:
-        """S: outline Greater Surrey (disabled in C / car mode)."""
+    def _select_chicago(self) -> None:
+        """C: outline City of Chicago plate (disabled in car mode)."""
         if self._car_mode:
             return
-        self._select_district("surrey")
+        self._select_district("chicago")
 
-    def _select_district_of_langley(self) -> None:
-        """L: outline District of Langley (disabled in C / car mode)."""
+    def _select_the_loop(self) -> None:
+        """L: outline The Loop (disabled in car mode)."""
         if self._car_mode:
             return
-        self._select_district("district_of_langley")
+        self._select_district("the_loop")
 
-    def _select_delta(self) -> None:
-        """E: outline Delta (disabled in C / car mode)."""
+    def _select_river_north(self) -> None:
+        """N: outline River North (disabled in car mode)."""
         if self._car_mode:
             return
-        self._select_district("delta")
+        self._select_district("river_north")
 
-    def _select_richmond(self) -> None:
-        """R: outline Richmond / Lulu Island, no YVR (disabled in C / car mode)."""
+    def _select_west_town(self) -> None:
+        """W: outline West Town (disabled in car mode)."""
         if self._car_mode:
             return
-        self._select_district("richmond")
+        self._select_district("west_town")
 
-    def _select_vancouver(self) -> None:
-        """V: outline Vancouver including UBC / Point Grey (disabled in C mode)."""
+    def _select_hyde_park(self) -> None:
+        """H: outline Hyde Park (disabled in car mode)."""
         if self._car_mode:
             return
-        self._select_district("vancouver")
+        self._select_district("hyde_park")
 
     def _try_select_district(self) -> None:
         if self._car_mode:
@@ -1362,7 +1575,7 @@ class CityApp(ShowBase):
         return task.cont
 
     def _pan_task(self, task):
-        """Arrow keys: pan look_at on the ground plane (disabled in C mode)."""
+        """Arrow keys: pan look_at on the ground plane (disabled in car mode)."""
         if self._car_mode:
             return task.cont
         mw = self.mouseWatcherNode

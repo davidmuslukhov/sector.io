@@ -1,4 +1,11 @@
-"""Generate Surrey + Langley + Delta + Richmond + Vancouver/UBC + Burnaby +
+"""DEPRECATED — Metro Vancouver plate. Active city is Chicago.
+
+Use ``city/calibrate_chicago_2x.py`` to regenerate ``city/data/city.yaml``.
+This module is retained only as a historical reference; running it will
+overwrite the Chicago roads-only plate with Metro Vancouver.
+
+---
+Generate Surrey + Langley + Delta + Richmond + Vancouver/UBC + Burnaby +
 New Westminster + Coquitlam + Maple Ridge + Pitt Meadows + North Vancouver
 2× city.yaml, then pure north-up translate satellite cities onto Google Maps
 downtown centres (see city/geo.py).

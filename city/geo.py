@@ -1,9 +1,10 @@
-"""WGS84 → Metro Vancouver 2× Panda3D world projection & city plate alignment.
+"""Chicago 2× Panda3D world scale & legacy plate helpers.
 
-Master origin: King George Blvd & 104 Ave (Whalley / Surrey City Centre).
-Scale lock: 26.4 units = 1.0 km  →  1 unit = 37.9 m.
-Pure north-up (X, Y) translation only — no city rotation (setH = 0).
-All road geometry stays coplanar at Z = 0 (hierarchy may use 0.001–0.04).
+Master origin: State Street & Madison Street (Downtown Loop).
+Scale lock: 42.2 units = 1.0 mile; 26.4 units = 1.0 km → 1 unit = 37.9 m.
+Chicago address math: every 100 street numbers = 5.275 units.
+Pure north-up (X, Y) — no city rotation (setH = 0).
+All road geometry stays coplanar at Z = 0 (hierarchy may use 0.01–0.03).
 """
 
 from __future__ import annotations
@@ -16,34 +17,36 @@ from typing import Callable, Iterable, Sequence
 # 1. Master geographic origin & exact scale lock
 # ---------------------------------------------------------------------------
 
-LAT0 = 49.1913  # degrees N
-LON0 = -122.8490  # degrees W (King George & 104 Ave)
+LAT0 = 41.8821  # degrees N (State & Madison)
+LON0 = -87.6278  # degrees W
 
 METERS_PER_UNIT = 37.9  # 26.4 units = 1.0 km
 UNITS_PER_KM = 1000.0 / METERS_PER_UNIT  # 26.385... ≈ 26.4
+UNITS_PER_MILE = 42.2
+BLOCK_100 = 5.275  # 100 Chicago street numbers
 
 M_LAT = 111_132.0  # m / deg latitude
-# 111_320 * cos(49.1913°) ≈ 72_745 m/deg longitude at Whalley
-M_LON = 72_745.0
+# 111_320 * cos(41.8821°) ≈ 82_900 m/deg longitude at the Loop
+M_LON = 82_900.0
 
 # Direct Google Maps GPS → Panda3D multipliers (north-up, no rotation):
 #   X = (lon - LON0) * X_PER_DEG
 #   Y = (lat - LAT0) * Y_PER_DEG
-X_PER_DEG = M_LON / METERS_PER_UNIT  # ≈ 1919.4
+X_PER_DEG = M_LON / METERS_PER_UNIT  # ≈ 2187.3
 Y_PER_DEG = M_LAT / METERS_PER_UNIT  # ≈ 2932.2
 
-# Regional extent used for camera / culling guidance.
-WORLD_X_MIN, WORLD_X_MAX = -680.0, 820.0
-WORLD_Y_MIN, WORLD_Y_MAX = -300.0, 520.0
-CAMERA_FAR_CLIP = 6000.0
+# Chicagoland plate (no lakefront shoreline yet) + Tri-State / O'Hare spurs.
+WORLD_X_MIN, WORLD_X_MAX = -760.0, 70.0
+WORLD_Y_MIN, WORLD_Y_MAX = -760.0, 680.0
+CAMERA_FAR_CLIP = 10000.0
+GROUND_Z = -0.25
 
 # Minor Z offsets by road hierarchy (z-fighting only; still "flat").
 Z_LAYER = {
-    "local": 0.0,
-    "collector": 0.001,
-    "arterial": 0.01,
-    "highway": 0.02,
-    "freeway": 0.04,
+    "minor": 0.0,
+    "collector": 0.01,
+    "arterial": 0.02,
+    "expressway": 0.03,
 }
 
 
@@ -1222,13 +1225,14 @@ def stitch_report(highways: dict, *, tol: float = 1.0) -> list[str]:
 def calibration_banner() -> str:
     """Header comment block for generated city.yaml."""
     return (
-        f"# Georeferenced Metro Vancouver 2× — WGS84 local projection.\n"
-        f"# Origin (0,0): King George & 104 Ave  lat0={LAT0} lon0={LON0}\n"
-        f"# Scale: 1 unit = {METERS_PER_UNIT} m  ({UNITS_PER_KM:.1f} units = 1 km)\n"
-        f"# Pure north-up: X=(lon-lon0)*{X_PER_DEG:.1f}  Y=(lat-lat0)*{Y_PER_DEG:.1f}\n"
-        f"# City plates: translate-only onto Google Maps centres (no rotation).\n"
+        f"# Chicago Pure Arterial Grid & Expressways — 2× roads-only plate.\n"
+        f"# Origin (0,0): State Street & Madison Street  lat0={LAT0} lon0={LON0}\n"
+        f"# Scale: 1 unit = {METERS_PER_UNIT} m  ({UNITS_PER_MILE:g} units = 1 mile; "
+        f"{UNITS_PER_KM:.1f} units = 1 km)\n"
+        f"# Address math: every 100 street numbers = {BLOCK_100:g} units.\n"
         f"# Flat roads only Z=0 (+ hierarchy offsets {min(Z_LAYER.values())}–{max(Z_LAYER.values())}).\n"
-        f"# Camera far clip: {CAMERA_FAR_CLIP:g}. World ≈ X∈[{WORLD_X_MIN:g},{WORLD_X_MAX:g}] "
+        f"# Ground plane Z={GROUND_Z:g}. Camera far clip: {CAMERA_FAR_CLIP:g}. "
+        f"World ≈ X∈[{WORLD_X_MIN:g},{WORLD_X_MAX:g}] "
         f"Y∈[{WORLD_Y_MIN:g},{WORLD_Y_MAX:g}].\n"
     )
 

@@ -317,49 +317,49 @@ def brown_material(lightness: float = 1.0) -> Material:
 _SIGNAL_LENS_LOOKS: dict[str, dict[bool, tuple]] = {
     "red": {
         True: (
-            (0.55, 0.05, 0.04),
-            (0.95, 0.12, 0.08),
-            (0.55, 0.15, 0.1),
-            48,
-            (0.7, 0.08, 0.05),
+            (0.65, 0.04, 0.03),
+            (1.0, 0.1, 0.06),
+            (0.6, 0.12, 0.08),
+            64,
+            (1.2, 0.08, 0.04),
         ),
         False: (
-            (0.18, 0.04, 0.03),
-            (0.28, 0.06, 0.05),
-            (0.1, 0.04, 0.03),
-            24,
+            (0.08, 0.02, 0.015),
+            (0.12, 0.03, 0.025),
+            (0.04, 0.02, 0.015),
+            12,
             None,
         ),
     },
     "amber": {
         True: (
-            (0.7, 0.35, 0.02),
-            (1.0, 0.55, 0.05),
-            (0.65, 0.3, 0.05),
-            48,
-            (1.0, 0.45, 0.0),
+            (0.75, 0.38, 0.02),
+            (1.0, 0.58, 0.04),
+            (0.7, 0.32, 0.04),
+            64,
+            (1.3, 0.55, 0.0),
         ),
         False: (
-            (0.18, 0.12, 0.02),
-            (0.32, 0.22, 0.05),
-            (0.12, 0.1, 0.04),
-            24,
+            (0.08, 0.055, 0.01),
+            (0.14, 0.1, 0.02),
+            (0.05, 0.04, 0.015),
+            12,
             None,
         ),
     },
     "green": {
         True: (
-            (0.04, 0.45, 0.12),
-            (0.1, 0.85, 0.28),
-            (0.15, 0.5, 0.2),
-            48,
-            (0.08, 0.65, 0.18),
+            (0.03, 0.5, 0.12),
+            (0.08, 0.95, 0.25),
+            (0.12, 0.55, 0.18),
+            64,
+            (0.06, 1.1, 0.2),
         ),
         False: (
-            (0.02, 0.14, 0.05),
-            (0.04, 0.22, 0.1),
-            (0.06, 0.12, 0.08),
-            24,
+            (0.01, 0.06, 0.025),
+            (0.02, 0.1, 0.04),
+            (0.02, 0.05, 0.03),
+            12,
             None,
         ),
     },
@@ -380,28 +380,38 @@ def _write_signal_look(material: Material, look: tuple) -> None:
 
 # Opposing approaches share a material set so flattenStrong still updates.
 SIGNAL_AXES = ("ns", "ew")
+# Chicago green-wave buckets: offset seconds quantized into this many groups.
+SIGNAL_WAVE_GROUPS = 24
 
 
 def signal_material(name: str) -> Material:
-    """Traffic-signal paint: yellow head or dark trim."""
+    """Traffic-signal paint: yellow head or dark Chicago pole/trim."""
     cached = _SIGNAL_MATERIALS.get(name)
     if cached is not None:
         return cached
     # ambient, diffuse, specular, shininess, emission-or-None
     colours = {
-        # Classic US signal yellow.
+        # Classic traffic-signal yellow housings.
         "housing": (
-            (0.42, 0.34, 0.06),
-            (0.78, 0.62, 0.12),
-            (0.25, 0.22, 0.08),
-            12,
+            (0.55, 0.42, 0.04),
+            (0.92, 0.72, 0.05),
+            (0.3, 0.25, 0.08),
+            14,
             None,
         ),
+        # Matte black / dark hunter-green poles & mast arms.
         "trim": (
-            (0.05, 0.05, 0.055),
-            (0.1, 0.1, 0.11),
-            (0.08, 0.08, 0.08),
-            6,
+            (0.04, 0.06, 0.05),
+            (0.08, 0.11, 0.09),
+            (0.05, 0.06, 0.05),
+            4,
+            None,
+        ),
+        "pole": (
+            (0.04, 0.06, 0.05),
+            (0.08, 0.11, 0.09),
+            (0.05, 0.06, 0.05),
+            4,
             None,
         ),
     }
@@ -411,12 +421,14 @@ def signal_material(name: str) -> Material:
     return material
 
 
-def signal_lens_material(colour: str, axis: str) -> Material:
-    """Shared lit/unlit lens for one approach axis (``ns`` or ``ew``).
+def signal_lens_material(colour: str, axis: str, wave: int = 0) -> Material:
+    """Shared lit/unlit lens for one approach axis and green-wave bucket.
 
-    Mutated in place by ``apply_signal_lenses`` so flattened meshes update.
+    Mutated in place by ``apply_signal_lenses`` / ``apply_signal_wave`` so
+    flattened meshes keep animating without per-head NodePaths.
     """
-    key = f"{colour}:{axis}"
+    wave = int(wave) % SIGNAL_WAVE_GROUPS
+    key = f"{colour}:{axis}:{wave}"
     cached = _SIGNAL_MATERIALS.get(key)
     if cached is not None:
         return cached
@@ -426,14 +438,19 @@ def signal_lens_material(colour: str, axis: str) -> Material:
     return material
 
 
-def apply_signal_lenses(ns: str, ew: str) -> None:
-    """Set active lens colour per opposing pair (other lenses go dark)."""
+def apply_signal_lenses(ns: str, ew: str, wave: int = 0) -> None:
+    """Set active lens colour for one wave bucket (other lenses go dark)."""
     for axis, active in (("ns", ns), ("ew", ew)):
         for colour in _SIGNAL_LENS_LOOKS:
             _write_signal_look(
-                signal_lens_material(colour, axis),
+                signal_lens_material(colour, axis, wave),
                 _SIGNAL_LENS_LOOKS[colour][colour == active],
             )
+
+
+def apply_signal_wave(wave: int, ns: str, ew: str) -> None:
+    """Alias for ``apply_signal_lenses`` with an explicit wave bucket."""
+    apply_signal_lenses(ns, ew, wave=wave)
 
 
 def car_material(

@@ -9,7 +9,7 @@ from panda3d.core import loadPrcFileData
 
 def configure() -> argparse.Namespace:
     """Apply window settings before Panda3D reads its config on import."""
-    parser = argparse.ArgumentParser(description="Open the Surrey, BC city scene.")
+    parser = argparse.ArgumentParser(description="Open the Chicago, IL city scene.")
     parser.add_argument(
         "--screenshot",
         metavar="PATH",
@@ -26,7 +26,11 @@ def configure() -> argparse.Namespace:
     loadPrcFileData("", "win-size 960 960")
     # Sync-to-vblank can make a heavy frame feel like half FPS.
     loadPrcFileData("", "sync-video 0")
-    # Skip MSAA — big GPU win on this scene.
+    # MSAA off — large road plate; AA was a major GPU cost.
     loadPrcFileData("", "framebuffer-multisample 0")
     loadPrcFileData("", "multisamples 0")
+    # Roads are untextured; anisotropy does nothing useful here.
+    loadPrcFileData("", "texture-anisotropic-degree 1")
+    # Skip unused fixed-function extras.
+    loadPrcFileData("", "show-frame-rate-meter 0")
     return args

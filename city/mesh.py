@@ -1252,6 +1252,76 @@ def make_highway_ribbon(
     return node
 
 
+def make_flat_deck_batch(
+    segments: list[tuple[float, float, float, float, float, float]],
+    thickness: float,
+    *,
+    name: str = "flat_deck_batch",
+    top_only: bool = False,
+) -> GeomNode:
+    """Single GeomNode of road decks for many axis-aligned segments.
+
+    Each segment is ``(x0, y0, x1, y1, width, z_center)``. Built for dense
+    minor / collector grids — one draw call, no per-street NodePath overhead.
+    ``top_only`` halves triangle count (enough for flat Z=0 ribbons).
+    """
+    if thickness <= 0.0:
+        raise ValueError("deck thickness must be positive")
+    fmt = GeomVertexFormat.getV3n3()
+    vdata = GeomVertexData(name, fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    normal = GeomVertexWriter(vdata, "normal")
+    tris = GeomTriangles(Geom.UHStatic)
+    hz = thickness * 0.5
+    row = 0
+    for x0, y0, x1, y1, width, zc in segments:
+        if width <= 0.0:
+            continue
+        dx = x1 - x0
+        dy = y1 - y0
+        length = math.hypot(dx, dy)
+        if length < 0.05:
+            continue
+        # Perpendicular in XY.
+        nx, ny = -dy / length, dx / length
+        half = width * 0.5
+        lx0, ly0 = x0 + nx * half, y0 + ny * half
+        rx0, ry0 = x0 - nx * half, y0 - ny * half
+        lx1, ly1 = x1 + nx * half, y1 + ny * half
+        rx1, ry1 = x1 - nx * half, y1 - ny * half
+        # Full slabs center on zc; top-only cards sit on the slab underside
+        # (flush with the baseplate) and keep hierarchy via zc / z_offset.
+        if top_only:
+            z_top = zc - hz + 0.002
+            z_bot = None
+        else:
+            z_top = zc + hz
+            z_bot = zc - hz
+        for x, y in ((lx0, ly0), (rx0, ry0), (rx1, ry1), (lx1, ly1)):
+            vertex.addData3(x, y, z_top)
+            normal.addData3(0.0, 0.0, 1.0)
+        tris.addVertices(row, row + 1, row + 2)
+        tris.addVertices(row, row + 2, row + 3)
+        row += 4
+        if z_bot is not None:
+            for x, y in ((lx0, ly0), (lx1, ly1), (rx1, ry1), (rx0, ry0)):
+                vertex.addData3(x, y, z_bot)
+                normal.addData3(0.0, 0.0, -1.0)
+            tris.addVertices(row, row + 1, row + 2)
+            tris.addVertices(row, row + 2, row + 3)
+            row += 4
+    if row == 0:
+        # Empty placeholder so callers can still attach a node.
+        vertex.addData3(0.0, 0.0, 0.0)
+        normal.addData3(0.0, 0.0, 1.0)
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode(name)
+    node.addGeom(geom)
+    return node
+
+
 def box_instance(
     parent: NodePath,
     sx: float,

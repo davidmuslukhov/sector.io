@@ -1,7 +1,7 @@
-"""Surrey, BC — geographic arterial layout (no ring).
+"""Chicago, IL — geographic arterial layout (roads-only plate).
 
-Highways are open polylines with real bearings (diagonal Fraser Hwy / Hwy 1 /
-Hwy 99, N–S Hwy 15, E–W Hwy 10, Fraser-hugging Hwy 17). Neighborhoods are
+Highways are open polylines on the Chicago address grid (State & Madison
+origin) plus radial expressways and signature diagonals. Neighborhoods are
 local lot grids that may be rotated to follow nearby corridors.
 """
 
@@ -63,17 +63,19 @@ class StreetRoute:
 
 @dataclass(frozen=True)
 class HighwayRoute:
-    """Arterial centreline with a per-route lane count."""
+    """Arterial centreline with a per-route lane count and optional width."""
 
     name: str
     points: tuple[tuple[float, float], ...]
     lanes: int
     z_offset: float = 0.0
+    width: float | None = None
+    layer: str = "arterial"
 
 
 @dataclass(frozen=True)
 class CityPlan:
-    """Surrey neighborhoods, lot metrics, and geographic highway polylines."""
+    """Chicago neighborhoods, lot metrics, and geographic highway polylines."""
 
     block_size: tuple[float, float, float]
     tower_count: int
@@ -319,12 +321,12 @@ class CityPlan:
         ys: list[float] = []
         for route in self.highway_routes:
             lanes = max(2, int(route.lanes))
-            width = lanes * lane_width
+            width = float(route.width) if route.width is not None else lanes * lane_width
             control = route.points
             bent = not _is_axis_aligned(control)
-            refined = _chaikin(control, iterations=2) if bent else control
-            # Size spacing from original control chords so each curve gets ~28 segs.
-            if bent and len(control) >= 2:
+            # Axis-aligned ribbons keep endpoints only — critical for dense minor grids.
+            if bent:
+                refined = _chaikin(control, iterations=2)
                 chords = [
                     math.hypot(
                         control[i + 1][0] - control[i][0],
@@ -332,11 +334,11 @@ class CityPlan:
                     )
                     for i in range(len(control) - 1)
                 ]
-                mean_chord = sum(chords) / len(chords)
+                mean_chord = sum(chords) / len(chords) if chords else 1.0
                 spacing = max(0.9, mean_chord / 28.0)
+                smooth = tuple(_smooth_polyline(refined, spacing))
             else:
-                spacing = max(1.4, width * 1.2)
-            smooth = tuple(_smooth_polyline(refined, spacing))
+                smooth = control
             arterials.append(
                 {
                     "name": route.name,
@@ -346,6 +348,7 @@ class CityPlan:
                     "lanes": lanes,
                     "width": width,
                     "z_offset": float(route.z_offset),
+                    "layer": str(route.layer or "arterial"),
                 }
             )
             for x, y in smooth:
@@ -663,12 +666,18 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
     for name, entry in raw_highways.items():
         lanes = highway_lanes
         z_offset = 0.0
+        width: float | None = None
+        layer = "arterial"
         if isinstance(entry, dict):
             pts = entry.get("points", [])
             if entry.get("lanes") is not None:
                 lanes = int(entry["lanes"])
             if entry.get("z_offset") is not None:
                 z_offset = float(entry["z_offset"])
+            if entry.get("width") is not None:
+                width = float(entry["width"])
+            if entry.get("layer") is not None:
+                layer = str(entry["layer"])
         else:
             pts = entry
         if not isinstance(pts, list) or len(pts) < 2:
@@ -681,6 +690,8 @@ def _build_city_plan(data: dict[str, Any]) -> CityPlan:
                 points=tuple((float(p[0]), float(p[1])) for p in pts),
                 lanes=lanes,
                 z_offset=z_offset,
+                width=width,
+                layer=layer,
             )
         )
 
@@ -839,5 +850,5 @@ def load_city_plan(path: str | Path | None = None) -> CityPlan:
 
 
 def default_city_plan() -> CityPlan:
-    """Return the packaged Surrey layout from ``city/data/city.yaml``."""
+    """Return the packaged Chicago layout from ``city/data/city.yaml``."""
     return load_city_plan()
