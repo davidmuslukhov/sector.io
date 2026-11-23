@@ -25,10 +25,13 @@ from city.car import ROAD_SHOULDER, CarController, PlayerCar
 from city.daycycle import SUNRISE_SECONDS, DayNightCycle
 from city.districts import (
     CITY_CENTRE_BLOCKS,
-    DISTRICT_DEFS,
+    DISTRICT_DEFS as _DISTRICT_DEFS_RAW,
     HIGHWAY_LABELS,
     LOCATION_AREAS,
 )
+from city.geo import CAMERA_FAR_CLIP, apply_district_transforms
+
+DISTRICT_DEFS = apply_district_transforms(_DISTRICT_DEFS_RAW)
 from city.materials import (
     concrete_material,
     lawn_material,
@@ -583,8 +586,8 @@ class CityApp(ShowBase):
         self.distance = max(fit_x, fit_y) * 1.2
         self.min_distance = 2.0
         self.max_distance = max(200.0, self.distance * 2.5)
-        # Full Ferry tip → UBC / Ironworkers / 276 St regional span.
-        self.camLens.setFar(4500.0)
+        # Full georeferenced Metro Vancouver span (X≈[-680,+820], Y≈[-300,+520]).
+        self.camLens.setFar(CAMERA_FAR_CLIP)
         self.camLens.setNear(0.05)
         self._label_ref_distance = self.distance
         self.dragging = False
@@ -709,8 +712,9 @@ class CityApp(ShowBase):
         self.accept("v", self._select_vancouver)
         self.accept("wheel_up", self._zoom, [0.94])
         self.accept("wheel_down", self._zoom, [1.0 / 0.94])
-        self.accept("arrow_up", self._bump_player_speed_limit, [10.0])
-        self.accept("arrow_down", self._bump_player_speed_limit, [-10.0])
+        step = PlayerCar._SPEED_STEP_KMH
+        self.accept("arrow_up", self._bump_player_speed_limit, [step])
+        self.accept("arrow_down", self._bump_player_speed_limit, [-step])
         self.accept("mouse1", self._start_drag)
         self.accept("mouse1-up", self._end_drag)
         self.taskMgr.add(self._drag_task, "orbit-drag")
@@ -1111,7 +1115,7 @@ class CityApp(ShowBase):
         return task.cont
 
     def _bump_player_speed_limit(self, delta_kmh: float) -> None:
-        """↑/↓: nudge forward cruise cap by 10 km/h (0–300), car mode only."""
+        """↑/↓: nudge forward cruise cap by 10 km/h (0–600), car mode only."""
         if not self._car_mode or self._player_car is None:
             return
         self._player_car.bump_speed_limit(delta_kmh)

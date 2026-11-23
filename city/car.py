@@ -3453,20 +3453,26 @@ class PlayerCar:
     # Template body half-height before world scale.
     _BODY_HALF_Z = 0.5 * _CAR_WORLD_SCALE
     # Speeds in m/s; HUD uses ×3.6 → km/h. Motion converts via _UNITS_PER_M.
+    _MS_PER_KMH = 1.0 / 3.6
     _SPEED_BASE_KMH = 100.0
     _SPEED_MIN_KMH = 0.0
-    _SPEED_MAX_KMH = 300.0
+    _SPEED_MAX_KMH = 600.0
     _SPEED_STEP_KMH = 10.0
-    _MAX_REVERSE = 50.0 / 3.6
+    _REVERSE_MAX_KMH = 50.0
+    _MAX_REVERSE = _REVERSE_MAX_KMH * _MS_PER_KMH
     _OFF_ROAD_SPEED = 0.5  # fraction of limit when not on an arterial
     _REVERSE_HOLD = 0.5  # seconds of S at standstill before reverse
     _ACCEL = 22.0
     _BRAKE = 38.0
     _COAST = 5.0
-    _STEER_RATE = 140.0  # deg/s at full speed (A/D)
+    _STEER_RATE = 140.0  # deg/s at cruise limit (A/D)
     _NUDGE_RATE = 35.0  # deg/s slight trim (left/right arrows)
     # Collision disc around the body centre (half-width + bumper fudge).
     _HIT_RADIUS = 0.85 * _CAR_WORLD_SCALE
+    _HIT_QUERY_PAD = 4.0
+    # Motion substep length; raised step budget covers ~600 km/h at low FPS.
+    _STEP_LEN = 0.25 * _CAR_WORLD_SCALE
+    _MAX_SUBSTEPS = 24
     # Match CityApp._street_at shoulder so HUD "Off road" agrees with this.
     _ROAD_SHOULDER = ROAD_SHOULDER
 
@@ -3527,7 +3533,7 @@ class PlayerCar:
 
     @property
     def _max_speed_ms(self) -> float:
-        return self._speed_limit_kmh / 3.6
+        return self._speed_limit_kmh * self._MS_PER_KMH
 
     def _place(self) -> None:
         self.car.setHpr(self._car_heading, 0.0, 0.0)
@@ -3539,7 +3545,7 @@ class PlayerCar:
         if nearby is None:
             return getattr(self.app, "_solid_barriers", None) or ()
         # A couple of cells around the car is enough for contact + substeps.
-        return nearby(px, py, self._HIT_RADIUS + 4.0)
+        return nearby(px, py, self._HIT_RADIUS + self._HIT_QUERY_PAD)
 
     def _deepest_barrier_hit(
         self,
@@ -3633,121 +3639,110 @@ class PlayerCar:
         if dt <= 0.0:
             return
 
-        steer = 0.0
-        if steer_left:
-            steer += 1.0
-        if steer_right:
-            steer -= 1.0
-        nudge = 0.0
-        if nudge_left:
-            nudge += 1.0
-        if nudge_right:
-            nudge -= 1.0
-        steer_ref = max(self._SPEED_MAX_KMH / 3.6, 1e-3)
-        if (steer != 0.0 or nudge != 0.0) and abs(self._car_speed) > 0.05:
-            blend = max(0.25, min(1.0, abs(self._car_speed) / steer_ref))
+        speed = self._car_speed
+        abs_speed = abs(speed)
+        limit_ms = self._max_speed_ms
+
+        steer = (1.0 if steer_left else 0.0) - (1.0 if steer_right else 0.0)
+        nudge = (1.0 if nudge_left else 0.0) - (1.0 if nudge_right else 0.0)
+        if (steer or nudge) and abs_speed > 0.05:
+            # Full rate at the current cruise limit (not the absolute max).
+            blend = max(0.25, min(1.0, abs_speed / max(limit_ms, 1e-3)))
             # Reverse: same wheel input, opposite yaw so A still feels "left".
-            yaw_sign = -1.0 if self._car_speed < 0.0 else 1.0
-            if steer != 0.0:
-                self._car_heading += (
-                    steer * yaw_sign * self._STEER_RATE * blend * dt
-                )
-            elif nudge != 0.0:
-                self._car_heading += (
-                    nudge * yaw_sign * self._NUDGE_RATE * blend * dt
-                )
+            yaw_sign = -1.0 if speed < 0.0 else 1.0
+            rate = self._STEER_RATE if steer else self._NUDGE_RATE
+            turn = (steer or nudge) * yaw_sign * rate * blend * dt
+            self._car_heading += turn
 
         on_road = self._on_road()
         road_scale = 1.0 if on_road else self._OFF_ROAD_SPEED
-        max_speed = self._max_speed_ms * road_scale
+        max_speed = limit_ms * road_scale
         max_reverse = self._MAX_REVERSE * road_scale
 
-        stopped = abs(self._car_speed) < 0.05
-        if stopped:
-            self._car_speed = 0.0
-        if brake and not gas and stopped:
+        if abs_speed < 0.05:
+            speed = 0.0
+        if brake and not gas and speed == 0.0:
             self._brake_hold_t += dt
-        elif self._car_speed >= 0.0:
+        elif speed >= 0.0:
             self._brake_hold_t = 0.0
         # While already reversing, keep the hold "latched" so S stays reverse.
-        if self._car_speed < 0.0:
+        if speed < 0.0:
             self._brake_hold_t = self._REVERSE_HOLD
 
         if gas and not brake:
-            self._car_speed = min(max_speed, self._car_speed + self._ACCEL * dt)
+            speed = min(max_speed, speed + self._ACCEL * dt)
         elif brake and not gas:
-            if self._car_speed > 0.0:
-                self._car_speed = max(0.0, self._car_speed - self._BRAKE * dt)
+            if speed > 0.0:
+                speed = max(0.0, speed - self._BRAKE * dt)
             elif self._brake_hold_t >= self._REVERSE_HOLD:
-                self._car_speed = max(
-                    -max_reverse, self._car_speed - self._ACCEL * dt
-                )
+                speed = max(-max_reverse, speed - self._ACCEL * dt)
         elif gas and brake:
             # Both pedals: scrub toward a stop.
-            if self._car_speed > 0.0:
-                self._car_speed = max(0.0, self._car_speed - self._BRAKE * dt)
-            elif self._car_speed < 0.0:
-                self._car_speed = min(0.0, self._car_speed + self._BRAKE * dt)
-        elif self._car_speed > max_speed:
+            if speed > 0.0:
+                speed = max(0.0, speed - self._BRAKE * dt)
+            elif speed < 0.0:
+                speed = min(0.0, speed + self._BRAKE * dt)
+        elif speed > max_speed:
             # Limit was lowered under the current speed — brake down to it.
-            self._car_speed = max(max_speed, self._car_speed - self._BRAKE * dt)
-        elif self._car_speed > 0.0:
-            self._car_speed = max(0.0, self._car_speed - self._COAST * dt)
-        elif self._car_speed < 0.0:
-            self._car_speed = min(0.0, self._car_speed + self._COAST * dt)
+            speed = max(max_speed, speed - self._BRAKE * dt)
+        elif speed > 0.0:
+            speed = max(0.0, speed - self._COAST * dt)
+        elif speed < 0.0:
+            speed = min(0.0, speed + self._COAST * dt)
 
         rad = math.radians(self._car_heading)
         fx = math.cos(rad)
         fy = math.sin(rad)
         hit_nx = 0.0
         hit_ny = 0.0
-        if abs(self._car_speed) > 0.0:
+        if speed != 0.0:
             # Speeds are m/s; convert travel into 2× world units.
-            travel = self._car_speed * dt * _UNITS_PER_M
+            travel = speed * dt * _UNITS_PER_M
             # Substep so thin fences can't be tunnelled (which used to fling the car).
-            step_len = max(0.01, 0.25 * _CAR_WORLD_SCALE)
-            n_steps = max(1, min(12, int(math.ceil(abs(travel) / step_len))))
+            step_len = max(0.01, self._STEP_LEN)
+            n_steps = max(
+                1, min(self._MAX_SUBSTEPS, int(math.ceil(abs(travel) / step_len)))
+            )
             sx = fx * travel / n_steps
             sy = fy * travel / n_steps
             for _ in range(n_steps):
                 self._car_pos[0] += sx
                 self._car_pos[1] += sy
                 nx, ny = self._separate_barriers(sx, sy)
-                if nx != 0.0 or ny != 0.0:
+                if nx or ny:
                     hit_nx, hit_ny = nx, ny
         else:
             hit_nx, hit_ny = self._separate_barriers(fx, fy)
 
         # Immovable wall: strip speed into the surface, keep wheel heading.
-        if hit_nx != 0.0 or hit_ny != 0.0:
-            vx = fx * self._car_speed
-            vy = fy * self._car_speed
+        if hit_nx or hit_ny:
+            vx = fx * speed
+            vy = fy * speed
             into = vx * hit_nx + vy * hit_ny
             if into < 0.0:
                 vx -= into * hit_nx
                 vy -= into * hit_ny
                 # Keep signed speed along the car's forward axis.
-                self._car_speed = vx * fx + vy * fy
-                head_on = (
-                    (1.0 if self._car_speed >= 0.0 else -1.0) * (fx * hit_nx + fy * hit_ny)
-                )
-                if head_on < -0.8:
-                    self._car_speed *= 0.35
+                speed = vx * fx + vy * fy
+                facing = 1.0 if speed >= 0.0 else -1.0
+                if facing * (fx * hit_nx + fy * hit_ny) < -0.8:
+                    speed *= 0.35
                 else:
-                    self._car_speed *= 0.97
-                if abs(self._car_speed) < 0.08:
-                    self._car_speed = 0.0
+                    speed *= 0.97
+                if abs(speed) < 0.08:
+                    speed = 0.0
 
-        # Leaving pavement at speed: re-check once after the move.
-        if not self._on_road():
-            fwd = self._max_speed_ms * self._OFF_ROAD_SPEED
+        # Leaving pavement at speed: only re-query when we started on-road.
+        if on_road and not self._on_road():
+            fwd = limit_ms * self._OFF_ROAD_SPEED
             rev = self._MAX_REVERSE * self._OFF_ROAD_SPEED
-            self._car_speed = max(-rev, min(fwd, self._car_speed))
+            speed = max(-rev, min(fwd, speed))
+
+        self._car_speed = speed
         self._place()
-        reversing = self._car_speed < -0.05
+        reversing = speed < -0.05
         # S while moving forward / stopped = brake lamps; reverse uses tails too.
-        braking = bool(brake) and not reversing
-        self._refresh_lamps(braking=braking, reversing=reversing)
+        self._refresh_lamps(braking=brake and not reversing, reversing=reversing)
 
     def _refresh_lamps(self, *, braking: bool, reversing: bool) -> None:
         night = bool(getattr(self.app, "_vehicle_lights_on", False))

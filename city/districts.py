@@ -214,6 +214,70 @@ HIGHWAY_LABELS = {
     "lincoln_ave": "Lincoln Ave",
     "anson_ave": "Anson Ave",
     "high_st": "High St",
+    # Port Moody
+    "barnet_pomo_w": "Barnet Hwy",
+    "st_johns_st": "St. Johns St",
+    "barnet_pomo_e": "Barnet Hwy",
+    "ioco_rd": "Ioco Rd",
+    "clarke_rd_pomo": "Clarke Rd",
+    "murray_st": "Murray St",
+    "moray_st": "Moray St",
+    "cecile_dr": "Cecile Dr",
+    "clarke_st_pomo": "Clarke St",
+    "spring_st_pomo": "Spring St",
+    "queen_st_pomo": "Queen St",
+    "kyle_st": "Kyle St",
+    "williams_st_pomo": "Williams St",
+    "elgin_st_pomo": "Elgin St",
+    "moody_st": "Moody St",
+    "buller_st": "Buller St",
+    "guildford_pomo": "Guildford Way",
+    "ungless_heritage": "Ungless Way",
+    "newport_dr": "Newport Dr",
+    "brew_st": "Brew St",
+    "suter_brook_way": "Suter Brook Way",
+    "morrissey_rd": "Morrissey Rd",
+    "ravine_dr": "Ravine Dr",
+    "turner_creek_dr": "Turner Creek Dr",
+    "glenayre_dr": "Glenayre Dr",
+    "harvard_dr": "Harvard Dr",
+    "princeton_ave": "Princeton Ave",
+    "college_park_ew": "College Park Dr",
+    "reed_point_dr": "Reed Point Dr",
+    "sunnyside_rd": "Sunnyside Rd",
+    "east_rd_anmore": "East Rd",
+    # Port Coquitlam
+    "lougheed_pc": "Lougheed Hwy",
+    "mary_hill_pc": "Mary Hill Bypass",
+    "fremont_connector": "Fremont Connector",
+    "pitt_river_rd": "Pitt River Rd",
+    "citadel_dr": "Citadel Dr",
+    "lincoln_ave_pc": "Lincoln Ave",
+    "westwood_st": "Westwood St",
+    "shaughnessy_st": "Shaughnessy St",
+    "coast_meridian_pc": "Coast Meridian Rd",
+    "ottawa_st": "Ottawa St",
+    "kingsway_ave_pc": "Kingsway Ave",
+    "wilson_ave": "Wilson Ave",
+    "mcallister_ave": "McAllister Ave",
+    "dominion_ave": "Dominion Ave",
+    "prairie_ave": "Prairie Ave",
+    "nicola_ave": "Nicola Ave",
+    "elgin_ave": "Elgin Ave",
+    "kelly_ave": "Kelly Ave",
+    "bury_ave": "Bury Ave",
+    "mary_hill_rd": "Mary Hill Rd",
+    "donald_st": "Donald St",
+    "leigh_st": "Leigh St",
+    "oxford_st": "Oxford St",
+    "wellington_st": "Wellington St",
+    "hawkins_st": "Hawkins St",
+    "blakeburn_st": "Blakeburn St",
+    "fremont_st": "Fremont St",
+    "hawthorne_ave": "Hawthorne Ave",
+    "rosedale_ave": "Rosedale Ave",
+    "chatham_st": "Chatham St",
+    "confederation_dr": "Confederation Dr",
     # Vancouver / UBC
     "sw_marine": "Marine Drive",
     "arthur_laing": "Arthur Laing Bridge",
@@ -288,6 +352,34 @@ HIGHWAY_LABELS = {
     "university_blvd": "University Blvd",
     "wesbrook_mall": "Wesbrook Mall",
     "ubc_marine_loop": "NW Marine Drive",
+    # North Vancouver
+    "hwy1_nv": "Hwy 1",
+    "lions_gate": "Lions Gate Bridge",
+    "capilano_rd": "Capilano Rd",
+    "marine_nv": "Marine Drive",
+    "keith_rd": "Keith Rd",
+    "mt_seymour_pkwy": "Mt Seymour Pkwy",
+    "westview_dr": "Westview Dr",
+    "jones_ave": "Jones Ave",
+    "lonsdale_ave": "Lonsdale Ave",
+    "grand_blvd": "Grand Boulevard",
+    "brooksbank_ave": "Brooksbank Ave",
+    "main_st_nv": "Main St",
+    "mountain_hwy": "Mountain Hwy",
+    "lynn_valley_rd": "Lynn Valley Rd",
+    "mt_seymour_rd": "Mt Seymour Rd",
+    "mt_seymour_loop": "Mt Seymour Rd",
+    "indian_river_dr": "Indian River Dr",
+    "deep_cove_rd": "Deep Cove Rd",
+    "gallant_ave": "Gallant Ave",
+    "third_st": "3rd St",
+    "thirteenth_st": "13th St",
+    "queens_rd": "Queens Rd",
+    "twenty_ninth_st": "29th St",
+    "edgemont_blvd": "Edgemont Blvd",
+    "montroyal_blvd": "Montroyal Blvd",
+    "highlands_blvd": "Highlands Blvd",
+    "grouse_approach": "Nancy Greene Way",
     "king_george": "King George Blvd",
     "scott_120": "120 St",
     "st_128": "128 St",
@@ -399,6 +491,14 @@ LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
     ("mount_pleasant", "Mount Pleasant", "Vancouver"),
     ("east_vancouver", "East Vancouver", "Vancouver"),
     ("hastings_sunrise", "Hastings-Sunrise", "Vancouver"),
+    # North Vancouver — neighbourhoods before municipality catch-alls.
+    ("lower_lonsdale", "Lower Lonsdale", "North Vancouver"),
+    ("upper_lonsdale", "Upper Lonsdale", "North Vancouver"),
+    ("lynn_valley", "Lynn Valley", "North Vancouver"),
+    ("capilano_highlands", "Capilano Highlands", "North Vancouver"),
+    ("edgemont_village", "Edgemont Village", "North Vancouver"),
+    ("deep_cove", "Deep Cove", "North Vancouver"),
+    ("seymour", "Seymour", "North Vancouver"),
     # Burnaby — town centres before municipality catch-all.
     ("metrotown", "Metrotown", "Burnaby"),
     ("brentwood", "Brentwood", "Burnaby"),
@@ -412,12 +512,24 @@ LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
     ("nw_uptown", "Uptown", "New Westminster"),
     ("sapperton", "Sapperton", "New Westminster"),
     ("queensborough", "Queensborough", "New Westminster"),
+    # Port Moody — neighbourhoods before Coquitlam (shared Barnet / Guildford seams).
+    ("moody_centre", "Moody Centre", "Port Moody"),
+    ("newport_village", "Newport Village", "Port Moody"),
+    ("glenayre", "Glenayre", "Port Moody"),
+    ("pleasantside", "Pleasantside", "Port Moody"),
+    ("heritage_mountain", "Heritage Mountain", "Port Moody"),
     # Coquitlam — town centres before municipality catch-all.
     ("burquitlam", "Burquitlam", "Coquitlam"),
     ("maillardville", "Maillardville", "Coquitlam"),
     ("coq_centre", "Coquitlam Centre", "Coquitlam"),
     ("westwood_plateau", "Westwood Plateau", "Coquitlam"),
     ("burke_mountain", "Burke Mountain", "Coquitlam"),
+    # Port Coquitlam — neighbourhoods before municipality catch-all.
+    ("poco_downtown", "Downtown Port Coquitlam", "Port Coquitlam"),
+    ("lincoln_park", "Lincoln Park", "Port Coquitlam"),
+    ("riverwood", "Riverwood", "Port Coquitlam"),
+    ("citadel_heights", "Citadel Heights", "Port Coquitlam"),
+    ("mary_hill", "Mary Hill", "Port Coquitlam"),
     # Langley — specific communities before rural catch-all (first match wins).
     ("langley_city", "Langley City", "Langley City"),
     ("willowbrook", "Willowbrook", "Langley"),
@@ -810,6 +922,98 @@ DISTRICT_DEFS: dict[str, dict] = {
         ),
         "hotkey_only": True,
     },
+    # --- North Vancouver (north of Burrard Inlet; Marine Y=+345) ---
+    "lower_lonsdale": {
+        "title": "Lower Lonsdale",
+        "ring": (
+            (-495.0, 345.0),
+            (-395.0, 345.0),
+            (-395.0, 395.0),
+            (-495.0, 395.0),
+        ),
+    },
+    "upper_lonsdale": {
+        "title": "Upper Lonsdale",
+        "ring": (
+            (-465.0, 395.0),
+            (-395.0, 395.0),
+            (-395.0, 435.0),
+            (-465.0, 435.0),
+        ),
+    },
+    "lynn_valley": {
+        "title": "Lynn Valley",
+        "ring": (
+            (-345.0, 380.0),
+            (-255.0, 380.0),
+            (-255.0, 445.0),
+            (-345.0, 445.0),
+        ),
+    },
+    "capilano_highlands": {
+        "title": "Capilano Highlands",
+        "ring": (
+            (-615.0, 395.0),
+            (-495.0, 395.0),
+            (-495.0, 465.0),
+            (-615.0, 465.0),
+        ),
+    },
+    "edgemont_village": {
+        "title": "Edgemont Village",
+        "ring": (
+            (-610.0, 410.0),
+            (-560.0, 410.0),
+            (-560.0, 445.0),
+            (-610.0, 445.0),
+        ),
+    },
+    "seymour": {
+        "title": "Seymour",
+        "ring": (
+            (-255.0, 355.0),
+            (-105.5, 355.0),
+            (-105.5, 420.0),
+            (-255.0, 420.0),
+        ),
+    },
+    "deep_cove": {
+        "title": "Deep Cove",
+        "ring": (
+            (-20.0, 355.0),
+            (48.0, 355.0),
+            (48.0, 385.0),
+            (-20.0, 385.0),
+        ),
+    },
+    "city_of_north_vancouver": {
+        "title": "City of North Vancouver",
+        "ring": (
+            (-495.0, 345.0),
+            (-255.0, 355.0),
+            (-255.0, 410.0),
+            (-316.5, 435.0),
+            (-431.5, 465.0),
+            (-495.0, 425.0),
+        ),
+        "hotkey_only": True,
+    },
+    "district_of_north_vancouver": {
+        "title": "District of North Vancouver",
+        "ring": (
+            (-640.0, 345.0),
+            (-505.0, 345.0),
+            (-255.0, 355.0),
+            (42.2, 355.0),
+            (48.0, 375.0),
+            (-105.5, 475.0),
+            (-274.3, 465.0),
+            (-431.5, 465.0),
+            (-615.0, 465.0),
+            (-640.0, 420.0),
+        ),
+        "hotkey_only": True,
+    },
     # --- Burnaby (Boundary X=-178 → North Rd X=+52) ---
     "metrotown": {
         "title": "Metrotown",
@@ -995,13 +1199,140 @@ DISTRICT_DEFS: dict[str, dict] = {
             (52.0, 105.0),
             (64.0, 42.2),
             (105.0, 90.0),
-            (165.0, 72.0),
-            (175.0, 68.0),
-            (175.0, 245.0),
+            (135.0, 82.0),
+            (132.0, 115.0),
+            (132.0, 215.0),
+            (145.0, 215.0),
+            (155.0, 205.0),
             (155.0, 275.0),
             (120.0, 275.0),
             (95.0, 240.0),
             (52.0, 245.0),
+        ),
+        "hotkey_only": True,
+    },
+    # --- Port Moody (U-loop around Burrard Inlet tip) ---
+    "moody_centre": {
+        "title": "Moody Centre",
+        "ring": (
+            (76.0, 244.0),
+            (94.0, 244.0),
+            (94.0, 258.0),
+            (76.0, 252.0),
+        ),
+    },
+    "newport_village": {
+        "title": "Newport Village",
+        "ring": (
+            (92.0, 248.0),
+            (115.0, 220.0),
+            (115.0, 272.0),
+            (92.0, 272.0),
+        ),
+    },
+    "glenayre": {
+        "title": "Glenayre",
+        "ring": (
+            (52.0, 228.0),
+            (78.0, 228.0),
+            (78.0, 250.0),
+            (52.0, 245.0),
+        ),
+    },
+    "pleasantside": {
+        "title": "Pleasantside",
+        "ring": (
+            (35.0, 274.0),
+            (90.0, 274.0),
+            (90.0, 295.0),
+            (30.0, 295.0),
+        ),
+    },
+    "heritage_mountain": {
+        "title": "Heritage Mountain",
+        "ring": (
+            (96.0, 268.0),
+            (115.0, 268.0),
+            (115.0, 298.0),
+            (96.0, 298.0),
+        ),
+    },
+    "port_moody": {
+        "title": "Port Moody",
+        "ring": (
+            (52.0, 268.0),
+            (52.0, 245.0),
+            (95.0, 240.0),
+            (115.0, 220.0),
+            (112.0, 215.0),
+            (115.0, 272.0),
+            (112.0, 295.0),
+            (76.0, 315.0),
+            (30.0, 292.0),
+            (48.0, 286.0),
+            (75.0, 280.0),
+            (95.0, 268.0),
+        ),
+        "hotkey_only": True,
+    },
+    # --- Port Coquitlam (Coquitlam River → Pitt River Bridge) ---
+    "poco_downtown": {
+        "title": "Downtown Port Coquitlam",
+        "ring": (
+            (132.0, 115.0),
+            (155.0, 115.0),
+            (155.0, 145.0),
+            (132.0, 145.0),
+        ),
+    },
+    "lincoln_park": {
+        "title": "Lincoln Park",
+        "ring": (
+            (132.0, 155.0),
+            (168.0, 155.0),
+            (168.0, 205.0),
+            (132.0, 205.0),
+        ),
+    },
+    "riverwood": {
+        "title": "Riverwood",
+        "ring": (
+            (168.0, 135.0),
+            (188.0, 135.0),
+            (192.0, 205.0),
+            (168.0, 185.0),
+        ),
+    },
+    "mary_hill": {
+        "title": "Mary Hill",
+        "ring": (
+            (135.0, 75.0),
+            (160.0, 75.0),
+            (160.0, 115.0),
+            (135.0, 115.0),
+        ),
+    },
+    "citadel_heights": {
+        "title": "Citadel Heights",
+        "ring": (
+            (145.0, 75.0),
+            (168.0, 75.0),
+            (168.0, 100.0),
+            (145.0, 100.0),
+        ),
+    },
+    "port_coquitlam": {
+        "title": "Port Coquitlam",
+        "ring": (
+            (132.0, 215.0),
+            (145.0, 215.0),
+            (155.0, 205.0),
+            (192.0, 205.0),
+            (188.0, 135.0),
+            (175.0, 68.0),
+            (172.0, 70.0),
+            (135.0, 82.0),
+            (132.0, 115.0),
         ),
         "hotkey_only": True,
     },
@@ -1256,6 +1587,13 @@ COMMUNITY_ANCHORS: dict[str, tuple[float, float]] = {
     "mount_pleasant": (-389.3, 216.5),  # Main & Broadway
     "east_vancouver": (-304.9, 174.3),  # Nanaimo & King Edward
     "hastings_sunrise": (-262.7, 269.0),  # Renfrew & Hastings
+    "lower_lonsdale": (-431.5, 345.0),  # Lonsdale & Esplanade
+    "upper_lonsdale": (-431.5, 410.0),  # Lonsdale & 29th
+    "lynn_valley": (-316.5, 435.0),  # Lynn Valley Town Centre
+    "capilano_highlands": (-585.0, 425.0),  # Capilano & Edgemont
+    "edgemont_village": (-585.0, 425.0),  # Capilano & Edgemont
+    "seymour": (-105.5, 355.0),  # Mt Seymour Pkwy & Mt Seymour Rd
+    "deep_cove": (42.2, 355.0),  # Gallant / Panorama
     "metrotown": (-135.8, 118.0),  # Willingdon & Kingsway
     "brentwood": (-135.8, 216.5),  # Willingdon & Lougheed
     "edmonds": (-72.5, 105.0),  # Sperling & Edmonds
@@ -1272,6 +1610,16 @@ COMMUNITY_ANCHORS: dict[str, tuple[float, float]] = {
     "coq_centre": (120.0, 195.0),  # Pinetree & Lougheed
     "westwood_plateau": (110.0, 260.0),  # Plateau Blvd
     "burke_mountain": (155.0, 245.0),  # Coast Meridian & David
+    "moody_centre": (85.0, 252.0),  # St Johns & Rocky Point
+    "newport_village": (100.0, 258.0),  # Newport Dr
+    "glenayre": (68.0, 238.0),  # Cecile / Glenayre
+    "pleasantside": (75.0, 280.0),  # Ioco Rd & Old Orchard
+    "heritage_mountain": (102.0, 282.0),  # Ungless / Ravine
+    "poco_downtown": (142.0, 145.0),  # Shaughnessy & Lougheed
+    "lincoln_park": (142.0, 185.0),  # Shaughnessy & Nicola
+    "riverwood": (168.0, 165.0),  # Ottawa & Prairie
+    "mary_hill": (145.0, 95.0),  # Citadel / Mary Hill ridge
+    "citadel_heights": (155.0, 85.0),  # Citadel Dr
     "langley_city": (316.5, -168.8),  # 200 St & Fraser Hwy
     "willowbrook": (316.5, -147.7),  # 200 St & 64 Ave
     "willoughby": (358.7, -105.5),  # 208 St & 80 Ave
