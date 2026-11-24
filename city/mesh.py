@@ -2062,6 +2062,42 @@ def tri_pyramid_instance(parent: NodePath, side: float, height: float) -> NodePa
     return template.copyTo(parent)
 
 
+def make_glow_disk(
+    radius: float,
+    color: tuple[float, float, float, float],
+    *,
+    segments: int = 14,
+) -> GeomNode:
+    """Horizontal soft radial glow (centre opaque → rim transparent) for additive pools."""
+    if segments < 6:
+        raise ValueError("segments must be at least 6")
+    r, g, b, a = color
+    fmt = GeomVertexFormat.getV3c4()
+    vdata = GeomVertexData("glow_disk", fmt, Geom.UHStatic)
+    vertex = GeomVertexWriter(vdata, "vertex")
+    color_w = GeomVertexWriter(vdata, "color")
+    tris = GeomTriangles(Geom.UHStatic)
+
+    center = vertex.getWriteRow()
+    vertex.addData3(0.0, 0.0, 0.0)
+    color_w.addData4(r, g, b, a)
+    rim: list[int] = []
+    for i in range(segments):
+        ang = (2.0 * math.pi) * (i / segments)
+        rim.append(vertex.getWriteRow())
+        vertex.addData3(radius * math.cos(ang), radius * math.sin(ang), 0.0)
+        color_w.addData4(r, g, b, 0.0)
+    for i in range(segments):
+        j = (i + 1) % segments
+        tris.addVertices(center, rim[i], rim[j])
+    tris.closePrimitive()
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode("glow_disk")
+    node.addGeom(geom)
+    return node
+
+
 def face_normal(
     a: tuple[float, float, float],
     b: tuple[float, float, float],

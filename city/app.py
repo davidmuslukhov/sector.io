@@ -45,6 +45,23 @@ from city.mesh import (
     make_sky_dome,
     z_cylinder_instance,
 )
+from city.chicago_housing import (
+    HOUSING_HIDE_DIST,
+    HOUSING_MAX_TILES,
+    HOUSING_VIEW_FACTOR,
+    HOUSING_VIEW_MIN,
+    SECTOR_SIZE,
+    build_chicago_housing,
+)
+from city.chicago_lights import (
+    LIGHTS_HIDE_DIST,
+    LIGHTS_MAX_POOL_TILES,
+    LIGHTS_MAX_TILES,
+    LIGHTS_VIEW_FACTOR,
+    LIGHTS_VIEW_MIN,
+    WARMUP_SECONDS,
+    build_chicago_lights,
+)
 from city.chicago_signals import build_chicago_signals
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
@@ -59,6 +76,11 @@ _MINOR_TILE = 84.4
 _MINOR_HIDE_DIST = 220.0
 _COLLECTOR_HIDE_DIST = 450.0
 _SIGNAL_HIDE_DIST = 320.0
+_HOUSING_HIDE_DIST = HOUSING_HIDE_DIST
+_HOUSING_MAX_TILES = HOUSING_MAX_TILES
+_LIGHTS_HIDE_DIST = LIGHTS_HIDE_DIST
+_LIGHTS_MAX_TILES = LIGHTS_MAX_TILES
+_LIGHTS_MAX_POOL_TILES = LIGHTS_MAX_POOL_TILES
 _LABEL_HIDE_DIST = 500.0
 _LABEL_MAX_VISIBLE = 8
 _DAY_CYCLE_HZ = 1.0
@@ -112,12 +134,14 @@ class CityApp(ShowBase):
         arterials = list(hwy["arterials"])
 
         self._build_neighborhoods(plan)
-        # Buildings, water, and bridges stripped — roads + green baseplate.
         self._build_city_centre(plan, road_z, arterials)
         self._build_districts(road_z, road_thickness)
         self._build_highways(plan, hwy, arterials, road_z, road_thickness, road_top)
         self._build_streets(plan, hwy, road_z, road_thickness, road_top)
         self._build_signals(arterials, road_z, road_thickness)
+        # Row houses / Two-Flats / bungalows on the minor-grid residential fabric.
+        self._build_chicago_housing(plan, arterials)
+        self._build_chicago_lights(arterials)
         self._build_ground(hwy, road_z)
         self._build_lighting()
         self._build_traffic(plan, arterials, road_top)
@@ -571,6 +595,29 @@ class CityApp(ShowBase):
             pad.setMaterial(road_mat, 1)
         self.streets.flattenStrong()
 
+    def _build_chicago_housing(self, plan, arterials: list) -> None:
+        """Inner-city row houses / Two-Flats / bungalows on the minor-grid lots."""
+        body_tiles, _detail_tiles = build_chicago_housing(self.city, plan, arterials)
+        self._housing_tiles = body_tiles
+        self._housing_tiles_hidden = True
+
+    def _build_chicago_lights(self, arterials: list) -> None:
+        """Street-light poles + emissive bulbs + additive ground-glow pools."""
+        built = build_chicago_lights(self.city, arterials)
+        self._lights_root = built["root"]
+        self._lights_poles_root = built["poles_root"]
+        self._lights_bulbs_root = built["bulbs_root"]
+        self._lights_pools_root = built["pools_root"]
+        self._lights_flicker_root = built["flicker_root"]
+        self._lights_pole_tiles = built["pole_tiles"]
+        self._lights_bulb_tiles = built["bulb_tiles"]
+        self._lights_pool_tiles = built["pool_tiles"]
+        self._lights_flickers = built["flickers"]
+        self._street_lights_on = False
+        self._street_lights_manual = False
+        self._lights_warmup_t = None
+        self._lights_tiles_hidden = True
+
     def _build_signals(
         self, arterials: list, road_z: float, road_thickness: float
     ) -> None:
@@ -697,8 +744,10 @@ class CityApp(ShowBase):
                 self._fleet_root,
                 self._highway_labels,
                 self.signals_root,
+                getattr(self, "_lights_root", None),
             )
         )
+        self._dim_targets = [n for n in self._dim_targets if n is not None]
         self._default_look_at = list(self.look_at)
         self._default_distance = self.distance
         self._default_heading = self.heading
@@ -798,7 +847,8 @@ class CityApp(ShowBase):
         self.accept("space", self._cycle_car_focus)
         self.accept("backspace", self._clear_district_selection)
         self.accept("c", self._select_chicago)
-        self.accept("l", self._select_the_loop)
+        self.accept("o", self._select_the_loop)  # Loop (L is street lights)
+        self.accept("l", self.toggle_street_lights)
         self.accept("n", self._select_river_north)
         self.accept("w", self._select_west_town)
         self.accept("h", self._select_hyde_park)
@@ -814,6 +864,7 @@ class CityApp(ShowBase):
         self.taskMgr.add(self._follow_focus_task, "follow-car-focus")
         self.taskMgr.add(self._car_hud_task, "car-hud")
         self.taskMgr.add(self._day_cycle_task, "day-night-cycle")
+        self.taskMgr.add(self._street_lights_task, "street-lights")
         if not self.screenshot_path:
             self.fps_text = OnscreenText(
                 text="",
@@ -857,15 +908,87 @@ class CityApp(ShowBase):
             self._apply_day_cycle(self._day_cycle.sample())
         return task.cont
 
+    def toggle_street_lights(self) -> None:
+        """L key — force street lights on/off (overrides auto day/night until next edge)."""
+        self._street_lights_manual = True
+        self._set_street_lights(not self._street_lights_on, warm_up=True)
+
+    def _set_street_lights(self, on: bool, *, warm_up: bool = False) -> None:
+        self._street_lights_on = on
+        bulbs = getattr(self, "_lights_bulbs_root", None)
+        pools = getattr(self, "_lights_pools_root", None)
+        flicker = getattr(self, "_lights_flicker_root", None)
+        if bulbs is None or pools is None:
+            return
+        if on:
+            self._lights_warmup_t = 0.0 if warm_up else None
+            bulbs.show()
+            pools.show()
+            if flicker is not None:
+                flicker.show()
+            bulbs.setColorScale(1, 1, 1, 0.4 if warm_up else 1.0)
+            pools.setColorScale(1, 1, 1, 0.2 if warm_up else 1.0)
+            # Night wash when lights are on (even if day cycle is bright).
+            if not getattr(self, "_vehicle_lights_on", False):
+                self._ambient_light.setColor((0.14, 0.17, 0.26, 1))
+                self.setBackgroundColor(0.05, 0.07, 0.12, 1)
+        else:
+            self._lights_warmup_t = None
+            bulbs.hide()
+            pools.hide()
+            if flicker is not None:
+                flicker.hide()
+            bulbs.setColorScale(1, 1, 1, 1)
+            pools.setColorScale(1, 1, 1, 1)
+
+    def _street_lights_task(self, task):
+        """Warm-up fade only — LOD owns which sectors are visible."""
+        warm = getattr(self, "_lights_warmup_t", None)
+        if warm is None or not self._street_lights_on:
+            return task.cont
+        self._lights_warmup_t = warm + self.clock.getDt()
+        u = min(1.0, self._lights_warmup_t / WARMUP_SECONDS)
+        bulbs = getattr(self, "_lights_bulbs_root", None)
+        pools = getattr(self, "_lights_pools_root", None)
+        if bulbs is not None:
+            bulbs.setColorScale(1, 1, 1, 0.4 + 0.6 * u)
+        if pools is not None:
+            pools.setColorScale(1, 1, 1, 0.2 + 0.8 * u)
+        if u >= 1.0:
+            self._lights_warmup_t = None
+            if bulbs is not None:
+                bulbs.setColorScale(1, 1, 1, 1)
+            if pools is not None:
+                pools.setColorScale(1, 1, 1, 1)
+        return task.cont
+
     def _apply_day_cycle(self, sample, *, force_sky: bool = False) -> None:
         """Push cycle sample into lights, clear colour, sky dome, and clock."""
+        prev_vehicle = getattr(self, "_vehicle_lights_on", False)
         self._vehicle_lights_on = sample.vehicle_lights_on
+        # Auto street lights follow dusk/dawn; natural edges clear an L-key lock.
+        if hasattr(self, "_lights_bulbs_root"):
+            if prev_vehicle != self._vehicle_lights_on:
+                self._street_lights_manual = False
+                self._set_street_lights(
+                    self._vehicle_lights_on, warm_up=self._vehicle_lights_on
+                )
+            elif not getattr(self, "_street_lights_synced", False):
+                self._street_lights_synced = True
+                if not self._street_lights_manual:
+                    self._set_street_lights(self._vehicle_lights_on, warm_up=False)
+
         ar, ag, ab = sample.ambient
+        # Keep a twilight wash while street lights are forced on in daytime.
+        if getattr(self, "_street_lights_on", False) and not sample.vehicle_lights_on:
+            ar, ag, ab = 0.14, 0.17, 0.26
         self._ambient_light.setColor((ar, ag, ab, 1))
         sr, sg, sb = sample.sun_color
         self._sun_light.setColor((sr, sg, sb, 1))
         self._sun_np.setHpr(*sample.sun_hpr)
         br, bg, bb = sample.background
+        if getattr(self, "_street_lights_on", False) and not sample.vehicle_lights_on:
+            br, bg, bb = 0.05, 0.07, 0.12
         self.setBackgroundColor(br, bg, bb, 1)
 
         # Coarse key — avoid rebuilding the sky dome every frame as the sun creeps.
@@ -1317,6 +1440,90 @@ class CityApp(ShowBase):
             hide_dist=_SIGNAL_HIDE_DIST,
             pad=_MINOR_TILE * 0.5,
             hidden_attr="_signal_tiles_hidden",
+        )
+        # ---- Residential mile-sectors (flattened GeomNodes; cap count) ----
+        housing_tiles = getattr(self, "_housing_tiles", None) or []
+        if dist >= _HOUSING_HIDE_DIST and not self._car_mode:
+            if not getattr(self, "_housing_tiles_hidden", False):
+                for _cx, _cy, node in housing_tiles:
+                    if not node.isHidden():
+                        node.hide()
+                self._housing_tiles_hidden = True
+        else:
+            self._housing_tiles_hidden = False
+            radius = max(HOUSING_VIEW_MIN, dist * HOUSING_VIEW_FACTOR) + SECTOR_SIZE * 0.35
+            r2 = radius * radius
+            scored: list[tuple[float, object]] = []
+            for cx, cy, node in housing_tiles:
+                dx = cx - look_x
+                dy = cy - look_y
+                d2 = dx * dx + dy * dy
+                if d2 <= r2:
+                    scored.append((d2, node))
+                elif not node.isHidden():
+                    node.hide()
+            scored.sort(key=lambda item: item[0])
+            for i, (_d2, node) in enumerate(scored):
+                if i < _HOUSING_MAX_TILES:
+                    if node.isHidden():
+                        node.show()
+                elif not node.isHidden():
+                    node.hide()
+        # ---- Street-light mile-sectors (poles always; bulbs/pools when lit) ----
+        def _lod_light_tiles(
+            tiles,
+            *,
+            hidden_attr: str,
+            max_tiles: int,
+            force_hide: bool = False,
+        ) -> None:
+            if not tiles:
+                return
+            if force_hide or (dist >= _LIGHTS_HIDE_DIST and not self._car_mode):
+                if not getattr(self, hidden_attr, False):
+                    for _cx, _cy, node in tiles:
+                        if not node.isHidden():
+                            node.hide()
+                    setattr(self, hidden_attr, True)
+                return
+            setattr(self, hidden_attr, False)
+            radius = max(LIGHTS_VIEW_MIN, dist * LIGHTS_VIEW_FACTOR) + SECTOR_SIZE * 0.25
+            r2 = radius * radius
+            scored: list[tuple[float, object]] = []
+            for cx, cy, node in tiles:
+                dx = cx - look_x
+                dy = cy - look_y
+                d2 = dx * dx + dy * dy
+                if d2 <= r2:
+                    scored.append((d2, node))
+                elif not node.isHidden():
+                    node.hide()
+            scored.sort(key=lambda item: item[0])
+            for i, (_d2, node) in enumerate(scored):
+                if i < max_tiles:
+                    if node.isHidden():
+                        node.show()
+                elif not node.isHidden():
+                    node.hide()
+
+        lit = getattr(self, "_street_lights_on", False)
+        _lod_light_tiles(
+            getattr(self, "_lights_pole_tiles", None) or [],
+            hidden_attr="_lights_pole_tiles_hidden",
+            max_tiles=_LIGHTS_MAX_TILES,
+        )
+        # Bulbs + additive pools only while lit — biggest night-time GPU cost.
+        _lod_light_tiles(
+            getattr(self, "_lights_bulb_tiles", None) or [],
+            hidden_attr="_lights_bulb_tiles_hidden",
+            max_tiles=_LIGHTS_MAX_TILES,
+            force_hide=not lit,
+        )
+        _lod_light_tiles(
+            getattr(self, "_lights_pool_tiles", None) or [],
+            hidden_attr="_lights_pool_tiles_hidden",
+            max_tiles=_LIGHTS_MAX_POOL_TILES,
+            force_hide=not lit,
         )
         # ---- Highway labels (nearest N only; skip when far / car mode) ----
         labels = getattr(self, "_highway_label_nodes", None) or []

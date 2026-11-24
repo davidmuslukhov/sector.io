@@ -23,6 +23,7 @@ _SQUARE_MATERIALS: dict[float, Material] = {}
 _BROWN_MATERIALS: dict[float, Material] = {}
 _SIGNAL_MATERIALS: dict[str, Material] = {}
 _CAR_MATERIALS: dict[str | tuple[str, tuple[float, float, float]], Material] = {}
+_RGBA_MATERIALS: dict[tuple[float, float, float, float], Material] = {}
 
 
 # Cool glass-blue towers. ``1`` is the base tint; the band keeps neighbours
@@ -310,6 +311,31 @@ def brown_material(lightness: float = 1.0) -> Material:
     material.setSpecular((*specular, 1))
     material.setShininess(5)
     _BROWN_MATERIALS[lightness] = material
+    return material
+
+
+def rgba_material(
+    rgba: tuple[float, float, float, float],
+    *,
+    shininess: float = 6.0,
+) -> Material:
+    """Cached matte facade / roof colour from an RGBA tuple (A ignored for lighting)."""
+    key = (
+        round(rgba[0], 4),
+        round(rgba[1], 4),
+        round(rgba[2], 4),
+        round(rgba[3], 4),
+    )
+    cached = _RGBA_MATERIALS.get(key)
+    if cached is not None:
+        return cached
+    r, g, b, _a = key
+    material = Material()
+    material.setAmbient((r * 0.45, g * 0.45, b * 0.45, 1))
+    material.setDiffuse((r, g, b, 1))
+    material.setSpecular((r * 0.12, g * 0.12, b * 0.12, 1))
+    material.setShininess(shininess)
+    _RGBA_MATERIALS[key] = material
     return material
 
 
