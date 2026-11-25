@@ -13,6 +13,8 @@ from pathlib import Path
 
 import yaml
 
+from city.geo import MIDWAY_VOID, OHARE_VOID
+
 OUT = Path(__file__).resolve().parent / "data" / "city.yaml"
 
 UNITS_PER_MILE = 42.2
@@ -40,9 +42,10 @@ GRID_Y0, GRID_Y1 = -670.0, 550.0
 LOOP_X0, LOOP_X1 = -42.2, 16.0
 LOOP_Y0, LOOP_Y1 = -63.3, 42.2
 
-# Airport voids (no internal residential grid).
-OHARE = (-548.6, 275.0, -464.2, 358.7)  # xmin, ymin, xmax, ymax
-MIDWAY = (-253.2, -332.3, -232.1, -290.1)
+# Airport voids (no internal residential / minor grid).
+# Midway: Central→Cicero × 63rd→55th. O'Hare: York→east of Mannheim × south→Touhy.
+OHARE = OHARE_VOID  # xmin, ymin, xmax, ymax
+MIDWAY = MIDWAY_VOID
 
 # Hierarchy: minor / collector / arterial / expressway (LOD stack).
 MINOR_WIDTH, MINOR_Z = 0.22, 0.00
@@ -345,10 +348,11 @@ def _build_expressways(highways: dict) -> None:
         z_offset=z,
         layer="expressway",
     )
+    # I-190 spur: Kennedy/Edens junction → I-294/River Rd → O'Hare horseshoe.
     _add_route(
         highways,
         "kennedy_ohare",
-        [(-265.0, 275.0), (-475.0, 315.0)],
+        [(-265.0, 275.0), (-464.2, 329.0), (-516.0, 329.0)],
         lanes=6,
         width=w,
         z_offset=z,
@@ -708,6 +712,20 @@ def _build_south_suburbs(
     )
 
 
+def _build_airport_access(highways: dict) -> None:
+    """Dedicated turn-ins from framing arterials into the airfields."""
+    # Midway — Cicero Ave & 59th St into the terminal apron.
+    _add_route(
+        highways,
+        "midway_entrance",
+        [(-253.2, -311.2), (-262.0, -311.2), (-262.0, -310.0)],
+        lanes=2,
+        width=ARTERIAL_WIDTH,
+        z_offset=ARTERIAL_Z,
+        layer="arterial",
+    )
+
+
 def _build_collectors(
     highways: dict, reserved_x: set[float], reserved_y: set[float]
 ) -> None:
@@ -961,6 +979,7 @@ def build() -> dict:
     _build_ohare_corridor(highways, reserved_x, reserved_y)
     _build_west_suburbs(highways, reserved_x, reserved_y)
     _build_south_suburbs(highways, reserved_x, reserved_y)
+    _build_airport_access(highways)
     _build_collectors(highways, reserved_x, reserved_y)
     _build_minor_grid(highways, reserved_x, reserved_y)
 

@@ -7,6 +7,12 @@ from collections import defaultdict
 
 from panda3d.core import NodePath
 
+from city.chicago_housing import (
+    HOUSING_BUILD_X0,
+    HOUSING_BUILD_X1,
+    HOUSING_BUILD_Y0,
+    HOUSING_BUILD_Y1,
+)
 from city.materials import (
     SIGNAL_WAVE_GROUPS,
     mark_material,
@@ -20,6 +26,39 @@ _TILE = 84.4
 
 LOOP_X0, LOOP_X1 = -42.2, 16.0
 LOOP_Y0, LOOP_Y1 = -63.3, 42.2
+
+# Match housing startup envelope so junction detect doesn't walk the metro.
+_SIG_PAD = 40.0
+_SIG_X0 = HOUSING_BUILD_X0 - _SIG_PAD
+_SIG_X1 = HOUSING_BUILD_X1 + _SIG_PAD
+_SIG_Y0 = HOUSING_BUILD_Y0 - _SIG_PAD
+_SIG_Y1 = HOUSING_BUILD_Y1 + _SIG_PAD
+
+
+def _route_hits_signal_box(arterial: dict) -> bool:
+    pts = list(arterial.get("points") or ())
+    if not pts:
+        return False
+    min_x = min_y = 1e18
+    max_x = max_y = -1e18
+    for p in pts:
+        x, y = float(p[0]), float(p[1])
+        if _SIG_X0 <= x <= _SIG_X1 and _SIG_Y0 <= y <= _SIG_Y1:
+            return True
+        if x < min_x:
+            min_x = x
+        if y < min_y:
+            min_y = y
+        if x > max_x:
+            max_x = x
+        if y > max_y:
+            max_y = y
+    return not (
+        max_x < _SIG_X0
+        or min_x > _SIG_X1
+        or max_y < _SIG_Y0
+        or min_y > _SIG_Y1
+    )
 
 # Geometry (2× road plate).
 _CORNER = 0.38
@@ -59,7 +98,9 @@ def _is_signal_route(arterial: dict) -> bool:
 
 def detect_signal_junctions(arterials: list[dict]) -> list[dict]:
     """Arterial×arterial, arterial×collector, and Loop crossings (no expressways)."""
-    signal_routes = [a for a in arterials if _is_signal_route(a)]
+    signal_routes = [
+        a for a in arterials if _is_signal_route(a) and _route_hits_signal_box(a)
+    ]
     raw = arterial_junctions(signal_routes, merge=1.25)
     out: list[dict] = []
     by_name = {str(a.get("name", "")): a for a in signal_routes}
@@ -85,11 +126,14 @@ def detect_signal_junctions(arterials: list[dict]) -> list[dict]:
             route = by_name.get(name)
             if route is not None:
                 z_offs.append(float(route.get("z_offset", 0.02)))
+        jx, jy = float(junc["x"]), float(junc["y"])
+        if not (_SIG_X0 <= jx <= _SIG_X1 and _SIG_Y0 <= jy <= _SIG_Y1):
+            continue
         junc = dict(junc)
         junc["widths"] = widths
         junc["max_width"] = max(widths) if widths else 0.55
         junc["z_offset"] = max(z_offs) if z_offs else 0.02
-        junc["wave"] = _wave_id(junc["x"], junc["y"])
+        junc["wave"] = _wave_id(jx, jy)
         # Primary arterial axis: prefer wider road; tie → north-south arms.
         junc["primary_ns"] = _primary_is_ns(junc)
         out.append(junc)

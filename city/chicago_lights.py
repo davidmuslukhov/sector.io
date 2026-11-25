@@ -16,6 +16,13 @@ from panda3d.core import (
     TransparencyAttrib,
 )
 
+from city.chicago_housing import (
+    HOUSING_BUILD_X0,
+    HOUSING_BUILD_X1,
+    HOUSING_BUILD_Y0,
+    HOUSING_BUILD_Y1,
+)
+from city.geo import AIRPORT_VOIDS
 from city.materials import rgba_material
 from city.mesh import (
     arterial_junctions,
@@ -23,6 +30,52 @@ from city.mesh import (
     make_glow_disk,
     z_cylinder_instance,
 )
+
+# Match housing startup envelope (+ pad) so lights don't walk the whole metro.
+_LIGHTS_PAD = 40.0
+_LIGHTS_X0 = HOUSING_BUILD_X0 - _LIGHTS_PAD
+_LIGHTS_X1 = HOUSING_BUILD_X1 + _LIGHTS_PAD
+_LIGHTS_Y0 = HOUSING_BUILD_Y0 - _LIGHTS_PAD
+_LIGHTS_Y1 = HOUSING_BUILD_Y1 + _LIGHTS_PAD
+
+
+def _in_airport_void(x: float, y: float) -> bool:
+    """Skip street-light samples that fall inside Midway / O'Hare airfields."""
+    for x0, y0, x1, y1 in AIRPORT_VOIDS:
+        if x0 < x < x1 and y0 < y < y1:
+            return True
+    return False
+
+
+def _in_lights_box(x: float, y: float) -> bool:
+    return _LIGHTS_X0 <= x <= _LIGHTS_X1 and _LIGHTS_Y0 <= y <= _LIGHTS_Y1
+
+
+def _polyline_hits_lights_box(pts: list) -> bool:
+    """True if any vertex or the bbox overlaps the startup lights envelope."""
+    if not pts:
+        return False
+    min_x = min_y = 1e18
+    max_x = max_y = -1e18
+    for p in pts:
+        x, y = float(p[0]), float(p[1])
+        if _in_lights_box(x, y):
+            return True
+        if x < min_x:
+            min_x = x
+        if y < min_y:
+            min_y = y
+        if x > max_x:
+            max_x = x
+        if y > max_y:
+            max_y = y
+    # Segment may cross the box without a vertex inside.
+    return not (
+        max_x < _LIGHTS_X0
+        or min_x > _LIGHTS_X1
+        or max_y < _LIGHTS_Y0
+        or min_y > _LIGHTS_Y1
+    )
 
 UNITS_PER_MILE = 42.2
 # 2-mile tiles (same as minor roads) — fewer LOD nodes, bigger flatten batches.
@@ -209,7 +262,15 @@ class _JunctionIndex:
 
 
 def _junction_points(arterials: list[dict[str, Any]]) -> list[tuple[float, float]]:
-    raw = arterial_junctions(arterials, merge=1.25)
+    # Minors + far suburbs make arterial_junctions take ~60s; only index the
+    # routes we actually light inside the startup envelope.
+    subset = [
+        a
+        for a in arterials
+        if str(a.get("layer", "arterial")) in ("arterial", "collector", "expressway")
+        and _polyline_hits_lights_box(list(a.get("points") or ()))
+    ]
+    raw = arterial_junctions(subset, merge=1.25)
     return [(float(j["x"]), float(j["y"])) for j in raw]
 
 
@@ -246,6 +307,23 @@ def _iter_polyline_samples(
     return out
 
 
+def _instance_at(
+    template: NodePath,
+    parent: NodePath,
+    x: float,
+    y: float,
+    z: float,
+    heading: float = 0.0,
+) -> NodePath:
+    """Place a hardware instance of ``template`` under ``parent``."""
+    node = parent.attachNewNode("i")
+    node.setPos(x, y, z)
+    if heading:
+        node.setH(heading)
+    template.instanceTo(node)
+    return node
+
+
 def _place_fixture(
     *,
     poles: NodePath,
@@ -265,9 +343,7 @@ def _place_fixture(
     base_z: float,
 ) -> None:
     _ensure_templates()
-    pole = _TEMPLATES[style].copyTo(poles)
-    pole.setPos(x, y, base_z)
-    pole.setH(heading)
+    _instance_at(_TEMPLATES[style], poles, x, y, base_z, heading)
 
     color_key = "cool" if cool else "amber"
     # World offset: local +Y after heading → (-sin H, cos H) toward centreline.
@@ -278,16 +354,15 @@ def _place_fixture(
     tip_y = y + inward_y * arm_sign * arm_len
     tip_z = base_z + pole_h - 0.05
 
-    bulb = _BULB_TEMPLATES[color_key].copyTo(bulbs)
-    bulb.setPos(tip_x, tip_y, tip_z)
-    bulb.setH(heading)
+    bulb = _instance_at(_BULB_TEMPLATES[color_key], bulbs, tip_x, tip_y, tip_z, heading)
     if want_flicker:
         flickers.append(bulb)
 
     pool_key = f"{color_key}_{'major' if major_pool else 'minor'}"
-    pool = _POOL_TEMPLATES[pool_key].copyTo(pools)
     # Glow sits on the asphalt under the fixture, not at a fixed world Z.
-    pool.setPos(
+    _instance_at(
+        _POOL_TEMPLATES[pool_key],
+        pools,
         tip_x,
         tip_y,
         base_z + _POOL_LIFT,
@@ -348,6 +423,8 @@ def build_chicago_lights(
         pts = list(arterial.get("points") or ())
         if len(pts) < 2:
             continue
+        if not _polyline_hits_lights_box(pts):
+            continue
         width = float(arterial.get("width", 0.55))
         name = str(arterial.get("name", ""))
         z_off = float(arterial.get("z_offset", 0.0))
@@ -356,65 +433,42 @@ def build_chicago_lights(
         if layer == "expressway":
             samples = _iter_polyline_samples(pts, EXPRESSWAY_SPACING, phase=1.0)
             for i, (x, y, ux, uy) in enumerate(samples):
+                if not _in_lights_box(x, y):
+                    continue
+                if _in_airport_void(x, y):
+                    continue
                 if junctions.near(x, y, CORNER_EXCLUDE):
                     continue
                 # Align local ±Y with left normal (−uy, ux) so twin arms span both decks.
                 arm_heading = math.degrees(math.atan2(uy, ux))
                 sx, sy = _sector_key(x, y)
                 poles, bulbs, pools, flick = sector_bins(sx, sy)
-                pole = _TEMPLATES["mast"].copyTo(poles)
-                pole.setPos(x, y, base_z)
-                pole.setH(arm_heading)
+                _instance_at(_TEMPLATES["mast"], poles, x, y, base_z, arm_heading)
                 rad = math.radians(arm_heading)
                 ix, iy = -math.sin(rad), math.cos(rad)
                 for sign in (-1.0, 1.0):
                     tip_x = x + ix * sign * MAST_ARM
                     tip_y = y + iy * sign * MAST_ARM
-                    bulb = _BULB_TEMPLATES["cool"].copyTo(bulbs)
-                    bulb.setPos(tip_x, tip_y, base_z + MAST_H - 0.05)
-                    pool = _POOL_TEMPLATES["cool_major"].copyTo(pools)
-                    pool.setPos(tip_x, tip_y, base_z + _POOL_LIFT)
+                    _instance_at(
+                        _BULB_TEMPLATES["cool"],
+                        bulbs,
+                        tip_x,
+                        tip_y,
+                        base_z + MAST_H - 0.05,
+                    )
+                    _instance_at(
+                        _POOL_TEMPLATES["cool_major"],
+                        pools,
+                        tip_x,
+                        tip_y,
+                        base_z + _POOL_LIFT,
+                    )
                 total += 1
             continue
 
         if layer == "minor":
-            # Skip suburban fringe minors — keep residential lights near the grid core.
-            samples = _iter_polyline_samples(pts, MINOR_SPACING, phase=MINOR_SPACING * 0.5)
-            for i, (x, y, ux, uy) in enumerate(samples):
-                if abs(x) > 280.0 or abs(y) > 320.0:
-                    continue
-                if junctions.near(x, y, CORNER_EXCLUDE * 0.75):
-                    continue
-                # Alternate sides; skip every other sample for FPS.
-                if i % 2 == 1:
-                    continue
-                side = 1.0 if (i % 4 == 0) else -1.0
-                nx, ny = -uy, ux  # left normal
-                px = x + nx * side * MINOR_OFFSET
-                py = y + ny * side * MINOR_OFFSET
-                # Local +Y toward centreline.
-                heading = math.degrees(math.atan2(-side * uy, -side * ux))
-                sx, sy = _sector_key(px, py)
-                poles, bulbs, pools, flick = sector_bins(sx, sy)
-                cool = _cool_light(layer, px, py)
-                _place_fixture(
-                    poles=poles,
-                    bulbs=bulbs,
-                    pools=pools,
-                    flickers=flick,
-                    style="res",
-                    cool=cool,
-                    major_pool=False,
-                    x=px,
-                    y=py,
-                    heading=heading,
-                    arm_sign=1.0,
-                    arm_len=RES_ARM,
-                    pole_h=RES_H,
-                    want_flicker=False,
-                    base_z=base_z,
-                )
-                total += 1
+            # Startup skip: minor-grid poles dominate build time (~tens of
+            # seconds) while arterial / expressway fixtures carry the night look.
             continue
 
         if layer not in ("arterial", "collector"):
@@ -423,6 +477,10 @@ def build_chicago_lights(
         offset = COLLECTOR_OFFSET if abs(width - 0.35) < 0.05 else ARTERIAL_OFFSET
         samples = _iter_polyline_samples(pts, ARTERIAL_SPACING, phase=0.4)
         for i, (x, y, ux, uy) in enumerate(samples):
+            if not _in_lights_box(x, y):
+                continue
+            if _in_airport_void(x, y):
+                continue
             if junctions.near(x, y, CORNER_EXCLUDE):
                 continue
             # Zig-zag: even → left, odd → right.
@@ -430,6 +488,8 @@ def build_chicago_lights(
             nx, ny = -uy, ux
             px = x + nx * side * offset
             py = y + ny * side * offset
+            if _in_airport_void(px, py):
+                continue
             heading = math.degrees(math.atan2(-side * uy, -side * ux))
             sx, sy = _sector_key(px, py)
             poles, bulbs, pools, flick = sector_bins(sx, sy)
@@ -464,12 +524,13 @@ def build_chicago_lights(
             bulbs.removeNode()
             pools.removeNode()
             continue
-        poles.flattenStrong()
-        # Detach flicker bulbs before flattening the main bulb batch.
+        # Bake instances → few GeomNodes (same FPS issue as housing).
         for fnode in flick:
             if not fnode.isEmpty():
                 fnode.reparentTo(flicker_root)
                 all_flickers.append(fnode)
+        if poles.getNumChildren():
+            poles.flattenStrong()
         if bulbs.getNumChildren():
             bulbs.flattenStrong()
         if pools.getNumChildren():

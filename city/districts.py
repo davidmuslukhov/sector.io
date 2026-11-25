@@ -56,7 +56,8 @@ HIGHWAY_LABELS = {
     # Expressways
     "kennedy": "Kennedy Expy",
     "edens": "Edens Expy",
-    "kennedy_ohare": "I-90 Kennedy",
+    "kennedy_ohare": "I-190 O'Hare",
+    "midway_entrance": "Midway Entrance",
     "dan_ryan": "Dan Ryan Expy",
     "i57": "I-57",
     "bishop_ford": "Bishop Ford Fwy",
@@ -155,6 +156,7 @@ LOCATION_AREAS: tuple[tuple[str, str, str], ...] = (
     ("lawndale", "North Lawndale", "Chicago"),
     ("cicero_corridor", "Cicero Corridor", "Chicago"),
     ("ohare", "O'Hare", "Chicago"),
+    ("midway", "Midway", "Chicago"),
 )
 
 # Empty — no tower pads on the roads-only pass.
@@ -304,12 +306,23 @@ DISTRICT_DEFS: dict[str, dict] = {
     "ohare": {
         "title": "O'Hare",
         "ring": (
-            (-500.0, 280.0),
-            (-400.0, 280.0),
-            (-400.0, 360.0),
-            (-500.0, 360.0),
+            (-595.0, 265.0),
+            (-475.0, 265.0),
+            (-475.0, 379.8),
+            (-595.0, 379.8),
         ),
-        "anchor": (-475.0, 315.0),
+        "anchor": (-524.0, 329.0),
+        "hotkey_only": True,
+    },
+    "midway": {
+        "title": "Midway",
+        "ring": (
+            (-295.4, -332.3),
+            (-253.2, -332.3),
+            (-253.2, -290.1),
+            (-295.4, -290.1),
+        ),
+        "anchor": (-274.3, -311.2),
         "hotkey_only": True,
     },
     "chicago": {
@@ -340,5 +353,6 @@ COMMUNITY_ANCHORS: dict[str, tuple[float, float]] = {
     "hyde_park": (-10.0, -290.1),
     "englewood": (-84.4, -353.4),
     "austin_nbhd": (-337.6, 42.2),
-    "ohare": (-475.0, 315.0),
+    "ohare": (-524.0, 329.0),
+    "midway": (-274.3, -311.2),
 }

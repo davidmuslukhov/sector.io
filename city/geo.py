@@ -49,6 +49,13 @@ Z_LAYER = {
     "expressway": 0.03,
 }
 
+# Airport clearance voids (xmin, ymin, xmax, ymax) — no houses / minors inside.
+# Midway: Central Ave → Cicero Ave × 63rd St → 55th St (1×1 mile).
+MIDWAY_VOID = (-295.4, -332.3, -253.2, -290.1)
+# O'Hare: York/Elmhurst → east of Mannheim × Irving/Devon band → Touhy.
+OHARE_VOID = (-595.0, 265.0, -475.0, 379.8)
+AIRPORT_VOIDS = (MIDWAY_VOID, OHARE_VOID)
+
 
 def project(lat: float, lon: float) -> tuple[float, float]:
     """Equirectangular local projection → world (X east, Y north)."""
