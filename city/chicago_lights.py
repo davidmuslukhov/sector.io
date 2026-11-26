@@ -82,9 +82,9 @@ UNITS_PER_MILE = 42.2
 SECTOR_SIZE = UNITS_PER_MILE * 2.0
 BLOCK_100 = 5.275
 
-# Downtown Loop — cool LED white fixtures.
-LOOP_X0, LOOP_X1 = -35.0, 16.0
-LOOP_Y0, LOOP_Y1 = -42.2, 32.0
+# Downtown Loop — cool LED white fixtures (full downtown footprint).
+LOOP_X0, LOOP_X1 = -42.2, 16.0
+LOOP_Y0, LOOP_Y1 = -63.3, 42.2
 
 POLE_RADIUS = 0.02
 CORNER_EXCLUDE = 0.8

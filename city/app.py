@@ -65,6 +65,7 @@ from city.chicago_lights import (
 )
 from city.chicago_airports import build_chicago_airports
 from city.chicago_signals import build_chicago_signals
+from city.downtown_highrises import build_downtown_highrises
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
 # Spatial hash cell size for barrier / road lookups (car-mode hot path).
@@ -144,6 +145,8 @@ class CityApp(ShowBase):
         self._build_signals(arterials, road_z, road_thickness)
         # Row houses / Two-Flats / bungalows on the minor-grid residential fabric.
         self._build_chicago_housing(plan, arterials)
+        # Loop / River North / West Loop / South Loop landmarks + high-rise infill.
+        self._build_downtown_highrises()
         self._build_chicago_airports()
         self._build_chicago_lights(arterials)
         self._build_ground(hwy, road_z)
@@ -605,6 +608,14 @@ class CityApp(ShowBase):
         self._housing_tiles = body_tiles
         self._housing_tiles_hidden = True
 
+    def _build_downtown_highrises(self) -> None:
+        """Iconic Loop skyscrapers + procedural downtown high-rise infill."""
+        built = build_downtown_highrises(self.city)
+        self.downtown = built["root"]
+        self._downtown_landmarks = built["landmarks"]
+        self._downtown_highrises = built["highrises"]
+        self._downtown_night_glow = built["night_glow"]
+
     def _build_chicago_airports(self) -> None:
         """Midway + O'Hare turf, runways, taxiways, and terminal massing."""
         self.airports, self._airport_tiles = build_chicago_airports(self.city)
@@ -921,6 +932,12 @@ class CityApp(ShowBase):
         bulbs = getattr(self, "_lights_bulbs_root", None)
         pools = getattr(self, "_lights_pools_root", None)
         flicker = getattr(self, "_lights_flicker_root", None)
+        skyline = getattr(self, "_downtown_night_glow", None)
+        if skyline is not None:
+            if on:
+                skyline.show()
+            else:
+                skyline.hide()
         if bulbs is None or pools is None:
             return
         if on:
