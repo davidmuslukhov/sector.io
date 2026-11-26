@@ -36,9 +36,10 @@ RES_Y0, RES_Y1 = -760.0, 680.0
 CITY_X0, CITY_X1 = -379.8, 16.0
 CITY_Y0, CITY_Y1 = -501.1, 400.9
 
-# Downtown Loop core — commercial / office, no residential fill.
-LOOP_X0, LOOP_X1 = -35.0, 16.0
-LOOP_Y0, LOOP_Y1 = -42.2, 32.0
+# Downtown core — commercial / office / high-rise fill (no residential).
+# Halsted→300 E, Roosevelt→Chicago Ave; north pad clears Hancock at Y≈44.
+LOOP_X0, LOOP_X1 = -42.2, 16.0
+LOOP_Y0, LOOP_Y1 = -63.3, 48.0
 
 # Zone 1 — inner-city townhome / row-house core (Kedzie→300 E, 47th→Irving Park).
 ZONE1_X0, ZONE1_X1 = -168.8, 16.0
