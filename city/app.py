@@ -146,7 +146,7 @@ class CityApp(ShowBase):
         # Row houses / Two-Flats / bungalows on the minor-grid residential fabric.
         self._build_chicago_housing(plan, arterials)
         # Loop / River North / West Loop / South Loop landmarks + high-rise infill.
-        self._build_downtown_highrises()
+        self._build_downtown_highrises(arterials)
         self._build_chicago_airports()
         self._build_chicago_lights(arterials)
         self._build_ground(hwy, road_z)
@@ -608,9 +608,9 @@ class CityApp(ShowBase):
         self._housing_tiles = body_tiles
         self._housing_tiles_hidden = True
 
-    def _build_downtown_highrises(self) -> None:
+    def _build_downtown_highrises(self, arterials: list) -> None:
         """Iconic Loop skyscrapers + procedural downtown high-rise infill."""
-        built = build_downtown_highrises(self.city)
+        built = build_downtown_highrises(self.city, arterials)
         self.downtown = built["root"]
         self._downtown_landmarks = built["landmarks"]
         self._downtown_highrises = built["highrises"]

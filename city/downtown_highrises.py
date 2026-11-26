@@ -18,6 +18,7 @@ from panda3d.core import Material, NodePath
 
 from city.materials import rgba_material
 from city.mesh import box_instance, cone_instance, make_pyramid, z_cylinder_instance
+from city.plan import _dist2_point_segment
 
 # ---------------------------------------------------------------------------
 # Scale / downtown footprint (2× Chicago)
@@ -37,10 +38,11 @@ GRANT_Y0, GRANT_Y1 = -63.3, 10.5
 GRANT_RGBA = (0.16, 0.28, 0.15, 1.0)
 GRANT_Z = -0.05
 
-# Road clearances from centreline.
-ARTERIAL_SETBACK = 0.32  # State, Michigan, Madison, Chicago, Roosevelt
-LOOP_SETBACK = 0.22  # Wabash, Dearborn, Clark, LaSalle, Wells, Franklin, …
-ARTERIAL_HALF = 0.55 * 0.5  # unused visual; setback measured from centreline
+# Block-edge setbacks (Loop streets are tagged arterial, width ≈ 0.55).
+CLEAR_ARTERIAL = 0.42
+ARTERIAL_SETBACK = CLEAR_ARTERIAL  # State, Michigan, Madison, Chicago, Roosevelt
+LOOP_SETBACK = CLEAR_ARTERIAL  # Wabash, Dearborn, Clark, LaSalle, …
+_ROAD_CELL = 6.0  # spatial-hash cell for road keepout queries
 
 FOUNDATION_Z = 0.0
 
@@ -49,11 +51,11 @@ ARTERIAL_X = frozenset({-42.2, 0.0, 5.3})  # Halsted, State, Michigan
 ARTERIAL_Y = frozenset({-63.3, 0.0, 42.2})  # Roosevelt, Madison, Chicago Ave
 
 # Loop cross-street centreline coords (plus Kinzie for river corridor).
+# Note: X=-21.1 is the Dan Ryan spine south of Byrne — not a local street.
 NS_STREETS = (
     -42.2,  # Halsted
     -28.5,  # Clinton
     -26.4,  # Canal
-    -21.1,  # approx Wacker west / river
     -15.8,  # Franklin
     -10.6,  # Wells
     -7.4,  # LaSalle
@@ -64,6 +66,15 @@ NS_STREETS = (
     5.3,  # Michigan
     10.6,  # Columbus / Field
     16.0,  # east plate edge
+)
+
+# (x0, y0, x1, y1, clear) bins — filled by ``_load_roads`` before infill.
+_ROAD_BINS: dict[tuple[int, int], list[tuple[float, float, float, float, float]]] = {}
+
+# Fallback if arterials aren't passed (matches city.yaml dan_ryan).
+_DAN_RYAN_FALLBACK = (
+    (-32.0, -15.0, -21.1, -501.1),
+    (-21.1, -501.1, -21.1, -775.4),
 )
 EW_STREETS = (
     -63.3,  # Roosevelt
@@ -89,6 +100,12 @@ EW_STREETS = (
 # Dense Loop financial core (2–4 towers / block).
 LOOP_CORE_X0, LOOP_CORE_X1 = -26.4, 5.3
 LOOP_CORE_Y0, LOOP_CORE_Y1 = -26.4, 15.8
+
+# Subdivide oversized street cells into Chicago-scale lots so West Loop /
+# South Loop / River North pads don't sit empty around a lone tower.
+LOT_TARGET = BLOCK_100  # 5.275 ≈ one 100-number block
+LOT_GAP = 0.18  # alley / light-well between adjacent lot footprints
+MIN_LOT = 1.05  # smallest pad that still gets a building
 
 # Facade palettes
 WILLIS_RGBA = (0.08, 0.09, 0.11, 1.0)
@@ -274,8 +291,14 @@ def _crown_band(
 # Landmark towers
 # ---------------------------------------------------------------------------
 def _willis(landmarks: NodePath, night: NodePath) -> tuple[float, float, float, float]:
-    """Willis / Sears Tower — bundled-tube cluster at Wacker & Adams."""
-    cx, cy = -18.5, -10.5
+    """Willis / Sears Tower — block between Franklin/Wacker and Adams/Jackson.
+
+    Was incorrectly seated on the Adams centreline (Y≈-10.6); sit mid-block
+    so the 2.4×2.4 footprint clears both arterials.
+    """
+    # Franklin=-15.8, Wacker west≈-21.1 → mid X≈-18.45
+    # Adams=-10.6, Jackson=-15.8 → mid Y≈-13.2
+    cx, cy = -18.45, -13.2
     mat = rgba_material(WILLIS_RGBA, shininess=40.0)
     white = rgba_material(ANTENNA_WHITE, shininess=20.0)
     # 3×3 tube grid; tube pitch 0.8 → overall ~2.4
@@ -560,6 +583,124 @@ def _in_reserve(
     return False
 
 
+def _deck_half_width(width: float) -> float:
+    """Half the paved deck (+ε). Used for overlap tests — setbacks own the shoulder."""
+    return width * 0.5 + 0.03
+
+
+def _add_road_seg(x0: float, y0: float, x1: float, y1: float, clear: float) -> None:
+    pad = clear + 0.5
+    min_x, max_x = (x0, x1) if x0 <= x1 else (x1, x0)
+    min_y, max_y = (y0, y1) if y0 <= y1 else (y1, y0)
+    # Skip segments that cannot touch the downtown plate.
+    if max_x < DT_X0 - 4.0 or min_x > DT_X1 + 4.0:
+        return
+    if max_y < DT_Y0 - 4.0 or min_y > DT_Y1 + 4.0:
+        return
+    tx0 = int(math.floor((min_x - pad) / _ROAD_CELL))
+    tx1 = int(math.floor((max_x + pad) / _ROAD_CELL))
+    ty0 = int(math.floor((min_y - pad) / _ROAD_CELL))
+    ty1 = int(math.floor((max_y + pad) / _ROAD_CELL))
+    seg = (x0, y0, x1, y1, clear)
+    for tx in range(tx0, tx1 + 1):
+        for ty in range(ty0, ty1 + 1):
+            _ROAD_BINS.setdefault((tx, ty), []).append(seg)
+
+
+def _load_roads(arterials: list[dict[str, Any]] | None) -> None:
+    """Index every road deck that crosses downtown for footprint overlap tests.
+
+    Stores paved half-width (not shoulder clearance) — block setbacks already
+    keep facades off the curb; this only rejects lots that sit on asphalt.
+    """
+    global _ROAD_BINS
+    _ROAD_BINS = {}
+    if arterials:
+        for arterial in arterials:
+            width = float(arterial.get("width", 0.55))
+            half = _deck_half_width(width)
+            pts = list(arterial.get("points") or ())
+            if len(pts) < 2:
+                continue
+            for i in range(len(pts) - 1):
+                x0, y0 = float(pts[i][0]), float(pts[i][1])
+                x1, y1 = float(pts[i + 1][0]), float(pts[i + 1][1])
+                _add_road_seg(x0, y0, x1, y1, half)
+    if not _ROAD_BINS:
+        for x0, y0, x1, y1 in _DAN_RYAN_FALLBACK:
+            _add_road_seg(x0, y0, x1, y1, _deck_half_width(0.85))
+
+
+def _segment_intersects_rect(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    left: float,
+    bottom: float,
+    right: float,
+    top: float,
+) -> bool:
+    """Liang–Barsky: true if segment intersects the closed rectangle."""
+    dx = x1 - x0
+    dy = y1 - y0
+    u_min = 0.0
+    u_max = 1.0
+
+    def _clip(p: float, q: float) -> bool:
+        nonlocal u_min, u_max
+        if abs(p) < 1e-12:
+            return q >= 0.0
+        t = q / p
+        if p < 0.0:
+            if t > u_max:
+                return False
+            if t > u_min:
+                u_min = t
+        else:
+            if t < u_min:
+                return False
+            if t < u_max:
+                u_max = t
+        return True
+
+    return (
+        _clip(-dx, x0 - left)
+        and _clip(dx, right - x0)
+        and _clip(-dy, y0 - bottom)
+        and _clip(dy, top - y0)
+    )
+
+
+def _hits_road(cx: float, cy: float, max_w: float, max_d: float) -> bool:
+    """True when a lot footprint would cover any road deck."""
+    if not _ROAD_BINS:
+        return False
+    rx = max_w * 0.5
+    ry = max_d * 0.5
+    min_x, max_x = cx - rx, cx + rx
+    min_y, max_y = cy - ry, cy + ry
+    tx0 = int(math.floor(min_x / _ROAD_CELL))
+    tx1 = int(math.floor(max_x / _ROAD_CELL))
+    ty0 = int(math.floor(min_y / _ROAD_CELL))
+    ty1 = int(math.floor(max_y / _ROAD_CELL))
+    seen: set[int] = set()
+    for tx in range(tx0 - 1, tx1 + 2):
+        for ty in range(ty0 - 1, ty1 + 2):
+            for ax, ay, bx, by, clear in _ROAD_BINS.get((tx, ty), ()):
+                seg_id = hash((ax, ay, bx, by, clear))
+                if seg_id in seen:
+                    continue
+                seen.add(seg_id)
+                # Expand footprint by keepout → thin centreline vs fat lot.
+                if _segment_intersects_rect(
+                    ax, ay, bx, by,
+                    min_x - clear, min_y - clear, max_x + clear, max_y + clear,
+                ):
+                    return True
+    return False
+
+
 def _setback_for_street(coord: float, arterial_set: frozenset[float]) -> float:
     for a in arterial_set:
         if abs(coord - a) < 0.05:
@@ -571,13 +712,40 @@ def _usable_span(a: float, b: float, arterial_set: frozenset[float]) -> tuple[fl
     """Interior pad between two street centrelines after setbacks."""
     lo = a + _setback_for_street(a, arterial_set)
     hi = b - _setback_for_street(b, arterial_set)
-    if hi - lo < 1.2:
+    if hi - lo < MIN_LOT:
         return None
     return lo, hi
 
 
 def _is_loop_core(x: float, y: float) -> bool:
     return LOOP_CORE_X0 <= x <= LOOP_CORE_X1 and LOOP_CORE_Y0 <= y <= LOOP_CORE_Y1
+
+
+def _lot_axes(lo: float, hi: float) -> list[tuple[float, float]]:
+    """Split ``[lo, hi]`` into ~LOT_TARGET segments that cover the full span."""
+    span = hi - lo
+    if span < MIN_LOT:
+        return []
+    n = max(1, int(round(span / LOT_TARGET)))
+    # Prefer splitting oversized pads; keep skinny cells as a single lot.
+    if span < LOT_TARGET * 1.35:
+        n = 1
+    step = span / n
+    return [(lo + i * step, lo + (i + 1) * step) for i in range(n)]
+
+
+def _footprint(
+    rng: random.Random,
+    max_w: float,
+    max_d: float,
+    *,
+    fill: float = 0.92,
+) -> tuple[float, float]:
+    """Nearly fill the lot pad (empty lots came from undersized random footprints)."""
+    jitter = rng.uniform(fill - 0.06, fill)
+    w = max(0.85, max_w * jitter)
+    d = max(0.85, max_d * rng.uniform(fill - 0.06, fill))
+    return w, d
 
 
 def _pick_mix(rng: random.Random, x: float, y: float) -> str:
@@ -632,9 +800,8 @@ def _add_mies(
     max_w: float,
     max_d: float,
 ) -> None:
-    w = min(max_w, rng.uniform(1.6, 2.4))
-    d = min(max_d, rng.uniform(1.6, 2.4))
-    h = rng.uniform(3.5, 7.5)
+    w, d = _footprint(rng, max_w, max_d)
+    h = rng.uniform(3.2, 7.5) if _is_loop_core(cx, cy) else rng.uniform(2.6, 6.2)
     palette = (BRONZE_GLASS, CHARCOAL, COOL_GLASS, BLUE_GLASS)
     mat = rgba_material(rng.choice(palette), shininess=42.0)
     _box(day, cx, cy, w, d, h, mat)
@@ -646,7 +813,7 @@ def _add_mies(
     # Recessed mechanical penthouse.
     ph = 0.35
     _box(day, cx, cy, w * 0.55, d * 0.55, ph, rgba_material(CHARCOAL), z0=h)
-    _window_strips(night, cx, cy, w, d, 0.4, h - 0.3, warm=False, step=0.60)
+    _window_strips(night, cx, cy, w, d, 0.4, h - 0.3, warm=False, step=0.70)
     if h > 6.0:
         _beacon(night, cx, cy, h + ph + 0.15)
 
@@ -660,9 +827,8 @@ def _add_deco(
     max_w: float,
     max_d: float,
 ) -> None:
-    w = min(max_w, rng.uniform(1.5, 2.2))
-    d = min(max_d, rng.uniform(1.5, 2.2))
-    h = rng.uniform(3.2, 6.5)
+    w, d = _footprint(rng, max_w, max_d)
+    h = rng.uniform(2.8, 6.5)
     stone = rgba_material(rng.choice((LIMESTONE, TERRACOTTA)), shininess=14.0)
     base_h = min(2.5, h * 0.45)
     _box(day, cx, cy, w, d, base_h, stone)
@@ -681,7 +847,7 @@ def _add_deco(
         lantern = rgba_material(WHITE_CROWN)
         _box(day, cx, cy, w * 0.28, d * 0.28, 0.45, lantern, z0=h)
         _crown_band(night, cx, cy, w * 0.28, d * 0.28, h + 0.4)
-    _window_strips(night, cx, cy, w, d, 0.4, h - 0.3, warm=True, step=0.55)
+    _window_strips(night, cx, cy, w, d, 0.4, h - 0.3, warm=True, step=0.65)
 
 
 def _add_condo(
@@ -695,12 +861,11 @@ def _add_condo(
 ) -> None:
     podium = rgba_material(PODIUM_CONCRETE, shininess=10.0)
     glass = rgba_material(rng.choice((TEAL_GLASS, BLUE_GLASS, COOL_GLASS)), shininess=40.0)
-    pw = min(max_w, 2.4)
-    pd = min(max_d, 2.4)
+    pw, pd = _footprint(rng, max_w, max_d, fill=0.95)
     _box(day, cx, cy, pw, pd, 0.75, podium)
-    tw = min(max_w * 0.85, rng.uniform(1.3, 1.8))
-    td = min(max_d * 0.85, rng.uniform(1.3, 1.8))
-    th = rng.uniform(3.0, 6.2)
+    tw = pw * rng.uniform(0.62, 0.78)
+    td = pd * rng.uniform(0.62, 0.78)
+    th = rng.uniform(2.8, 6.2)
     _box(day, cx, cy, tw, td, th, glass, z0=0.75)
     # Projecting balcony slabs.
     bal = rgba_material((0.75, 0.78, 0.80, 1.0), shininess=35.0)
@@ -708,8 +873,8 @@ def _add_condo(
     while z < 0.75 + th - 0.2:
         _box_at_z(day, cx, cy + td * 0.52, tw * 0.92, 0.12, 0.05, z, bal)
         _box_at_z(day, cx, cy - td * 0.52, tw * 0.92, 0.12, 0.05, z, bal)
-        z += 0.55
-    _window_strips(night, cx, cy, tw, td, 0.9, 0.75 + th - 0.3, warm=True, step=0.55)
+        z += 0.60
+    _window_strips(night, cx, cy, tw, td, 0.9, 0.75 + th - 0.3, warm=True, step=0.65)
     if 0.75 + th > 6.0:
         _beacon(night, cx, cy, 0.75 + th + 0.2)
 
@@ -723,9 +888,8 @@ def _add_chicago_school(
     max_w: float,
     max_d: float,
 ) -> None:
-    w = min(max_w, rng.uniform(1.4, 2.2))
-    d = min(max_d, rng.uniform(1.8, 2.4))
-    h = rng.uniform(1.4, 2.6)
+    w, d = _footprint(rng, max_w, max_d, fill=0.94)
+    h = rng.uniform(1.4, 2.8)
     mat = rgba_material(rng.choice((BRICK_RED, TERRACOTTA, LIMESTONE)), shininess=12.0)
     _box(day, cx, cy, w, d, h, mat)
     # Chicago-window grid suggestion — wide horizontal bands.
@@ -736,8 +900,8 @@ def _add_chicago_school(
         _box_at_z(day, cx, cy - d * 0.51, w * 0.9, 0.04, 0.08, z, trim)
         z += 0.32
     # Heavy overhanging cornice.
-    _box(day, cx, cy, w * 1.08, d * 1.08, 0.14, trim, z0=h)
-    _window_strips(night, cx, cy, w, d, 0.3, h - 0.2, warm=True, step=0.40)
+    _box(day, cx, cy, w * 1.06, d * 1.06, 0.14, trim, z0=h)
+    _window_strips(night, cx, cy, w, d, 0.3, h - 0.2, warm=True, step=0.45)
 
 
 _ARCHETYPES = {
@@ -746,6 +910,104 @@ _ARCHETYPES = {
     "condo": _add_condo,
     "chicago": _add_chicago_school,
 }
+
+
+def _place_building(
+    day: NodePath,
+    night: NodePath,
+    cx: float,
+    cy: float,
+    max_w: float,
+    max_d: float,
+    reserves: list[tuple[float, float, float, float]],
+    rng: random.Random,
+) -> bool:
+    if max_w < MIN_LOT or max_d < MIN_LOT:
+        return False
+    if _in_grant(cx, cy) or _in_reserve(cx, cy, reserves, pad=0.25):
+        return False
+    if _hits_road(cx, cy, max_w, max_d):
+        return False
+    kind = _pick_mix(rng, cx, cy)
+    _ARCHETYPES[kind](day, night, cx, cy, rng, max_w, max_d)
+    return True
+
+
+def _place_in_lot(
+    day: NodePath,
+    night: NodePath,
+    lx0: float,
+    lx1: float,
+    ly0: float,
+    ly1: float,
+    reserves: list[tuple[float, float, float, float]],
+) -> None:
+    """Fill one lot pad — Loop core gets 2–4 towers; elsewhere 1–2."""
+    cx = (lx0 + lx1) * 0.5
+    cy = (ly0 + ly1) * 0.5
+    if _in_grant(cx, cy):
+        return
+    if not (DT_X0 <= cx <= DT_X1 and DT_Y0 <= cy <= DT_Y1):
+        return
+
+    # Inset for alley / light-well between neighbouring lots.
+    pad_x0 = lx0 + LOT_GAP * 0.5
+    pad_x1 = lx1 - LOT_GAP * 0.5
+    pad_y0 = ly0 + LOT_GAP * 0.5
+    pad_y1 = ly1 - LOT_GAP * 0.5
+    pad_w = pad_x1 - pad_x0
+    pad_d = pad_y1 - pad_y0
+    if pad_w < MIN_LOT or pad_d < MIN_LOT:
+        return
+
+    rng = random.Random(hash((round(cx, 3), round(cy, 3))) & 0xFFFFFFFF)
+    core = _is_loop_core(cx, cy)
+
+    # Enough room for a 2×2 pack?
+    can_quad = pad_w >= 2.4 and pad_d >= 2.4
+    can_pair = pad_w >= 2.2 or pad_d >= 2.2
+    if core and can_quad:
+        count = rng.randint(3, 4)
+    elif core and can_pair:
+        count = rng.randint(2, 3)
+    elif can_quad and rng.random() < 0.55:
+        count = 2
+    else:
+        count = 1
+
+    if count == 1:
+        _place_building(day, night, cx, cy, pad_w, pad_d, reserves, rng)
+        return
+
+    qx = (pad_x0 + pad_x1) * 0.5
+    qy = (pad_y0 + pad_y1) * 0.5
+    # Prefer splitting the longer axis when only placing a pair.
+    if count == 2 and pad_w >= pad_d:
+        slots = (
+            ((pad_x0 + qx) * 0.5, cy, pad_w * 0.48, pad_d),
+            ((pad_x1 + qx) * 0.5, cy, pad_w * 0.48, pad_d),
+        )
+    elif count == 2:
+        slots = (
+            (cx, (pad_y0 + qy) * 0.5, pad_w, pad_d * 0.48),
+            (cx, (pad_y1 + qy) * 0.5, pad_w, pad_d * 0.48),
+        )
+    else:
+        hw = pad_w * 0.48
+        hd = pad_d * 0.48
+        slots = (
+            ((pad_x0 + qx) * 0.5, (pad_y0 + qy) * 0.5, hw, hd),
+            ((pad_x1 + qx) * 0.5, (pad_y0 + qy) * 0.5, hw, hd),
+            ((pad_x0 + qx) * 0.5, (pad_y1 + qy) * 0.5, hw, hd),
+            ((pad_x1 + qx) * 0.5, (pad_y1 + qy) * 0.5, hw, hd),
+        )
+        if count == 3:
+            picks = list(slots)
+            rng.shuffle(picks)
+            slots = tuple(picks[:3])
+
+    for sx, sy, mw, md in slots:
+        _place_building(day, night, sx, sy, mw, md, reserves, rng)
 
 
 def _place_in_block(
@@ -757,10 +1019,10 @@ def _place_in_block(
     y1: float,
     reserves: list[tuple[float, float, float, float]],
 ) -> None:
-    """Pack 1–4 towers inside a street-bounded block pad."""
+    """Subdivide a street cell into lots and fill every lot."""
     mid_x = (x0 + x1) * 0.5
     mid_y = (y0 + y1) * 0.5
-    if _in_grant(mid_x, mid_y):
+    if _in_grant(mid_x, mid_y) and _in_grant(x0 + 0.1, y0 + 0.1) and _in_grant(x1 - 0.1, y1 - 0.1):
         return
     if mid_x < DT_X0 or mid_x > DT_X1 or mid_y < DT_Y0 or mid_y > DT_Y1:
         return
@@ -771,46 +1033,10 @@ def _place_in_block(
         return
     pad_x0, pad_x1 = x_span
     pad_y0, pad_y1 = y_span
-    pad_w = pad_x1 - pad_x0
-    pad_d = pad_y1 - pad_y0
-    if pad_w < 1.3 or pad_d < 1.3:
-        return
 
-    rng = random.Random(hash((round(mid_x, 2), round(mid_y, 2))) & 0xFFFFFFFF)
-    if _is_loop_core(mid_x, mid_y):
-        count = rng.randint(2, 4)
-    else:
-        count = rng.randint(1, 2)
-
-    # Candidate slots: 2×2 grid inside the pad.
-    slots: list[tuple[float, float, float, float]] = []
-    if count == 1:
-        slots.append((mid_x, mid_y, pad_w * 0.92, pad_d * 0.92))
-    else:
-        qx = (pad_x0 + pad_x1) * 0.5
-        qy = (pad_y0 + pad_y1) * 0.5
-        hw = pad_w * 0.46
-        hd = pad_d * 0.46
-        candidates = (
-            ((pad_x0 + qx) * 0.5, (pad_y0 + qy) * 0.5, hw, hd),
-            ((pad_x1 + qx) * 0.5, (pad_y0 + qy) * 0.5, hw, hd),
-            ((pad_x0 + qx) * 0.5, (pad_y1 + qy) * 0.5, hw, hd),
-            ((pad_x1 + qx) * 0.5, (pad_y1 + qy) * 0.5, hw, hd),
-        )
-        picks = list(candidates)
-        rng.shuffle(picks)
-        slots = picks[:count]
-
-    for cx, cy, max_w, max_d in slots:
-        if _in_grant(cx, cy) or _in_reserve(cx, cy, reserves):
-            continue
-        # Keep footprints inside the pad.
-        max_w = min(max_w, (cx - pad_x0) * 2, (pad_x1 - cx) * 2)
-        max_d = min(max_d, (cy - pad_y0) * 2, (pad_y1 - cy) * 2)
-        if max_w < 1.2 or max_d < 1.2:
-            continue
-        kind = _pick_mix(rng, cx, cy)
-        _ARCHETYPES[kind](day, night, cx, cy, rng, max_w, max_d)
+    for lx0, lx1 in _lot_axes(pad_x0, pad_x1):
+        for ly0, ly1 in _lot_axes(pad_y0, pad_y1):
+            _place_in_lot(day, night, lx0, lx1, ly0, ly1, reserves)
 
 
 def _build_infill(
@@ -828,10 +1054,15 @@ def _build_infill(
 # ---------------------------------------------------------------------------
 # Public entry
 # ---------------------------------------------------------------------------
-def build_downtown_highrises(parent: NodePath) -> dict[str, Any]:
+def build_downtown_highrises(
+    parent: NodePath,
+    arterials: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Build downtown landmarks + infill. Returns node handles for night toggle.
 
     Keys: ``root``, ``landmarks``, ``highrises``, ``night_glow``, ``grant_park``.
+    ``arterials`` supplies all road centrelines (minor → expressway) so
+    infill footprints stay clear of every deck that crosses downtown.
     """
     root = parent.attachNewNode("downtown_chicago")
     grant = root.attachNewNode("grant_park")
@@ -841,6 +1072,7 @@ def build_downtown_highrises(parent: NodePath) -> dict[str, Any]:
     night.setLightOff(1)
     night.hide()
 
+    _load_roads(arterials)
     _grant_park(grant)
     reserves = _build_landmarks(landmarks, night)
     _build_infill(highrises, night, reserves)
