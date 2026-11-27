@@ -78,6 +78,7 @@ from city.chicago_airports import build_chicago_airports
 from city.chicago_signals import build_chicago_signals
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
+
 # Spatial hash cell size for barrier / road lookups (car-mode hot path).
 _SEG_CELL = 4.0
 # Barrier prism length target — thin 2× ribbons; coarsen lightly for FPS.
@@ -160,6 +161,7 @@ class CityApp(ShowBase):
         self._build_signals(arterials, road_z, road_thickness)
         # Row houses / Two-Flats / bungalows on the minor-grid residential fabric.
         self._build_chicago_housing(plan, arterials)
+        # Loop / River North / West Loop / South Loop landmarks + high-rise infill.
         self._build_downtown_highrises(arterials)
         self._build_chicago_airports()
         self._build_chicago_cta()
@@ -217,6 +219,7 @@ class CityApp(ShowBase):
                         houses_across=lot.houses_across,
                         houses_deep=lot.houses_deep,
                     )
+
     def _build_city_centre(self, plan, road_z: float, arterials: list) -> None:
         # Placeholder Whalley tower blocks removed for the 2× road-network pass.
         del plan, road_z, arterials
