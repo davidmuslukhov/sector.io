@@ -12,6 +12,7 @@ import math
 
 from panda3d.core import NodePath
 
+from city.collision2d import register_aabb, register_building
 from city.geo import MIDWAY_VOID, OHARE_VOID
 from city.materials import concrete_material, mark_material, rgba_material
 from city.mesh import (
@@ -87,10 +88,13 @@ def _box(
     material,
     *,
     z0: float = TERMINAL_BASE_Z,
+    collider: bool = True,
 ) -> None:
     body = box_instance(parent, sx, sy, sz)
     body.setPos(cx, cy, z0 + sz * 0.5)
     body.setMaterial(material, 1)
+    if collider and sx > 0.4 and sy > 0.4:
+        register_building(cx, cy, sx * 0.5, sy * 0.5, 0.0)
 
 
 def _unit(dx: float, dy: float) -> tuple[float, float]:
@@ -314,6 +318,8 @@ def _build_ohare_terminals(node: NodePath, asphalt, concrete, terminal_mat) -> N
     )
     horse.setPos(-524.0, 329.0, 0.19)
     horse.setMaterial(terminal_mat, 1)
+    # Approximate horseshoe footprint for vehicle collision.
+    register_aabb(-536.5, 316.5, -511.5, 341.5)
 
     _box(node, -536.0, 329.0, 2.2, 18.0, 0.28, terminal_mat)
     _box(node, -544.0, 329.0, 2.2, 18.0, 0.28, terminal_mat)

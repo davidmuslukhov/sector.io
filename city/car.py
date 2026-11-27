@@ -8,6 +8,13 @@ from collections import defaultdict
 
 from panda3d.core import LVector3
 
+from city.collision2d import (
+    PLAYER_HALF_L,
+    PLAYER_HALF_W,
+    OBB2D,
+    get_active_world,
+    resolve_static_world_collisions,
+)
 from city.materials import car_material
 from city.mesh import _dist2_point_segment, car_template
 
@@ -3467,9 +3474,12 @@ class PlayerCar:
     _COAST = 5.0
     _STEER_RATE = 140.0  # deg/s at cruise limit (A/D)
     _NUDGE_RATE = 35.0  # deg/s slight trim (left/right arrows)
-    # Collision disc around the body centre (half-width + bumper fudge).
+    # Collision disc around the body centre (legacy barrier capsules).
     _HIT_RADIUS = 0.85 * _CAR_WORLD_SCALE
     _HIT_QUERY_PAD = 4.0
+    # Physics-grade OBB (slightly larger than the visual mesh).
+    _OBB_HALF_L = PLAYER_HALF_L
+    _OBB_HALF_W = PLAYER_HALF_W
     # Motion substep length; raised step budget covers ~600 km/h at low FPS.
     _STEP_LEN = 0.25 * _CAR_WORLD_SCALE
     _MAX_SUBSTEPS = 24
@@ -3608,17 +3618,55 @@ class PlayerCar:
             hit_nx, hit_ny = nx, ny
         return hit_nx, hit_ny
 
+    def obb(self, vx: float = 0.0, vy: float = 0.0) -> OBB2D:
+        return OBB2D(
+            self._car_pos[0],
+            self._car_pos[1],
+            self._OBB_HALF_L,
+            self._OBB_HALF_W,
+            self._car_heading,
+            vx,
+            vy,
+            tag=self,
+        )
+
+    def _separate_static_world(
+        self, vx: float, vy: float
+    ) -> tuple[float, float, float, float]:
+        """SAT wall-slide vs shared CollisionWorld2D. Returns nx, ny, vx, vy."""
+        if get_active_world() is None:
+            return 0.0, 0.0, vx, vy
+        box = self.obb(vx, vy)
+        hit_nx, hit_ny = resolve_static_world_collisions(box)
+        self._car_pos[0] = box.x
+        self._car_pos[1] = box.y
+        return hit_nx, hit_ny, box.vx, box.vy
+
     def _on_road(self) -> bool:
-        """True if the car is on/near a named arterial pavement."""
+        """True if the car is on/near any drivable pavement (incl. minors)."""
         px, py = self._car_pos[0], self._car_pos[1]
-        nearby = getattr(self.app, "nearby_roads", None)
-        if nearby is None:
+        nearby = getattr(self.app, "nearby_drive_roads", None)
+        if nearby is not None:
+            roads = nearby(px, py, 2.0)
+            for ax, ay, bx, by, half_w in roads:
+                d2, _qx, _qy = _dist2_point_segment(px, py, ax, ay, bx, by)
+                limit = half_w + self._ROAD_SHOULDER
+                if d2 <= limit * limit:
+                    return True
+            return False
+        # Fallback: named arterials only (older callers without drive index).
+        nearby_named = getattr(self.app, "nearby_roads", None)
+        if nearby_named is None:
             roads = getattr(self.app, "_named_roads", None) or ()
             if not roads:
                 return True  # no road data → don't penalize
         else:
-            roads = nearby(px, py, 2.0)
-        for _name, ax, ay, bx, by, half_w in roads:
+            roads = nearby_named(px, py, 2.0)
+        for entry in roads:
+            if len(entry) == 6:
+                _name, ax, ay, bx, by, half_w = entry
+            else:
+                ax, ay, bx, by, half_w = entry
             d2, _qx, _qy = _dist2_point_segment(px, py, ax, ay, bx, by)
             limit = half_w + self._ROAD_SHOULDER
             if d2 <= limit * limit:
@@ -3693,12 +3741,16 @@ class PlayerCar:
         rad = math.radians(self._car_heading)
         fx = math.cos(rad)
         fy = math.sin(rad)
+        # World-unit velocity for OBB wall-slide (speed is m/s).
+        speed_u = speed * _UNITS_PER_M
+        vx = fx * speed_u
+        vy = fy * speed_u
         hit_nx = 0.0
         hit_ny = 0.0
         if speed != 0.0:
             # Speeds are m/s; convert travel into 2× world units.
-            travel = speed * dt * _UNITS_PER_M
-            # Substep so thin fences can't be tunnelled (which used to fling the car).
+            travel = speed_u * dt
+            # Substep so thin fences / pillars can't be tunnelled.
             step_len = max(0.01, self._STEP_LEN)
             n_steps = max(
                 1, min(self._MAX_SUBSTEPS, int(math.ceil(abs(travel) / step_len)))
@@ -3708,29 +3760,28 @@ class PlayerCar:
             for _ in range(n_steps):
                 self._car_pos[0] += sx
                 self._car_pos[1] += sy
-                nx, ny = self._separate_barriers(sx, sy)
-                if nx or ny:
-                    hit_nx, hit_ny = nx, ny
+                bnx, bny = self._separate_barriers(sx, sy)
+                snx, sny, vx, vy = self._separate_static_world(vx, vy)
+                if snx or sny:
+                    hit_nx, hit_ny = snx, sny
+                elif bnx or bny:
+                    hit_nx, hit_ny = bnx, bny
         else:
-            hit_nx, hit_ny = self._separate_barriers(fx, fy)
+            bnx, bny = self._separate_barriers(fx, fy)
+            snx, sny, vx, vy = self._separate_static_world(vx, vy)
+            if snx or sny:
+                hit_nx, hit_ny = snx, sny
+            elif bnx or bny:
+                hit_nx, hit_ny = bnx, bny
 
-        # Immovable wall: strip speed into the surface, keep wheel heading.
+        # Rebuild signed m/s speed from slid world velocity (OBB wall-slide).
         if hit_nx or hit_ny:
-            vx = fx * speed
-            vy = fy * speed
-            into = vx * hit_nx + vy * hit_ny
-            if into < 0.0:
-                vx -= into * hit_nx
-                vy -= into * hit_ny
-                # Keep signed speed along the car's forward axis.
-                speed = vx * fx + vy * fy
-                facing = 1.0 if speed >= 0.0 else -1.0
-                if facing * (fx * hit_nx + fy * hit_ny) < -0.8:
-                    speed *= 0.35
-                else:
-                    speed *= 0.97
-                if abs(speed) < 0.08:
-                    speed = 0.0
+            speed = (vx * fx + vy * fy) / max(_UNITS_PER_M, 1e-9)
+            facing = 1.0 if speed >= 0.0 else -1.0
+            if facing * (fx * hit_nx + fy * hit_ny) < -0.8:
+                speed *= 0.85
+            if abs(speed) < 0.08:
+                speed = 0.0
 
         # Leaving pavement at speed: only re-query when we started on-road.
         if on_road and not self._on_road():

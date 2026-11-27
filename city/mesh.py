@@ -459,6 +459,7 @@ TRI_PYRAMID_TEMPLATES: dict[tuple[float, float], NodePath] = {}
 FACTORY_TEMPLATES: dict[tuple[float, float, float, float], NodePath] = {}
 # Flattened car mesh. Copied once per scene.
 CAR_TEMPLATE: NodePath | None = None
+CPD_CRUISER_TEMPLATE: NodePath | None = None
 TREE_TEMPLATE: NodePath | None = None
 
 
@@ -1820,6 +1821,163 @@ def car_template() -> NodePath:
 
     CAR_TEMPLATE = root
     return root
+
+
+def cpd_cruiser_template() -> NodePath:
+    """Chicago PD interceptor at 2× world scale (L=0.142, W=0.066, H=0.052).
+
+    Origin at body centre; +X forward. Named children stay free for strobes /
+    lamps: ``lightbar-red``, ``lightbar-blue``, ``pool-red``, ``pool-blue``,
+    headlights / taillights. Root name is ``cpd_cruiser_node``.
+    """
+    global CPD_CRUISER_TEMPLATE
+    if CPD_CRUISER_TEMPLATE is not None:
+        return CPD_CRUISER_TEMPLATE
+
+    from city.materials import car_material, rgba_material
+
+    length, width, height = 0.142, 0.066, 0.052
+    root = NodePath("cpd_cruiser_node")
+    body_np = root.attachNewNode("body")
+    detail = root.attachNewNode("detail")
+
+    white = rgba_material((0.94, 0.95, 0.97, 1.0), shininess=72.0)
+    black = rgba_material((0.04, 0.04, 0.05, 1.0), shininess=28.0)
+    stripe = rgba_material((0.04, 0.24, 0.58, 1.0), shininess=48.0)
+    glass = car_material("glass")
+    trim = car_material("trim")
+    headlight = car_material("headlight")
+    taillight = car_material("taillight")
+    wheel = car_material("wheel")
+    led_red = _emissive_rgba((1.0, 0.08, 0.05), strength=1.4)
+    led_blue = _emissive_rgba((0.1, 0.25, 1.0), strength=1.4)
+
+    def part(
+        parent: NodePath,
+        sx: float,
+        sy: float,
+        sz: float,
+        x: float,
+        y: float,
+        z: float,
+        material,
+        name: str | None = None,
+    ) -> NodePath:
+        box = box_instance(parent, sx, sy, sz)
+        box.setPos(x, y, z)
+        box.setMaterial(material, 1)
+        if name is not None:
+            box.setName(name)
+        return box
+
+    # Gloss white hull.
+    part(body_np, length * 0.88, width * 0.92, height * 0.42, 0.0, 0.0, -height * 0.12, white)
+    # Cabin.
+    part(body_np, length * 0.42, width * 0.82, height * 0.38, -length * 0.04, 0.0, height * 0.18, white)
+    # Black front / rear quarter panels (CPD black-and-white look).
+    part(body_np, length * 0.18, width * 0.94, height * 0.4, length * 0.36, 0.0, -height * 0.1, black)
+    part(body_np, length * 0.16, width * 0.94, height * 0.38, -length * 0.38, 0.0, -height * 0.1, black)
+    # Dark-blue door racing stripe.
+    part(detail, length * 0.28, width * 0.02, height * 0.28, 0.0, width * 0.48, 0.0, stripe)
+    part(detail, length * 0.28, width * 0.02, height * 0.28, 0.0, -width * 0.48, 0.0, stripe)
+    # Heavy front push-bumper (0.015 protruding forward of nose).
+    nose_x = length * 0.5
+    part(
+        detail,
+        0.015,
+        width * 0.98,
+        height * 0.22,
+        nose_x + 0.0075,
+        0.0,
+        -height * 0.18,
+        black,
+        "push-bumper",
+    )
+    # Dark tinted glass.
+    part(detail, length * 0.18, width * 0.78, height * 0.22, length * 0.08, 0.0, height * 0.2, glass)
+    part(detail, length * 0.14, width * 0.78, height * 0.2, -length * 0.22, 0.0, height * 0.18, glass)
+    for side in (-1.0, 1.0):
+        part(detail, length * 0.3, 0.006, height * 0.2, -0.01, side * width * 0.42, height * 0.16, glass)
+
+    # Wheels.
+    wr = height * 0.22
+    for wx, wy in (
+        (length * 0.28, width * 0.42),
+        (length * 0.28, -width * 0.42),
+        (-length * 0.28, width * 0.42),
+        (-length * 0.28, -width * 0.42),
+    ):
+        tire = cylinder_instance(detail, wr, width * 0.18, segments=6)
+        tire.setPos(wx, wy, -height * 0.28)
+        tire.setMaterial(wheel, 1)
+
+    body_np.flattenStrong()
+    detail.flattenStrong()
+
+    # Split red/blue roof lightbar at Z = +0.056.
+    bar_z = 0.056
+    part(root, length * 0.22, width * 0.22, 0.008, 0.0, width * 0.18, bar_z, led_red, "lightbar-red")
+    part(root, length * 0.22, width * 0.22, 0.008, 0.0, -width * 0.18, bar_z, led_blue, "lightbar-blue")
+
+    # Asphalt light pulses (additive disks) — named children, Z ≈ world 0.039.
+    pool_z = 0.013  # centre≈+0.026 above deck → world Z≈0.039
+    for name, rgb, py in (
+        ("pool-red", (1.0, 0.05, 0.02, 0.55), 0.04),
+        ("pool-blue", (0.05, 0.2, 1.0, 0.55), -0.04),
+    ):
+        pool = root.attachNewNode(make_glow_disk(0.12, rgb, segments=8))
+        pool.setName(name)
+        pool.setPos(0.0, py, pool_z)
+        pool.setLightOff(1)
+        pool.setBin("fixed", 5)
+        pool.setDepthWrite(False)
+
+    # Headlights / taillights (named for day-night / brake sync).
+    for side, label in ((1.0, "left"), (-1.0, "right")):
+        part(
+            root,
+            0.012,
+            0.014,
+            0.01,
+            length * 0.48,
+            side * width * 0.28,
+            -height * 0.05,
+            headlight,
+            f"headlight-{label}",
+        )
+        part(
+            root,
+            0.012,
+            0.014,
+            0.01,
+            -length * 0.48,
+            side * width * 0.28,
+            -height * 0.04,
+            taillight,
+            f"taillight-{label}",
+        )
+
+    CPD_CRUISER_TEMPLATE = root
+    return root
+
+
+def _emissive_rgba(rgb: tuple[float, float, float], *, strength: float = 1.0):
+    """Bright emissive plastic for LED lightbar halves."""
+    cache: dict = getattr(_emissive_rgba, "_cache", {})
+    key = (round(rgb[0], 3), round(rgb[1], 3), round(rgb[2], 3), round(strength, 2))
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    r, g, b = rgb
+    mat = Material()
+    mat.setAmbient((r * 0.3, g * 0.3, b * 0.3, 1))
+    mat.setDiffuse((r, g, b, 1))
+    mat.setSpecular((r * 0.4, g * 0.4, b * 0.4, 1))
+    mat.setShininess(32)
+    mat.setEmission((r * strength, g * strength, b * strength, 1))
+    cache[key] = mat
+    _emissive_rgba._cache = cache
+    return mat
 
 
 def make_wedge(sx: float, sy: float, sz: float) -> GeomNode:

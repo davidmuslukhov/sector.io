@@ -22,7 +22,18 @@ from direct.showbase.ShowBase import ShowBase
 
 from city.builders import SceneBuilders
 from city.car import ROAD_SHOULDER, CarController, PlayerCar
+from city.chicago_cta import (
+    CTA_HIDE_DIST,
+    CTA_MAX_TILES,
+    CTA_VIEW_FACTOR,
+    CTA_VIEW_MIN,
+    SECTOR_SIZE as CTA_SECTOR_SIZE,
+    build_chicago_cta,
+)
+from city.collision2d import CollisionWorld2D, OBB2D, set_active_world
 from city.daycycle import SUNRISE_SECONDS, DayNightCycle
+from city.downtown_highrises import build_downtown_highrises
+from city.police import PolicePursuitManager
 from city.districts import (
     CITY_CENTRE_BLOCKS,
     DISTRICT_DEFS as _DISTRICT_DEFS_RAW,
@@ -136,6 +147,11 @@ class CityApp(ShowBase):
         road_top = road_z + road_thickness / 2
         arterials = list(hwy["arterials"])
 
+        # Shared OBB world so downtown / CTA pillars register during mesh build.
+        self.collision_world = CollisionWorld2D(cell=5.275)
+        self._collision_world = self.collision_world
+        set_active_world(self.collision_world)
+
         self._build_neighborhoods(plan)
         self._build_city_centre(plan, road_z, arterials)
         self._build_districts(road_z, road_thickness)
@@ -144,7 +160,9 @@ class CityApp(ShowBase):
         self._build_signals(arterials, road_z, road_thickness)
         # Row houses / Two-Flats / bungalows on the minor-grid residential fabric.
         self._build_chicago_housing(plan, arterials)
+        self._build_downtown_highrises(arterials)
         self._build_chicago_airports()
+        self._build_chicago_cta()
         self._build_chicago_lights(arterials)
         self._build_ground(hwy, road_z)
         self._build_lighting()
@@ -265,7 +283,17 @@ class CityApp(ShowBase):
         self._label_base_scale = max(2.4, highway_width * 4.5)
         self._label_ref_distance = 1.0
         self._named_roads: list[tuple[str, float, float, float, float, float]] = []
+        # All drivable pavement (minors + collectors + arterials + expressways).
+        # Named roads alone miss the minor grid, which used to count as "off road".
+        self._drive_roads: list[tuple[float, float, float, float, float]] = []
         self._solid_barriers: list[tuple[float, float, float, float, float]] = []
+
+        def add_drive_seg(
+            x0: float, y0: float, x1: float, y1: float, width: float
+        ) -> None:
+            self._drive_roads.append(
+                (float(x0), float(y0), float(x1), float(y1), float(width) * 0.5)
+            )
 
         def coarsen_polyline(points: list, max_span: float) -> list:
             if len(points) < 2:
@@ -333,14 +361,12 @@ class CityApp(ShowBase):
             zc = road_z + float(arterial.get("z_offset", 0.0))
             if layer == "minor":
                 for i in range(len(pts) - 1):
-                    _bin_minor_seg(
-                        float(pts[i][0]),
-                        float(pts[i][1]),
-                        float(pts[i + 1][0]),
-                        float(pts[i + 1][1]),
-                        width,
-                        zc,
-                    )
+                    x0 = float(pts[i][0])
+                    y0 = float(pts[i][1])
+                    x1 = float(pts[i + 1][0])
+                    y1 = float(pts[i + 1][1])
+                    _bin_minor_seg(x0, y0, x1, y1, width, zc)
+                    add_drive_seg(x0, y0, x1, y1, width)
                 continue
             for i in range(len(pts) - 1):
                 x0, y0 = pts[i]
@@ -348,6 +374,7 @@ class CityApp(ShowBase):
                 collector_segs.append(
                     (float(x0), float(y0), float(x1), float(y1), width, zc)
                 )
+                add_drive_seg(float(x0), float(y0), float(x1), float(y1), width)
             name = str(arterial.get("name", ""))
             base = name.rsplit("_", 1)[0] if name[-1:].isdigit() else name
             title = HIGHWAY_LABELS.get(name) or HIGHWAY_LABELS.get(base) or ""
@@ -434,12 +461,27 @@ class CityApp(ShowBase):
                             route_z,
                         )
                     )
+                    add_drive_seg(
+                        float(pts[i][0]),
+                        float(pts[i][1]),
+                        float(pts[i + 1][0]),
+                        float(pts[i + 1][1]),
+                        route_width,
+                    )
             else:
                 deck = parent.attachNewNode(
                     make_highway_ribbon(pts, route_width, road_thickness)
                 )
                 deck.setPos(0.0, 0.0, route_z)
                 deck.setMaterial(road_mat, 1)
+                for i in range(len(pts) - 1):
+                    add_drive_seg(
+                        float(pts[i][0]),
+                        float(pts[i][1]),
+                        float(pts[i + 1][0]),
+                        float(pts[i + 1][1]),
+                        route_width,
+                    )
 
             base_name = (
                 name.rsplit("_", 1)[0]
@@ -511,11 +553,15 @@ class CityApp(ShowBase):
 
         self._barrier_cell = _SEG_CELL
         self._road_cell = _SEG_CELL
+        self._drive_cell = _SEG_CELL
         self._barrier_grid = self._build_segment_grid(
             self._solid_barriers, xy_offset=0, cell=self._barrier_cell
         )
         self._road_grid = self._build_segment_grid(
             self._named_roads, xy_offset=1, cell=self._road_cell
+        )
+        self._drive_grid = self._build_segment_grid(
+            self._drive_roads, xy_offset=0, cell=self._drive_cell
         )
 
         # District billboards are created lazily on select (keeps overview light).
@@ -605,6 +651,25 @@ class CityApp(ShowBase):
         self._housing_tiles = body_tiles
         self._housing_tiles_hidden = True
 
+    def _build_downtown_highrises(self, arterials: list) -> None:
+        """Iconic Loop skyscrapers + procedural downtown high-rise infill."""
+        built = build_downtown_highrises(self.city, arterials)
+        self.downtown = built["root"]
+        self._downtown_landmarks = built["landmarks"]
+        self._downtown_highrises = built["highrises"]
+        self._downtown_night_glow = built["night_glow"]
+
+    def _build_chicago_cta(self) -> None:
+        """CTA \"L\" elevated / median tracks, stations, and animated trains."""
+        built = build_chicago_cta(self.city)
+        self.cta_root = built["root"]
+        self._cta_tiles = built["tiles"]
+        self._cta_controller = built["controller"]
+        self._cta_tiles_hidden = False
+        self.taskMgr.add(
+            self._cta_controller.update_cta_trains, "update_cta_trains"
+        )
+
     def _build_chicago_airports(self) -> None:
         """Midway + O'Hare turf, runways, taxiways, and terminal massing."""
         self.airports, self._airport_tiles = build_chicago_airports(self.city)
@@ -690,6 +755,8 @@ class CityApp(ShowBase):
         self._car = None
         self._player_car: PlayerCar | None = None
         self._fleet_root = self.render.attachNewNode("fleet")
+        self._police: PolicePursuitManager | None = None
+        self._pursuit_game_over = False
 
         # Green player car on State Street at Madison (right lane, southbound).
         state = next((a for a in arterials if a.get("name") == "state"), None)
@@ -698,15 +765,46 @@ class CityApp(ShowBase):
             # Deck top for this route + small lift so the body clears the ribbon.
             z_off = float(state.get("z_offset", 0.0))
             surface_z = road_top + z_off + 0.02
+            spawn_x = -st_w / 4.0
+            spawn_y = -1.5
+            spawn_h = -90.0
+            self._player_spawn_xyh = (spawn_x, spawn_y, spawn_h)
             self._player_car = PlayerCar(
                 self,
                 surface_z,
-                -st_w / 4.0,
-                -1.5,
-                heading=-90.0,
+                spawn_x,
+                spawn_y,
+                heading=spawn_h,
                 body_colour=(0.16, 0.62, 0.28),
             )
             self.taskMgr.add(self._player_drive_task, "player-drive")
+
+            # CPD pursuit AI (4 interceptors); reuse the shared OBB world
+            # (already holds downtown / CTA statics from mesh build).
+            world = getattr(self, "collision_world", None) or CollisionWorld2D(
+                cell=5.275
+            )
+            self.collision_world = world
+            self._collision_world = world
+            set_active_world(world)
+            for ax, ay, bx, by, half_w in getattr(self, "_solid_barriers", ()) or ():
+                mx = 0.5 * (ax + bx)
+                my = 0.5 * (ay + by)
+                dx, dy = bx - ax, by - ay
+                length = math.hypot(dx, dy)
+                if length < 1e-4:
+                    continue
+                heading = math.degrees(math.atan2(dy, dx))
+                world.add_static(
+                    OBB2D(mx, my, length * 0.5, float(half_w), heading)
+                )
+            self._police = PolicePursuitManager(
+                self,
+                arterials,
+                surface_z,
+                unit_count=4,
+                collision_world=world,
+            )
 
     def _setup_camera(self, plan, road_z: float) -> None:
         del plan
@@ -753,6 +851,8 @@ class CityApp(ShowBase):
                 self._highway_labels,
                 self.signals_root,
                 getattr(self, "_lights_root", None),
+                getattr(self, "cta_root", None),
+                getattr(self, "downtown", None),
             )
         )
         self._dim_targets = [n for n in self._dim_targets if n is not None]
@@ -916,11 +1016,17 @@ class CityApp(ShowBase):
         return task.cont
 
     def _set_street_lights(self, on: bool, *, warm_up: bool = False) -> None:
-        """Show/hide bulbs + pools; on at night, off by day (driven by day cycle)."""
+        """Show/hide bulbs + pools + skyline glow; night via day cycle."""
         self._street_lights_on = on
         bulbs = getattr(self, "_lights_bulbs_root", None)
         pools = getattr(self, "_lights_pools_root", None)
         flicker = getattr(self, "_lights_flicker_root", None)
+        skyline = getattr(self, "_downtown_night_glow", None)
+        if skyline is not None:
+            if on:
+                skyline.show()
+            else:
+                skyline.hide()
         if bulbs is None or pools is None:
             return
         if on:
@@ -1025,6 +1131,11 @@ class CityApp(ShowBase):
         player = getattr(self, "_player_car", None)
         if player is not None and not getattr(self, "_car_mode", False):
             player._refresh_lamps(braking=False, reversing=False)
+        police = getattr(self, "_police", None)
+        if police is not None and prev_vehicle != self._vehicle_lights_on:
+            for cruiser in police.cruisers:
+                cruiser._lamp_key = None
+                cruiser._refresh_lamps()
 
     def _fleet_task(self, task):
         # One spatial/corridor index for the whole fleet, then each car updates.
@@ -1089,6 +1200,9 @@ class CityApp(ShowBase):
         self._hud_compass.show()
         self._hud_speed.show()
         self._hud_speed_unit.show()
+        police = getattr(self, "_police", None)
+        if police is not None:
+            police.show_tactical_hud()
         self._layout_clock_hud()
         self._refresh_car_hud(force=True)
         self._update_chase_camera()
@@ -1107,6 +1221,9 @@ class CityApp(ShowBase):
         self._hud_street.setText("")
         self._hud_compass.setText("")
         self._hud_speed.setText("")
+        police = getattr(self, "_police", None)
+        if police is not None and not getattr(self, "_pursuit_game_over", False):
+            police.hide_tactical_hud()
         self._layout_clock_hud()
         self.look_at = list(self._map_look_at)
         self.distance = self._map_distance
@@ -1188,6 +1305,20 @@ class CityApp(ShowBase):
         roads = getattr(self, "_named_roads", None) or []
         return [roads[i] for i in idxs]
 
+    def nearby_drive_roads(
+        self, x: float, y: float, radius: float
+    ) -> list[tuple[float, float, float, float, float]]:
+        """All pavement ribbons (including unnamed minors) for on-road speed."""
+        idxs = self._nearby_segment_indices(
+            getattr(self, "_drive_grid", {}),
+            x,
+            y,
+            radius,
+            getattr(self, "_drive_cell", _SEG_CELL),
+        )
+        roads = getattr(self, "_drive_roads", None) or []
+        return [roads[i] for i in idxs]
+
     def _location_at(self, x: float, y: float) -> str:
         """Neighborhood + municipality for car HUD, e.g. 'Newton, Surrey'."""
         for key, area, city in LOCATION_AREAS:
@@ -1209,7 +1340,15 @@ class CityApp(ShowBase):
             if d2 <= limit * limit and d2 < best_d2:
                 best_d2 = d2
                 best_name = name
-        return best_name or "Off road"
+        if best_name:
+            return best_name
+        # Unnamed minor / collector pavement still counts as on-road for HUD.
+        for ax, ay, bx, by, half_w in self.nearby_drive_roads(x, y, 2.0):
+            d2, _qx, _qy = _dist2_point_segment(x, y, ax, ay, bx, by)
+            limit = half_w + ROAD_SHOULDER
+            if d2 <= limit * limit:
+                return "Local street"
+        return "Off road"
 
     @staticmethod
     def _compass_from_heading(heading_deg: float) -> str:
@@ -1276,10 +1415,17 @@ class CityApp(ShowBase):
         fy = math.sin(rad)
         px, py = car._car_pos[0], car._car_pos[1]
         pz = car._car_z
+        sx = sy = sz = 0.0
+        police = getattr(self, "_police", None)
+        if police is not None and police._shake_t > 0.0:
+            amp = 0.035 * (police._shake_t / 0.22)
+            sx = random.uniform(-amp, amp)
+            sy = random.uniform(-amp, amp)
+            sz = random.uniform(-amp * 0.5, amp * 0.5)
         self.camera.setPos(
-            px - fx * self._chase_back,
-            py - fy * self._chase_back,
-            pz + self._chase_height,
+            px - fx * self._chase_back + sx,
+            py - fy * self._chase_back + sy,
+            pz + self._chase_height + sz,
         )
         look_x = px + fx * self._chase_look_ahead
         look_y = py + fy * self._chase_look_ahead
@@ -1338,6 +1484,11 @@ class CityApp(ShowBase):
     def _player_drive_task(self, task):
         """Car mode: WASD drive; ←/→ trim heading; ↑/↓ set cruise limit."""
         if not self._car_mode or self._player_car is None:
+            return task.cont
+        if getattr(self, "_pursuit_game_over", False):
+            # Freeze controls; police manager holds the wreck pose + smoke.
+            self._player_car._car_speed = 0.0
+            self._player_car._place()
             return task.cont
         mw = self.mouseWatcherNode
         self._player_car.update(
@@ -1433,6 +1584,32 @@ class CityApp(ShowBase):
             pad=_MINOR_TILE * 0.5,
             hidden_attr="_signal_tiles_hidden",
         )
+        # ---- CTA "L" mile-sectors (viaducts / stations) ----
+        cta_tiles = getattr(self, "_cta_tiles", None) or []
+        if cta_tiles:
+            if dist >= CTA_HIDE_DIST and not self._car_mode:
+                if not getattr(self, "_cta_tiles_hidden", False):
+                    for _cx, _cy, node in cta_tiles:
+                        if not node.isHidden():
+                            node.hide()
+                    self._cta_tiles_hidden = True
+            else:
+                self._cta_tiles_hidden = False
+                radius = max(CTA_VIEW_MIN, dist * CTA_VIEW_FACTOR) + CTA_SECTOR_SIZE * 0.4
+                r2 = radius * radius
+                ranked: list[tuple[float, object]] = []
+                for cx, cy, node in cta_tiles:
+                    dx = cx - look_x
+                    dy = cy - look_y
+                    d2 = dx * dx + dy * dy
+                    ranked.append((d2, node))
+                ranked.sort(key=lambda item: item[0])
+                for i, (d2, node) in enumerate(ranked):
+                    near = d2 <= r2 and i < CTA_MAX_TILES
+                    if near and node.isHidden():
+                        node.show()
+                    elif not near and not node.isHidden():
+                        node.hide()
         # ---- Airports (hide in overview; show only when look-point is near) ----
         airport_tiles = getattr(self, "_airport_tiles", None) or []
         if airport_tiles:

@@ -16,6 +16,11 @@ from typing import Any
 
 from panda3d.core import LODNode, NodePath
 
+from city.collision2d import (
+    COLLIDER_BUILDING,
+    COLLIDER_HOUSE,
+    register_aabb,
+)
 from city.geo import AIRPORT_VOIDS, MIDWAY_VOID, OHARE_VOID
 from city.materials import rgba_material, roof_material, sidewalk_material
 from city.mesh import box_instance, make_gable_roof, make_pyramid
@@ -1172,12 +1177,17 @@ def _try_place(
         heading,
         include_detail=include_detail,
     )
+    # Storefronts / plazas share the commercial building category; houses use HOUSE.
+    category = COLLIDER_BUILDING if kind in ("storefront", "plaza") else COLLIDER_HOUSE
+    register_aabb(min_x, min_y, max_x, max_y, category)
 
-    # Detached rear-alley garages land in detail (LOD-culled past 450).
-    if (
-        include_detail
-        and with_garage
-        and kind not in ("ranch", "split_level", "colonial", "plaza", "storefront")
+    # Detached rear-alley garages: always register OBB; mesh is LOD detail only.
+    if with_garage and kind not in (
+        "ranch",
+        "split_level",
+        "colonial",
+        "plaza",
+        "storefront",
     ):
         gx, gy = _garage_pos(
             street_x=street_x,
@@ -1190,9 +1200,19 @@ def _try_place(
         gmin_x, gmax_x = gx - gww * 0.5, gx + gww * 0.5
         gmin_y, gmax_y = gy - gdd * 0.5, gy + gdd * 0.5
         if not roads.hits_footprint(gmin_x, gmin_y, gmax_x, gmax_y) and not _in_void(gx, gy):
-            # Garage body is itself a silhouette — stamp body into detail LOD bucket.
-            gtmp = _template_for("garage", gx, gy)
-            _stamp(gtmp, detail_parent, detail_parent, gx, gy, heading, include_detail=True)
+            register_aabb(gmin_x, gmin_y, gmax_x, gmax_y, COLLIDER_HOUSE)
+            if include_detail:
+                # Garage body is itself a silhouette — stamp into detail LOD bucket.
+                gtmp = _template_for("garage", gx, gy)
+                _stamp(
+                    gtmp,
+                    detail_parent,
+                    detail_parent,
+                    gx,
+                    gy,
+                    heading,
+                    include_detail=True,
+                )
     return True
 
 
@@ -1249,6 +1269,7 @@ def _try_place_plaza(
         heading,
         include_detail=include_detail,
     )
+    register_aabb(min_x, min_y, max_x, max_y, COLLIDER_BUILDING)
     return True
 
 
