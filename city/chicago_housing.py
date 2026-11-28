@@ -2,7 +2,7 @@
 
 Zone 1 packs attached greystones / townhomes / two-flats; the outer city and
 Chicagoland suburbs spread detached ranch / split-level / colonial / bungalow
-stock with wide lawns. Airport voids stay clear. House bodies are stamped from
+stock with wide lawns. Airport and civic-park voids stay clear. House bodies are stamped from
 shared templates then ``flattenStrong``'d per mile-sector. Stoops, dormers,
 garages, and driveways sit under an LODNode that drops past 450 units.
 Suburban mile-sectors stream in as the camera approaches so startup stays light.
@@ -21,10 +21,22 @@ from city.collision2d import (
     COLLIDER_HOUSE,
     register_aabb,
 )
-from city.geo import AIRPORT_VOIDS, MIDWAY_VOID, OHARE_VOID
+from city.geo import CLEARANCE_VOIDS, MIDWAY_VOID, OHARE_VOID
 from city.materials import rgba_material, roof_material, sidewalk_material
 from city.mesh import box_instance, make_gable_roof, make_pyramid
 from city.plan import CityPlan, _dist2_point_segment
+
+# Pocket-park AABBs (lazy) — imported after chicago_parks defines them.
+_POCKET_VOIDS: tuple[tuple[float, float, float, float], ...] | None = None
+
+
+def _pocket_voids() -> tuple[tuple[float, float, float, float], ...]:
+    global _POCKET_VOIDS
+    if _POCKET_VOIDS is None:
+        from city.chicago_parks import pocket_park_voids
+
+        _POCKET_VOIDS = pocket_park_voids()
+    return _POCKET_VOIDS
 
 # ---------------------------------------------------------------------------
 # Scale / layout (2× Chicago)
@@ -65,7 +77,7 @@ SOUTH_SUBS = (-759.6, -760.0, 16.0, -501.1)        # Evergreen→Orland / Harvey
 
 OHARE = OHARE_VOID
 MIDWAY = MIDWAY_VOID
-VOIDS = AIRPORT_VOIDS
+VOIDS = CLEARANCE_VOIDS  # airports + major civic parks
 
 # Zone 1 packing
 INNER_LOT_W = 0.18
@@ -91,11 +103,11 @@ CLEAR_COLLECTOR = 0.40
 CLEAR_MINOR = 0.25
 
 SECTOR_SIZE = UNITS_PER_MILE  # 1×1 mile sectors
-HOUSING_HIDE_DIST = 200.0
-HOUSING_VIEW_FACTOR = 0.28
-HOUSING_VIEW_MIN = 45.0
-HOUSING_MAX_TILES = 6  # each sector is heavy after bake — keep the cap tight
-DETAIL_LOD_FAR = 450.0  # garages / driveways / dormers drop past this
+HOUSING_HIDE_DIST = 180.0
+HOUSING_VIEW_FACTOR = 0.22
+HOUSING_VIEW_MIN = 40.0
+HOUSING_MAX_TILES = 4  # each sector is heavy after bake — keep the cap tight
+DETAIL_LOD_FAR = 100.0  # garages / driveways / dormers drop past this
 # Stream budget — never bake a full mile-sector on one frame (that stuttered ~1s).
 STREAM_BUDGET_S = 0.004  # soft fill budget; flatten always yields the frame
 STREAM_PREFETCH = SECTOR_SIZE * 1.85  # start baking before the sector is in view
@@ -193,7 +205,9 @@ def _in_loop(x: float, y: float) -> bool:
 
 
 def _in_void(x: float, y: float) -> bool:
-    return any(_in_bbox(x, y, v) for v in VOIDS)
+    if any(_in_bbox(x, y, v) for v in VOIDS):
+        return True
+    return any(_in_bbox(x, y, v) for v in _pocket_voids())
 
 
 def _in_zone1(x: float, y: float) -> bool:

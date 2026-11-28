@@ -866,6 +866,7 @@ class PolicePursuitManager:
                 ox + hx * WHISKER_LEN,
                 oy + hy * WHISKER_LEN,
                 categories=_WHISKER_CATEGORIES,
+                samples=3,
             )
             return hit is not None
 
@@ -1083,7 +1084,7 @@ class PolicePursuitManager:
         pvx, pvy = self._player_vel_world(player)
         pursuit_near = False
 
-        # ---- 1) Static resolve for player + each cop (post-integrate) ----
+        # ---- 1) Player OBB (static already solved in PlayerCar.update) ----
         player_obb = OBB2D(
             px,
             py,
@@ -1094,14 +1095,6 @@ class PolicePursuitManager:
             pvy,
             tag=player,
         )
-        resolve_static_world_collisions(player_obb)
-        player._car_pos[0] = player_obb.x
-        player._car_pos[1] = player_obb.y
-        rad_p = math.radians(player._car_heading)
-        fx_p, fy_p = math.cos(rad_p), math.sin(rad_p)
-        player._car_speed = (
-            player_obb.vx * fx_p + player_obb.vy * fy_p
-        ) / max(_UNITS_PER_M, 1e-9)
 
         for cruiser in self.cruisers:
             if not cruiser.active:
@@ -1154,8 +1147,9 @@ class PolicePursuitManager:
                                 cruiser.target_node = random.choice(nbrs)[0]
                 if cruiser.target_node is not None:
                     tn = self.graph.nodes[cruiser.target_node]
+                    # Long-range stays on graph edges — skip whisker probes.
                     self._steer_toward(
-                        cruiser, tn.x, tn.y, dt, cop_cap, avoid_walls=True
+                        cruiser, tn.x, tn.y, dt, cop_cap, avoid_walls=False
                     )
             else:
                 # Close-range direct intercept / pit through alleys & yards.

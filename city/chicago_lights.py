@@ -22,7 +22,7 @@ from city.chicago_housing import (
     HOUSING_BUILD_Y0,
     HOUSING_BUILD_Y1,
 )
-from city.geo import AIRPORT_VOIDS
+from city.geo import CLEARANCE_VOIDS
 from city.materials import rgba_material
 from city.mesh import (
     arterial_junctions,
@@ -40,8 +40,8 @@ _LIGHTS_Y1 = HOUSING_BUILD_Y1 + _LIGHTS_PAD
 
 
 def _in_airport_void(x: float, y: float) -> bool:
-    """Skip street-light samples that fall inside Midway / O'Hare airfields."""
-    for x0, y0, x1, y1 in AIRPORT_VOIDS:
+    """Skip street-light samples inside airports / major civic parks."""
+    for x0, y0, x1, y1 in CLEARANCE_VOIDS:
         if x0 < x < x1 and y0 < y < y1:
             return True
     return False
@@ -90,11 +90,11 @@ POLE_RADIUS = 0.02
 CORNER_EXCLUDE = 0.8
 
 # Spacing / offsets (thinned vs literal Chicago density for FPS)
-ARTERIAL_SPACING = 3.5  # ~every 1.3 half-blocks
+ARTERIAL_SPACING = 4.5  # ~every ~1.7 half-blocks
 ARTERIAL_OFFSET = 0.32
 COLLECTOR_OFFSET = 0.22
-EXPRESSWAY_SPACING = 5.5
-MINOR_SPACING = BLOCK_100 * 2.0  # one pole every two blocks
+EXPRESSWAY_SPACING = 6.5
+MINOR_SPACING = BLOCK_100 * 2.5  # one pole every ~2.5 blocks
 MINOR_OFFSET = 0.16
 
 # Heights / arms
@@ -126,10 +126,10 @@ def _deck_top(z_offset: float = 0.0) -> float:
     return float(z_offset) - _ROAD_THICKNESS * 0.5 + 0.002
 
 LIGHTS_HIDE_DIST = 150.0
-LIGHTS_VIEW_FACTOR = 0.22
-LIGHTS_VIEW_MIN = 40.0
-LIGHTS_MAX_TILES = 5  # poles / bulbs
-LIGHTS_MAX_POOL_TILES = 3  # additive pools are the expensive draw
+LIGHTS_VIEW_FACTOR = 0.18
+LIGHTS_VIEW_MIN = 35.0
+LIGHTS_MAX_TILES = 4  # poles / bulbs
+LIGHTS_MAX_POOL_TILES = 2  # additive pools are the expensive draw
 WARMUP_SECONDS = 1.2
 
 _TEMPLATES: dict[str, NodePath] = {}

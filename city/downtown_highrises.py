@@ -104,7 +104,7 @@ LOOP_CORE_Y0, LOOP_CORE_Y1 = -26.4, 15.8
 
 # Subdivide oversized street cells into Chicago-scale lots so West Loop /
 # South Loop / River North pads don't sit empty around a lone tower.
-LOT_TARGET = BLOCK_100  # 5.275 ≈ one 100-number block
+LOT_TARGET = BLOCK_100 * 1.4  # ~7.4 — fewer lots, same skyline read
 LOT_GAP = 0.18  # alley / light-well between adjacent lot footprints
 MIN_LOT = 1.05  # smallest pad that still gets a building
 
@@ -252,6 +252,8 @@ def _window_strips(
     """Horizontal lit bands on four faces between ``z0`` and ``z1``."""
     if z1 <= z0 + 0.2:
         return
+    # Coarsen bands — night fill-rate dominates downtown GPU cost.
+    step = max(step * 1.75, 0.95)
     rgb = (1.0, 0.82, 0.55) if warm else (0.75, 0.88, 1.0)
     mat = _emissive(rgb, 0.85)
     depth = 0.04
@@ -465,9 +467,9 @@ def _aon(landmarks: NodePath, night: NodePath) -> tuple[float, float, float, flo
     mat = rgba_material(AON_RGBA, shininess=22.0)
     rib = rgba_material((0.70, 0.71, 0.73, 1.0), shininess=18.0)
     _box(landmarks, cx, cy, sx, sy, h, mat)
-    # Vertical granite ribs on facades.
-    for i in range(-2, 3):
-        ox = i * 0.38
+    # Vertical granite ribs on facades (thinned for draw cost).
+    for i in range(-1, 2):
+        ox = i * 0.55
         _box(landmarks, cx + ox, cy + sy * 0.51, 0.08, 0.05, h, rib)
         _box(landmarks, cx + ox, cy - sy * 0.51, 0.08, 0.05, h, rib)
         _box(landmarks, cx + sx * 0.51, cy + ox, 0.05, 0.08, h, rib)
@@ -585,11 +587,8 @@ def _build_landmarks(
 # Grant Park lawn void
 # ---------------------------------------------------------------------------
 def _grant_park(parent: NodePath) -> None:
-    sx = GRANT_X1 - GRANT_X0
-    sy = GRANT_Y1 - GRANT_Y0
-    lawn = box_instance(parent, sx, sy, 0.08, top=True, bottom=False)
-    lawn.setPos((GRANT_X0 + GRANT_X1) * 0.5, (GRANT_Y0 + GRANT_Y1) * 0.5, GRANT_Z)
-    lawn.setMaterial(rgba_material(GRANT_RGBA), 1)
+    """Placeholder — full Grant / Millennium Park mesh lives in ``chicago_parks``."""
+    del parent
 
 
 # ---------------------------------------------------------------------------
@@ -830,11 +829,11 @@ def _add_mies(
     palette = (BRONZE_GLASS, CHARCOAL, COOL_GLASS, BLUE_GLASS)
     mat = rgba_material(rng.choice(palette), shininess=42.0)
     _box(day, cx, cy, w, d, h, mat)
-    # Vertical mullion stripes.
+    # Vertical mullion stripes (thinned for draw cost).
     mull = rgba_material((0.12, 0.12, 0.13, 1.0), shininess=30.0)
-    for i in range(-2, 3):
-        _box(day, cx + i * w * 0.18, cy + d * 0.51, 0.04, 0.03, h, mull)
-        _box(day, cx + i * w * 0.18, cy - d * 0.51, 0.04, 0.03, h, mull)
+    for i in (-1, 1):
+        _box(day, cx + i * w * 0.22, cy + d * 0.51, 0.04, 0.03, h, mull)
+        _box(day, cx + i * w * 0.22, cy - d * 0.51, 0.04, 0.03, h, mull)
     # Recessed mechanical penthouse.
     ph = 0.35
     _box(day, cx, cy, w * 0.55, d * 0.55, ph, rgba_material(CHARCOAL), z0=h)

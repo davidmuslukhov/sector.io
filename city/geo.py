@@ -56,6 +56,29 @@ MIDWAY_VOID = (-295.4, -332.3, -253.2, -290.1)
 OHARE_VOID = (-595.0, 265.0, -475.0, 379.8)
 AIRPORT_VOIDS = (MIDWAY_VOID, OHARE_VOID)
 
+# Major civic park voids — purge residential / commercial / minor grid streets.
+# Arterials (0.5–1.0 mile spines) stay open for traffic & pursuits.
+GRANT_PARK_VOID = (6.5, -63.3, 16.0, 10.5)  # Michigan → lakefront, Roosevelt→Randolph
+LINCOLN_PARK_VOID = (-22.0, 84.4, 16.0, 275.0)  # Clark/Stockton east, North→Foster
+HUMBOLDT_PARK_VOID = (-168.8, 63.3, -147.7, 95.0)  # California→Kedzie, Division→North
+GARFIELD_PARK_VOID = (-200.5, -15.8, -179.4, 15.8)  # Hamlin→Central Park, Congress→Lake
+DOUGLAS_PARK_VOID = (-168.8, -95.0, -147.7, -63.3)  # California→Albany, Roosevelt→19th
+WASHINGTON_PARK_VOID = (16.0, -316.5, 42.2, -269.0)  # King→Cottage Grove, 51st→60th
+JACKSON_PARK_VOID = (42.2, -358.7, 84.4, -295.4)  # Stony Island east, 56th→67th
+MARQUETTE_PARK_VOID = (-189.9, -374.5, -147.7, -353.4)  # California→Kedzie, 67th→71st
+PARK_VOIDS = (
+    GRANT_PARK_VOID,
+    LINCOLN_PARK_VOID,
+    HUMBOLDT_PARK_VOID,
+    GARFIELD_PARK_VOID,
+    DOUGLAS_PARK_VOID,
+    WASHINGTON_PARK_VOID,
+    JACKSON_PARK_VOID,
+    MARQUETTE_PARK_VOID,
+)
+# Combined keep-out for housing / minor streets / street-light skip.
+CLEARANCE_VOIDS = AIRPORT_VOIDS + PARK_VOIDS
+
 
 def project(lat: float, lon: float) -> tuple[float, float]:
     """Equirectangular local projection → world (X east, Y north)."""

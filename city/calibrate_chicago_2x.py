@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from city.geo import MIDWAY_VOID, OHARE_VOID
+from city.geo import CLEARANCE_VOIDS, MIDWAY_VOID, OHARE_VOID
 
 OUT = Path(__file__).resolve().parent / "data" / "city.yaml"
 
@@ -42,10 +42,11 @@ GRID_Y0, GRID_Y1 = -670.0, 550.0
 LOOP_X0, LOOP_X1 = -42.2, 16.0
 LOOP_Y0, LOOP_Y1 = -63.3, 42.2
 
-# Airport voids (no internal residential / minor grid).
-# Midway: Central→Cicero × 63rd→55th. O'Hare: York→east of Mannheim × south→Touhy.
+# Airport + civic-park voids (no internal residential / minor grid).
+# Arterials still cross parks; only the 5.275-unit minor grid is clipped.
 OHARE = OHARE_VOID  # xmin, ymin, xmax, ymax
 MIDWAY = MIDWAY_VOID
+PARK_AND_AIRPORT_VOIDS = list(CLEARANCE_VOIDS)
 
 # Hierarchy: minor / collector / arterial / expressway (LOD stack).
 MINOR_WIDTH, MINOR_Z = 0.22, 0.00
@@ -813,7 +814,7 @@ def _build_minor_grid(
 ) -> None:
     """1/8-mile minor residential streets (batched as layer=minor)."""
     w, z = MINOR_WIDTH, MINOR_Z
-    voids = [OHARE, MIDWAY]
+    voids = PARK_AND_AIRPORT_VOIDS
     xs: list[float] = []
     yv = GRID_X0
     while yv <= GRID_X1 + 1e-6:

@@ -75,9 +75,20 @@ from city.chicago_lights import (
     build_chicago_lights,
 )
 from city.chicago_airports import build_chicago_airports
+from city.chicago_parks import (
+    PARKS_HIDE_DIST,
+    PARKS_MAX_TILES,
+    PARKS_VIEW_FACTOR,
+    PARKS_VIEW_MIN,
+    build_chicago_parks,
+    park_voids,
+)
 from city.chicago_signals import build_chicago_signals
 from city.plan import default_city_plan
 from city.signals import TrafficLightController
+
+_PARK_HIDE_DIST = PARKS_HIDE_DIST
+_PARK_MAX_TILES = PARKS_MAX_TILES
 
 # Spatial hash cell size for barrier / road lookups (car-mode hot path).
 _SEG_CELL = 4.0
@@ -164,6 +175,8 @@ class CityApp(ShowBase):
         # Loop / River North / West Loop / South Loop landmarks + high-rise infill.
         self._build_downtown_highrises(arterials)
         self._build_chicago_airports()
+        # Civic parks / boulevard medians / pocket parks (after housing voids apply).
+        self._build_chicago_parks()
         self._build_chicago_cta()
         self._build_chicago_lights(arterials)
         self._build_ground(hwy, road_z)
@@ -317,6 +330,59 @@ class CityApp(ShowBase):
         # Minors: spatial tiles so zoomed-in views don't rasterize the whole metro.
         minor_tiles: dict[tuple[int, int], list] = {}
 
+        # Civic-park + airport voids — clip minor grid so lawns stay open.
+        _minor_voids = list(park_voids())
+        try:
+            from city.geo import AIRPORT_VOIDS as _AIRPORT_VOIDS
+
+            _minor_voids.extend(_AIRPORT_VOIDS)
+        except Exception:
+            pass
+
+        def _clip_minor_ns(
+            x: float, y0: float, y1: float
+        ) -> list[tuple[float, float]]:
+            if y0 > y1:
+                y0, y1 = y1, y0
+            spans = [(y0, y1)]
+            for vx0, vy0, vx1, vy1 in _minor_voids:
+                if not (vx0 <= x <= vx1):
+                    continue
+                nxt: list[tuple[float, float]] = []
+                for a, b in spans:
+                    lo, hi = max(a, vy0), min(b, vy1)
+                    if lo >= hi:
+                        nxt.append((a, b))
+                        continue
+                    if a < lo - 0.05:
+                        nxt.append((a, lo))
+                    if hi + 0.05 < b:
+                        nxt.append((hi, b))
+                spans = nxt
+            return [(a, b) for a, b in spans if b - a > 0.1]
+
+        def _clip_minor_ew(
+            y: float, x0: float, x1: float
+        ) -> list[tuple[float, float]]:
+            if x0 > x1:
+                x0, x1 = x1, x0
+            spans = [(x0, x1)]
+            for vx0, vy0, vx1, vy1 in _minor_voids:
+                if not (vy0 <= y <= vy1):
+                    continue
+                nxt: list[tuple[float, float]] = []
+                for a, b in spans:
+                    lo, hi = max(a, vx0), min(b, vx1)
+                    if lo >= hi:
+                        nxt.append((a, b))
+                        continue
+                    if a < lo - 0.05:
+                        nxt.append((a, lo))
+                    if hi + 0.05 < b:
+                        nxt.append((hi, b))
+                spans = nxt
+            return [(a, b) for a, b in spans if b - a > 0.1]
+
         def _bin_minor_seg(
             x0: float, y0: float, x1: float, y1: float, width: float, zc: float
         ) -> None:
@@ -368,8 +434,25 @@ class CityApp(ShowBase):
                     y0 = float(pts[i][1])
                     x1 = float(pts[i + 1][0])
                     y1 = float(pts[i + 1][1])
-                    _bin_minor_seg(x0, y0, x1, y1, width, zc)
-                    add_drive_seg(x0, y0, x1, y1, width)
+                    if abs(x1 - x0) < 1e-6:
+                        for a, b in _clip_minor_ns(x0, y0, y1):
+                            _bin_minor_seg(x0, a, x0, b, width, zc)
+                            add_drive_seg(x0, a, x0, b, width)
+                    elif abs(y1 - y0) < 1e-6:
+                        for a, b in _clip_minor_ew(y0, x0, x1):
+                            _bin_minor_seg(a, y0, b, y0, width, zc)
+                            add_drive_seg(a, y0, b, y0, width)
+                    else:
+                        # Diagonal minors: drop if midpoint sits in a park void.
+                        mx = 0.5 * (x0 + x1)
+                        my = 0.5 * (y0 + y1)
+                        if any(
+                            vx0 <= mx <= vx1 and vy0 <= my <= vy1
+                            for vx0, vy0, vx1, vy1 in _minor_voids
+                        ):
+                            continue
+                        _bin_minor_seg(x0, y0, x1, y1, width, zc)
+                        add_drive_seg(x0, y0, x1, y1, width)
                 continue
             for i in range(len(pts) - 1):
                 x0, y0 = pts[i]
@@ -677,6 +760,16 @@ class CityApp(ShowBase):
         """Midway + O'Hare turf, runways, taxiways, and terminal massing."""
         self.airports, self._airport_tiles = build_chicago_airports(self.city)
         self._airport_tiles_hidden = True
+
+    def _build_chicago_parks(self) -> None:
+        """Grant / Lincoln / boulevard system / neighborhood pocket parks."""
+        built = build_chicago_parks(self.city)
+        self.parks_root = built["root"]
+        self._park_night_glow = built["night_glow"]
+        self._park_tiles = built["tiles"]
+        self._park_bulb_tiles = built["bulb_tiles"]
+        self._park_pool_tiles = built["pool_tiles"]
+        self._park_tiles_hidden = False
 
     def _build_chicago_lights(self, arterials: list) -> None:
         """Street-light poles + emissive bulbs + additive ground-glow pools."""
@@ -1019,17 +1112,23 @@ class CityApp(ShowBase):
         return task.cont
 
     def _set_street_lights(self, on: bool, *, warm_up: bool = False) -> None:
-        """Show/hide bulbs + pools + skyline glow; night via day cycle."""
+        """Show/hide bulbs + pools + skyline / park glow; night via day cycle."""
         self._street_lights_on = on
         bulbs = getattr(self, "_lights_bulbs_root", None)
         pools = getattr(self, "_lights_pools_root", None)
         flicker = getattr(self, "_lights_flicker_root", None)
         skyline = getattr(self, "_downtown_night_glow", None)
+        park_glow = getattr(self, "_park_night_glow", None)
         if skyline is not None:
             if on:
                 skyline.show()
             else:
                 skyline.hide()
+        if park_glow is not None:
+            if on:
+                park_glow.show()
+            else:
+                park_glow.hide()
         if bulbs is None or pools is None:
             return
         if on:
@@ -1589,6 +1688,14 @@ class CityApp(ShowBase):
         )
         # ---- CTA "L" mile-sectors (viaducts / stations) ----
         cta_tiles = getattr(self, "_cta_tiles", None) or []
+        cta_ctrl = getattr(self, "_cta_controller", None)
+        if cta_ctrl is not None:
+            # Train mesh culling uses the same look point as sector LOD.
+            train_r = max(CTA_VIEW_MIN, dist * CTA_VIEW_FACTOR) + 50.0
+            if self._car_mode:
+                train_r = max(train_r, 90.0)
+            cta_ctrl.view_xy = (look_x, look_y)
+            cta_ctrl.view_r2 = train_r * train_r
         if cta_tiles:
             if dist >= CTA_HIDE_DIST and not self._car_mode:
                 if not getattr(self, "_cta_tiles_hidden", False):
@@ -1635,6 +1742,37 @@ class CityApp(ShowBase):
                     elif not near and not node.isHidden():
                         node.hide()
 
+        # ---- Civic parks (1-mile flattenStrong sectors) ----
+        park_tiles = getattr(self, "_park_tiles", None) or []
+        if park_tiles:
+            if dist >= _PARK_HIDE_DIST and not self._car_mode:
+                if not getattr(self, "_park_tiles_hidden", False):
+                    for _cx, _cy, node in park_tiles:
+                        if not node.isHidden():
+                            node.hide()
+                    self._park_tiles_hidden = True
+            else:
+                self._park_tiles_hidden = False
+                radius = max(PARKS_VIEW_MIN, dist * PARKS_VIEW_FACTOR) + SECTOR_SIZE * 0.45
+                r2 = radius * radius
+                park_cap = 4 if self._car_mode else _PARK_MAX_TILES
+                scored_p: list[tuple[float, object]] = []
+                for cx, cy, node in park_tiles:
+                    dx = cx - look_x
+                    dy = cy - look_y
+                    d2 = dx * dx + dy * dy
+                    if d2 <= r2:
+                        scored_p.append((d2, node))
+                    elif not node.isHidden():
+                        node.hide()
+                scored_p.sort(key=lambda item: item[0])
+                for i, (_d2, node) in enumerate(scored_p):
+                    if i < park_cap:
+                        if node.isHidden():
+                            node.show()
+                    elif not node.isHidden():
+                        node.hide()
+
         # ---- Residential mile-sectors (flattened GeomNodes; cap count) ----
         housing_tiles = getattr(self, "_housing_tiles", None) or []
         if dist >= _HOUSING_HIDE_DIST and not self._car_mode:
@@ -1649,6 +1787,7 @@ class CityApp(ShowBase):
             # Time-sliced suburb bake (prefetch); never blocks a full sector/frame.
             ensure_housing_sectors(look_x, look_y, radius, housing_tiles)
             r2 = radius * radius
+            housing_cap = 3 if self._car_mode else _HOUSING_MAX_TILES
             scored: list[tuple[float, object]] = []
             for cx, cy, node in housing_tiles:
                 dx = cx - look_x
@@ -1660,7 +1799,7 @@ class CityApp(ShowBase):
                     node.hide()
             scored.sort(key=lambda item: item[0])
             for i, (_d2, node) in enumerate(scored):
-                if i < _HOUSING_MAX_TILES:
+                if i < housing_cap:
                     if node.isHidden():
                         node.show()
                 elif not node.isHidden():
@@ -1703,22 +1842,37 @@ class CityApp(ShowBase):
                     node.hide()
 
         lit = getattr(self, "_street_lights_on", False)
+        pool_cap = 1 if self._car_mode else _LIGHTS_MAX_POOL_TILES
+        pole_cap = 3 if self._car_mode else _LIGHTS_MAX_TILES
         _lod_light_tiles(
             getattr(self, "_lights_pole_tiles", None) or [],
             hidden_attr="_lights_pole_tiles_hidden",
-            max_tiles=_LIGHTS_MAX_TILES,
+            max_tiles=pole_cap,
         )
         # Bulbs + additive pools only while lit — biggest night-time GPU cost.
         _lod_light_tiles(
             getattr(self, "_lights_bulb_tiles", None) or [],
             hidden_attr="_lights_bulb_tiles_hidden",
-            max_tiles=_LIGHTS_MAX_TILES,
+            max_tiles=pole_cap,
             force_hide=not lit,
         )
         _lod_light_tiles(
             getattr(self, "_lights_pool_tiles", None) or [],
             hidden_attr="_lights_pool_tiles_hidden",
-            max_tiles=_LIGHTS_MAX_POOL_TILES,
+            max_tiles=pool_cap,
+            force_hide=not lit,
+        )
+        # Vintage park acorn globes (same night toggle as street lights / L dusk).
+        _lod_light_tiles(
+            getattr(self, "_park_bulb_tiles", None) or [],
+            hidden_attr="_park_bulb_tiles_hidden",
+            max_tiles=pole_cap,
+            force_hide=not lit,
+        )
+        _lod_light_tiles(
+            getattr(self, "_park_pool_tiles", None) or [],
+            hidden_attr="_park_pool_tiles_hidden",
+            max_tiles=pool_cap,
             force_hide=not lit,
         )
         # ---- Highway labels (nearest N only; skip when far / car mode) ----

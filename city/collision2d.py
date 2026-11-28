@@ -14,7 +14,7 @@ COLLIDER_PROP = 4
 # Wall-slide response (shared by player + CPD cruisers).
 WALL_RESTITUTION = 0.22
 WALL_FRICTION = 0.88
-STATIC_SOLVER_PASSES = 2
+STATIC_SOLVER_PASSES = 1
 
 # Physics-grade vehicle half-extents (world units @ 42.2 u / mile).
 PLAYER_HALF_L = 0.068

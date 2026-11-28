@@ -21,9 +21,11 @@ from city.mesh import box_instance, make_flat_deck_batch
 # ---------------------------------------------------------------------------
 UNITS_PER_MILE = 42.2
 SECTOR_SIZE = UNITS_PER_MILE
-PILLAR_SPACING = 1.32
+PILLAR_SPACING = 2.2
 LOOP_CORNER_R = 0.65
 LOOP_CORNER_SEGS = 12
+# Colliders are denser than needed for driving under the L — keep every Nth.
+PILLAR_COLLIDER_STRIDE = 2
 
 Z_ELEV = 0.55
 Z_RAIL = 0.57
@@ -39,7 +41,7 @@ DECK_W_SGL = 0.22
 DECK_THICK = 0.04
 RAIL_W = 0.018
 RAIL_GAP = 0.09
-TIE_SPACING = 0.28
+TIE_SPACING = 0.42
 PILLAR_SZ = 0.05
 BARRIER_H = 0.14
 
@@ -67,10 +69,12 @@ HEADWAY = 2.5
 STATION_STOP_R2 = 0.55 * 0.55
 
 # LOD — hide far sectors in overview (same spirit as airports / housing).
-CTA_HIDE_DIST = 420.0
-CTA_VIEW_FACTOR = 0.55
-CTA_VIEW_MIN = 90.0
-CTA_MAX_TILES = 48
+CTA_HIDE_DIST = 380.0
+CTA_VIEW_FACTOR = 0.40
+CTA_VIEW_MIN = 70.0
+CTA_MAX_TILES = 14
+# Hide / skip placing train meshes beyond this look-at radius (sim still ticks).
+CTA_TRAIN_HIDE_DIST = 110.0
 
 # Downtown Loop rectangle (exact corridors).
 LOOP_WELLS = -10.55
@@ -778,19 +782,20 @@ def _flush_sector(
             wall.setMaterial(barrier_mat, 1)
 
     pillar_mat = mats["steel"]
-    for px, py, h in bucket.pillars:
+    for pi, (px, py, h) in enumerate(bucket.pillars):
         if h < 0.2:
             continue
         col = box_instance(node, PILLAR_SZ, PILLAR_SZ, h)
         col.setPos(px, py, h * 0.5)
         col.setMaterial(pillar_mat, 1)
         # Tight ground-level collider so the player can weave under the "L".
-        register_pillar(px, py, radius=0.035)
+        if pi % PILLAR_COLLIDER_STRIDE == 0:
+            register_pillar(px, py, radius=0.035)
 
     # Ties span across the track (local X = right of travel).
     tie_mat = mats["tie"]
     for i, (tx, ty, tz, heading) in enumerate(bucket.ties):
-        if i % 2:
+        if i % 3:
             continue
         tie = box_instance(node, DECK_W_DBL * 0.9, 0.04, 0.015, top=True, bottom=False)
         tie.setPos(tx, ty, tz)
@@ -885,6 +890,7 @@ class CtaTrain:
     dwell: float = 0.0
     stations: list[tuple[float, float]] = field(default_factory=list)
     _last_station: tuple[float, float] | None = None
+    _culled: bool = False
 
     def car_spacing(self) -> float:
         return CAR_LEN + CAR_GAP
@@ -903,6 +909,9 @@ class CtaTrainController:
         self._by_line: dict[str, list[CtaTrain]] = {}
         for t in trains:
             self._by_line.setdefault(t.line, []).append(t)
+        # Look-at + hide radius² — CityApp refreshes these from road LOD.
+        self.view_xy = (0.0, 0.0)
+        self.view_r2 = CTA_TRAIN_HIDE_DIST * CTA_TRAIN_HIDE_DIST
 
     def update_cta_trains(self, task):
         """Panda taskMgr entry — ``update_cta_trains``."""
@@ -926,10 +935,30 @@ class CtaTrainController:
             return TRAIN_SPEED_LOOP
         return TRAIN_SPEED_EXPRESS
 
+    def _train_in_view(self, train: CtaTrain, x: float, y: float) -> bool:
+        vx, vy = self.view_xy
+        dx = x - vx
+        dy = y - vy
+        return dx * dx + dy * dy <= self.view_r2
+
+    def _set_train_culled(self, train: CtaTrain, culled: bool) -> None:
+        if train._culled == culled:
+            return
+        train._culled = culled
+        if culled:
+            for car in train.cars:
+                if not car.isHidden():
+                    car.hide()
+
     def _step_train(self, train: CtaTrain, dt: float, ahead: CtaTrain | None) -> None:
         if train.dwell > 0.0:
             train.dwell = max(0.0, train.dwell - dt)
-            self._place_cars(train)
+            x, y, _z, _h = _sample_polyline(train.path, train.dist)
+            if self._train_in_view(train, x, y):
+                self._set_train_culled(train, False)
+                self._place_cars(train)
+            else:
+                self._set_train_culled(train, True)
             return
 
         x, y, z, _h = _sample_polyline(train.path, train.dist)
@@ -948,7 +977,11 @@ class CtaTrainController:
                 if train._last_station != key:
                     train._last_station = key
                     train.dwell = DWELL_SEC
-                    self._place_cars(train)
+                    if self._train_in_view(train, x, y):
+                        self._set_train_culled(train, False)
+                        self._place_cars(train)
+                    else:
+                        self._set_train_culled(train, True)
                     return
                 break
         else:
@@ -958,7 +991,13 @@ class CtaTrainController:
                     train._last_station = None
 
         train.dist = (train.dist + speed * dt) % train.path_len
-        self._place_cars(train)
+        # Re-sample lead after advance for culling (cheap vs placing every car).
+        x, y, _z2, _h2 = _sample_polyline(train.path, train.dist)
+        if self._train_in_view(train, x, y):
+            self._set_train_culled(train, False)
+            self._place_cars(train)
+        else:
+            self._set_train_culled(train, True)
 
     def _place_cars(self, train: CtaTrain) -> None:
         spacing = train.car_spacing()
@@ -1092,16 +1131,16 @@ def build_chicago_cta(parent: NodePath) -> dict:
             if ln in station_xy_by_line:
                 station_xy_by_line[ln].append((st["x"], st["y"]))
 
-    # (path_key, line_color, count, cars)
+    # (path_key, line_color, count, cars) — thinned for FPS; still readable traffic.
     spawn_plan = [
-        ("red", "red", 8, 6),
-        ("blue", "blue", 7, 6),
-        ("green", "green", 5, 4),
-        ("green_cottage", "green", 2, 4),
-        ("orange", "orange", 5, 4),
-        ("brown", "brown", 5, 4),
-        ("pink", "pink", 4, 4),
-        ("purple", "purple", 4, 6),
+        ("red", "red", 4, 4),
+        ("blue", "blue", 4, 4),
+        ("green", "green", 3, 3),
+        ("green_cottage", "green", 1, 3),
+        ("orange", "orange", 3, 3),
+        ("brown", "brown", 3, 3),
+        ("pink", "pink", 2, 3),
+        ("purple", "purple", 2, 4),
     ]
 
     trains: list[CtaTrain] = []

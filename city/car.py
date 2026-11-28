@@ -3480,9 +3480,9 @@ class PlayerCar:
     # Physics-grade OBB (slightly larger than the visual mesh).
     _OBB_HALF_L = PLAYER_HALF_L
     _OBB_HALF_W = PLAYER_HALF_W
-    # Motion substep length; raised step budget covers ~600 km/h at low FPS.
-    _STEP_LEN = 0.25 * _CAR_WORLD_SCALE
-    _MAX_SUBSTEPS = 24
+    # Motion substep length; raised step budget covers high speed at low FPS.
+    _STEP_LEN = 0.50 * _CAR_WORLD_SCALE
+    _MAX_SUBSTEPS = 12
     # Match CityApp._street_at shoulder so HUD "Off road" agrees with this.
     _ROAD_SHOULDER = ROAD_SHOULDER
 
